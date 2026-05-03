@@ -41,9 +41,24 @@ TARGET_DIR=C:/path/to/scan-target
 # レポート出力先（任意）
 # 未設定にするとプロジェクト直下の .reports が使われます
 OUTPUT_DIR=C:/path/to/output
+
+# ---- Vulnerability provider settings (B-1) ----
+VULN_PROVIDER_ORDER=osv,github,nvd
+OSV_API_KEY=
+GITHUB_TOKEN=
+NVD_API_KEY=
+VULN_API_TIMEOUT_SEC=10
+VULN_MAX_RETRIES=2
+VULN_ENABLE_FALLBACK=true
 ```
 
 > `TARGET_DIR` は必須です。未設定または存在しない場合は終了します。
+
+### B-1（Known Vulnerabilities）外部データ連携
+
+- B-1 は `VULN_PROVIDER_ORDER` の順に `osv / github / nvd` を照会します。
+- APIキー未設定でも動作します（必要なAPIのみ設定）。
+- `VULN_ENABLE_FALLBACK=true` の場合は複数プロバイダを順次参照し、重複IDを除外して統合します。
 
 ## 使い方
 
@@ -63,10 +78,11 @@ python main.py
 
 レポートは Markdown 形式で出力され、主に次を含みます。
 
-- 対象ディレクトリ
-- 生成日時（UTC）
-- 深刻度別サマリ（Critical / High / Medium / Low / Info）
-- 検知一覧（ルールID、カテゴリ、場所、メッセージ）
+- 実行情報（対象ディレクトリ、生成日時、検知件数、ルール実行エラー件数）
+- エグゼクティブサマリ（Critical / High の件数と確認優先度）
+- 集計（深刻度別、カテゴリ別、ルール別 Top 10、ディレクトリ別 Top 10）
+- 対応優先リスク（Critical / High の上位検知を表形式で表示）
+- 詳細検知一覧（深刻度 → ルール単位にグルーピングした表形式の一覧）
 - ルール実行エラー（発生時）
 
 ## ディレクトリ構成
