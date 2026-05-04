@@ -6,14 +6,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, Sequence, Tuple
+from typing import Any, Callable, ContextManager, Protocol, Sequence, Tuple
 
 from src.config import ConfigOverrides, ScanConfig
 from src.models import RiskRecord
 from src.reporting import ReportWriter
 from src.rule_engine import load_all_rules, run_all
 from src.targets.archive_fetcher import ArchiveSnapshotFetcher
-from src.targets.models import ResolvedTarget
+from src.targets.models import RemoteFetchLimits, ResolvedTarget, ScanTargetSpec
 from src.targets.resolver import TargetResolver
 
 
@@ -22,6 +22,26 @@ class CliOptionsLike(Protocol):
     target_ref: str | None
     target_subdir: str | None
     output_dir: str | None
+
+
+class ScanConfigLike(Protocol):
+    def resolve_target_spec(self) -> ScanTargetSpec: ...
+
+    def resolve_output_dir(self) -> Path | None: ...
+
+    def resolve_remote_fetch_limits(self) -> RemoteFetchLimits: ...
+
+
+class TargetResolverLike(Protocol):
+    def resolve(self, spec: ScanTargetSpec) -> ContextManager[ResolvedTarget]: ...
+
+
+ConfigFactory = Callable[[Path, ConfigOverrides | None], ScanConfigLike]
+TargetResolverFactory = Callable[[Any], TargetResolverLike]
+RuleLoader = Callable[[Path], Sequence[Any]]
+RuleRunner = Callable[
+    [Path, Sequence[Any]], Tuple[Sequence[RiskRecord], Sequence[Tuple[str, str]], int]
+]
 
 
 @dataclass(frozen=True)
@@ -47,13 +67,21 @@ class SecurityScan:
         project_root: Path,
         cli_options: CliOptionsLike | None = None,
         persist_report: bool = True,
+        config_factory: ConfigFactory | None = None,
+        target_resolver_factory: TargetResolverFactory | None = None,
+        rule_loader: RuleLoader | None = None,
+        rule_runner: RuleRunner | None = None,
     ) -> None:
         self._project_root = project_root
         self._cli_options = cli_options
         self._persist_report = persist_report
+        self._config_factory = config_factory or ScanConfig
+        self._target_resolver_factory = target_resolver_factory or TargetResolver
+        self._rule_loader = rule_loader or load_all_rules
+        self._rule_runner = rule_runner or run_all
 
     def run(self) -> ScanResult:
-        config = ScanConfig(self._project_root, self._config_overrides())
+        config = self._config_factory(self._project_root, self._config_overrides())
         target_spec = config.resolve_target_spec()
         output_dir = config.resolve_output_dir() if self._persist_report else None
         limits = config.resolve_remote_fetch_limits()
@@ -65,9 +93,9 @@ class SecurityScan:
             max_single_file_bytes=limits.max_single_file_bytes,
             timeout_sec=limits.timeout_sec,
         )
-        resolver = TargetResolver(fetcher)
+        resolver = self._target_resolver_factory(fetcher)
 
-        rules = load_all_rules(self._project_root)
+        rules = self._rule_loader(self._project_root)
         if not rules:
             raise SystemExit(
                 "ルールが 1 つも読み込めませんでした。src/rules の構成を確認してください。"
@@ -75,7 +103,9 @@ class SecurityScan:
 
         generated_at = datetime.now(timezone.utc)
         with resolver.resolve(target_spec) as resolved:
-            records, errors, executed_count = run_all(resolved.scan_path, rules)
+            records, errors, executed_count = self._rule_runner(
+                resolved.scan_path, rules
+            )
 
             report_writer = ReportWriter(output_dir or self._project_root)
             report_markdown = report_writer.build_markdown(

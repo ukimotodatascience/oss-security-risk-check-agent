@@ -1,12 +1,16 @@
 from pathlib import Path
-from typing import List
+from typing import List, Protocol
 
 from src.models import RiskRecord, Severity
 from src.rules.B_dependencies._dependency_utils import (
     collect_dependency_declarations,
     is_pinned,
 )
-from src.rules.B_dependencies.vuln_sources import VulnLookupService
+from src.rules.B_dependencies.vuln_sources import VulnHit, VulnLookupService
+
+
+class VulnLookup(Protocol):
+    def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]: ...
 
 
 class B1KnownVulnerabilitiesRule:
@@ -17,8 +21,8 @@ class B1KnownVulnerabilitiesRule:
     title = "Known Vulnerabilities"
     severity = Severity.MEDIUM
 
-    def __init__(self) -> None:
-        self._lookup = VulnLookupService()
+    def __init__(self, lookup: VulnLookup | None = None) -> None:
+        self._lookup = lookup or VulnLookupService()
 
     @staticmethod
     def _to_severity(score: float | None) -> Severity:

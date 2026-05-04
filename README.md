@@ -147,6 +147,14 @@ TARGET_REF=main
 
 ## テスト
 
+テスト実行には開発用依存関係が必要です。
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+通常のテストを実行する場合:
+
 ```bash
 python -m pytest -q
 ```
@@ -156,6 +164,18 @@ python -m pytest -q
 ```bash
 python -m pytest --cov=src --cov-report=term-missing
 ```
+
+`pyproject.toml` で coverage の対象を `src` に設定し、branch coverage を有効化しています。現在の CI では `fail_under = 60` を設定しているため、総合カバレッジが 60% 未満になると失敗します。
+
+### CI
+
+GitHub Actions では `.github/workflows/tests.yml` により、以下のタイミングでテストが自動実行されます。
+
+- `main` / `master` への push
+- pull request
+- 手動実行（`workflow_dispatch`）
+
+CI では Python 3.11 を使い、`requirements.txt` と `requirements-dev.txt` をインストールしたうえで、coverage 付き pytest を実行します。
 
 実行後、標準出力に以下が表示されます。
 
