@@ -95,16 +95,15 @@ class ScanConfig:
             max_single_file_bytes=self._env_mb("TARGET_MAX_SINGLE_FILE_MB", 10),
         )
 
-    def resolve_output_dir(self) -> Path:
+    def resolve_output_dir(self) -> Path | None:
         """`OUTPUT_DIR` を読み、レポート保存用ディレクトリの絶対パスを返す。
 
-        未設定のときはプロジェクト直下の `.reports` を使う。
+        未設定のときはレポートファイルを保存しないため `None` を返す。
         """
         raw = self._overrides.output_dir or self._env("OUTPUT_DIR")
         if not raw:
-            out = self._project_root / ".reports"
-        else:
-            out = Path(raw).expanduser().resolve()
+            return None
+        out = Path(raw).expanduser().resolve()
         if out.exists() and not out.is_dir():
             raise SystemExit(f"OUTPUT_DIR はディレクトリである必要があります: {out}")
         out.mkdir(parents=True, exist_ok=True)

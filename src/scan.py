@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence, Tuple
 
 from src.config import ConfigOverrides, ScanConfig
+from src.models import RiskRecord
 from src.reporting import ReportWriter
 from src.rule_engine import load_all_rules, run_all
 from src.targets.archive_fetcher import ArchiveSnapshotFetcher
+from src.targets.models import ResolvedTarget
 from src.targets.resolver import TargetResolver
 
 
@@ -21,6 +24,21 @@ class CliOptionsLike(Protocol):
     output_dir: str | None
 
 
+@dataclass(frozen=True)
+class ScanResult:
+    """CLI / Web UI の双方で利用する診断結果。"""
+
+    target: ResolvedTarget
+    output_dir: Path | None
+    report_path: Path | None
+    report_markdown: str
+    generated_at: datetime
+    loaded_rule_count: int
+    executed_rule_count: int
+    records: Sequence[RiskRecord]
+    errors: Sequence[Tuple[str, str]]
+
+
 class SecurityScan:
     """ローカルまたは remote archive の対象を診断し、結果を出力する。"""
 
@@ -28,14 +46,16 @@ class SecurityScan:
         self,
         project_root: Path,
         cli_options: CliOptionsLike | None = None,
+        persist_report: bool = True,
     ) -> None:
         self._project_root = project_root
         self._cli_options = cli_options
+        self._persist_report = persist_report
 
-    def run(self) -> None:
+    def run(self) -> ScanResult:
         config = ScanConfig(self._project_root, self._config_overrides())
         target_spec = config.resolve_target_spec()
-        output_dir = config.resolve_output_dir()
+        output_dir = config.resolve_output_dir() if self._persist_report else None
         limits = config.resolve_remote_fetch_limits()
 
         fetcher = ArchiveSnapshotFetcher(
@@ -57,20 +77,42 @@ class SecurityScan:
         with resolver.resolve(target_spec) as resolved:
             records, errors, executed_count = run_all(resolved.scan_path, rules)
 
-            report_path = ReportWriter(output_dir).write(
+            report_writer = ReportWriter(output_dir or self._project_root)
+            report_markdown = report_writer.build_markdown(
                 resolved.scan_path, records, errors, generated_at
             )
+            report_path = None
+            if self._persist_report and output_dir is not None:
+                report_path = ReportWriter(output_dir).write(
+                    resolved.scan_path, records, errors, generated_at
+                )
+            result = ScanResult(
+                target=resolved,
+                output_dir=output_dir,
+                report_path=report_path,
+                report_markdown=report_markdown,
+                generated_at=generated_at,
+                loaded_rule_count=len(rules),
+                executed_rule_count=executed_count,
+                records=records,
+                errors=errors,
+            )
 
-            print(f"対象: {resolved.display_name}")
-            print(f"スキャンパス: {resolved.scan_path}")
-            print(f"取得方式: {resolved.fetch_mode}")
-            print(f"出力先: {output_dir}")
-            print(f"読み込みルール数: {len(rules)}")
-            print(f"実行ルール数: {executed_count}")
-            print(f"検知件数: {len(records)}")
-            if errors:
-                print(f"失敗したルール数: {len(errors)}", file=sys.stderr)
-            print(f"レポート: {report_path}")
+            self._print_result(result)
+            return result
+
+    @staticmethod
+    def _print_result(result: ScanResult) -> None:
+        print(f"対象: {result.target.display_name}")
+        print(f"スキャンパス: {result.target.scan_path}")
+        print(f"取得方式: {result.target.fetch_mode}")
+        print(f"出力先: {result.output_dir or '(保存なし)'}")
+        print(f"読み込みルール数: {result.loaded_rule_count}")
+        print(f"実行ルール数: {result.executed_rule_count}")
+        print(f"検知件数: {len(result.records)}")
+        if result.errors:
+            print(f"失敗したルール数: {len(result.errors)}", file=sys.stderr)
+        print(f"レポート: {result.report_path or '(メモリ上で生成)'}")
 
     def _config_overrides(self) -> ConfigOverrides:
         if self._cli_options is None:

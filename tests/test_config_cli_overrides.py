@@ -36,6 +36,14 @@ def test_cli_output_dir_override_takes_precedence_over_env(tmp_path, monkeypatch
     assert config.resolve_output_dir() == cli_output.resolve()
 
 
+def test_output_dir_is_none_when_not_configured(tmp_path, monkeypatch):
+    monkeypatch.delenv("OUTPUT_DIR", raising=False)
+
+    config = ScanConfig(tmp_path)
+
+    assert config.resolve_output_dir() is None
+
+
 def test_env_target_dir_still_works_without_cli_override(tmp_path, monkeypatch):
     local_target = tmp_path / "local"
     local_target.mkdir()
