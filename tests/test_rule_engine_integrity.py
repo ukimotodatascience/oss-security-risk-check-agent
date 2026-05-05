@@ -103,3 +103,24 @@ def test_run_all_executes_all_loaded_rules(tmp_path):
     assert executed_count == len(EXPECTED_RULE_IDS)
     assert errors == []
     assert all(isinstance(record, RiskRecord) for record in records)
+
+
+def test_run_all_executes_rules_in_natural_rule_id_order(tmp_path):
+    executed_rule_ids = []
+
+    class FakeRule:
+        def __init__(self, rule_id: str) -> None:
+            self.rule_id = rule_id
+
+        def evaluate(self, target: Path):
+            executed_rule_ids.append(self.rule_id)
+            return []
+
+    rules = [FakeRule("A-10"), FakeRule("B-1"), FakeRule("A-2"), FakeRule("A-1")]
+
+    records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert records == []
+    assert errors == []
+    assert executed_count == 4
+    assert executed_rule_ids == ["A-1", "A-2", "A-10", "B-1"]

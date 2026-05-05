@@ -11,6 +11,14 @@ from typing import Any, List, Sequence, Tuple
 from src.models import RiskRecord
 
 
+def _rule_sort_key(rule_id: str) -> Tuple[str, int, str]:
+    """`A-1`, `A-10` のようなルール ID をカテゴリ・番号順に並べる。"""
+    category, separator, number_text = rule_id.partition("-")
+    if separator and number_text.isdigit():
+        return category, int(number_text), rule_id
+    return rule_id, 0, rule_id
+
+
 def load_all_rules(project_root: Path) -> List[Any]:
     """`src/rules` 配下の Rule クラスを動的に読み込み、インスタンス化して返す。"""
     rules: List[Any] = []
@@ -44,13 +52,10 @@ def run_all(
     records: List[RiskRecord] = []
     errors: List[Tuple[str, str]] = []
     executed_count = 0
-    rule_map = {getattr(rule, "rule_id", type(rule).__name__): rule for rule in rules}
 
-    def run(rule_id: str) -> None:
+    def run(rule: Any) -> None:
         nonlocal executed_count
-        rule = rule_map.get(rule_id)
-        if rule is None:
-            return
+        rule_id = getattr(rule, "rule_id", type(rule).__name__)
         executed_count += 1
         try:
             found = rule.evaluate(target)
@@ -59,85 +64,10 @@ def run_all(
         except Exception:
             errors.append((rule_id, traceback.format_exc()))
 
-    # 各ルールの実行
-    run("A-1")
-    run("A-2")
-    run("A-3")
-    run("A-4")
-    run("A-5")
-    run("A-6")
-    run("A-7")
-    run("A-8")
-    run("B-1")
-    run("B-2")
-    run("B-3")
-    run("B-4")
-    run("B-5")
-    run("B-6")
-    run("C-1")
-    run("C-2")
-    run("C-3")
-    run("C-4")
-    run("C-5")
-    run("C-6")
-    run("C-7")
-    run("C-8")
-    run("D-1")
-    run("D-2")
-    run("D-3")
-    run("D-4")
-    run("D-5")
-    run("D-6")
-    run("D-7")
-    run("E-1")
-    run("E-2")
-    run("E-3")
-    run("E-4")
-    run("E-5")
-    run("E-6")
-    run("F-1")
-    run("F-2")
-    run("F-3")
-    run("F-4")
-    run("F-5")
-    run("F-6")
-    run("G-1")
-    run("G-2")
-    run("G-3")
-    run("G-4")
-    run("G-5")
-    run("G-6")
-    run("G-7")
-    run("G-8")
-    run("H-1")
-    run("H-2")
-    run("H-3")
-    run("H-4")
-    run("H-5")
-    run("H-6")
-    run("I-1")
-    run("I-2")
-    run("I-3")
-    run("I-4")
-    run("I-5")
-    run("J-1")
-    run("J-2")
-    run("J-3")
-    run("J-4")
-    run("J-5")
-    run("J-6")
-    run("J-7")
-    run("K-1")
-    run("K-2")
-    run("K-3")
-    run("K-4")
-    run("K-5")
-    run("L-1")
-    run("L-2")
-    run("L-3")
-    run("L-4")
-    run("L-5")
-    run("L-6")
-    run("L-7")
+    for rule in sorted(
+        rules,
+        key=lambda rule: _rule_sort_key(getattr(rule, "rule_id", type(rule).__name__)),
+    ):
+        run(rule)
 
     return records, errors, executed_count
