@@ -44,6 +44,7 @@ class TargetResolver:
                     ref=spec.ref,
                     subdir=spec.subdir,
                     fetch_mode="github_archive_zipball",
+                    skipped_files=getattr(self._fetcher, "skipped_files", ()),
                 )
             finally:
                 shutil.rmtree(work_dir, ignore_errors=True)

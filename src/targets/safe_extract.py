@@ -5,6 +5,8 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from src.targets.models import SkippedFile
+
 
 class ArchiveSafetyError(Exception):
     """安全でない archive を検出したときの例外。"""
@@ -36,14 +38,15 @@ def safe_extract_zip(
     max_files: int,
     max_total_size: int,
     max_single_file_size: int,
-) -> Path:
-    """zip を検証しながら展開し、展開後のルートディレクトリを返す。"""
+) -> tuple[Path, tuple[SkippedFile, ...]]:
+    """zip を検証しながら展開し、展開後のルートディレクトリとスキップ情報を返す。"""
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_root = dest_dir.resolve()
     file_count = 0
     total_size = 0
     top_level_names: set[str] = set()
+    skipped_files: list[SkippedFile] = []
 
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
@@ -55,14 +58,25 @@ def safe_extract_zip(
                 )
 
             member_path = _safe_member_path(info.filename)
+            top_level_names.add(member_path.parts[0])
             if info.file_size > max_single_file_size:
-                raise ArchiveSafetyError(
-                    f"単一ファイルサイズ上限を超えています: {info.filename}"
+                skipped_files.append(
+                    SkippedFile(
+                        path=info.filename,
+                        reason="単一ファイルサイズ上限を超えたためスキップしました。",
+                        size_bytes=info.file_size,
+                        limit_bytes=max_single_file_size,
+                    )
                 )
+                continue
 
             file_count += 1
             if file_count > max_files:
-                raise ArchiveSafetyError("archive 内のファイル数が上限を超えています。")
+                raise ArchiveSafetyError(
+                    "archive 内のファイル数が上限を超えています。"
+                    f" path={info.filename}, size={info.file_size} bytes, "
+                    f"max_files={max_files}"
+                )
 
             total_size += info.file_size
             if total_size > max_total_size:
@@ -78,10 +92,8 @@ def safe_extract_zip(
             with zf.open(info) as src, target_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
 
-            top_level_names.add(member_path.parts[0])
-
     if len(top_level_names) == 1:
         root = dest_root / next(iter(top_level_names))
         if root.is_dir():
-            return root
-    return dest_root
+            return root, tuple(skipped_files)
+    return dest_root, tuple(skipped_files)

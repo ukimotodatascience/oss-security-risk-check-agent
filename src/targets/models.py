@@ -6,6 +6,16 @@ from typing import Literal, Optional
 
 
 @dataclass(frozen=True)
+class SkippedFile:
+    """安全上限によりスキャン対象から除外したファイル。"""
+
+    path: str
+    reason: str
+    size_bytes: int | None = None
+    limit_bytes: int | None = None
+
+
+@dataclass(frozen=True)
 class ScanTargetSpec:
     """ユーザーが指定したスキャン対象。"""
 
@@ -37,3 +47,4 @@ class ResolvedTarget:
     ref: Optional[str] = None
     subdir: Optional[str] = None
     fetch_mode: str = "local"
+    skipped_files: tuple[SkippedFile, ...] = ()

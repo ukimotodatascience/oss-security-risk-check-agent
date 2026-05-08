@@ -91,8 +91,8 @@ class ScanConfig:
             timeout_sec=self._env_int("TARGET_FETCH_TIMEOUT_SEC", 60),
             max_download_bytes=self._env_mb("TARGET_MAX_DOWNLOAD_MB", 100),
             max_extracted_bytes=self._env_mb("TARGET_MAX_EXTRACTED_MB", 300),
-            max_files=self._env_int("TARGET_MAX_FILES", 30000),
-            max_single_file_bytes=self._env_mb("TARGET_MAX_SINGLE_FILE_MB", 10),
+            max_files=self._env_int("TARGET_MAX_FILES", 50000),
+            max_single_file_bytes=self._env_mb("TARGET_MAX_SINGLE_FILE_MB", 1024),
         )
 
     def resolve_output_dir(self) -> Path | None:

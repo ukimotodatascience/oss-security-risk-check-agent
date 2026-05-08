@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 from src.models import RiskRecord, Severity
+from src.targets.models import SkippedFile
 
 
 class ReportWriter:
@@ -15,6 +16,13 @@ class ReportWriter:
 
     SUMMARY_LIMIT = 10
     PRIORITY_FINDINGS_LIMIT = 20
+    SEVERITY_SCORE = {
+        Severity.CRITICAL.value: 10,
+        Severity.HIGH.value: 7,
+        Severity.MEDIUM.value: 4,
+        Severity.LOW.value: 1,
+        Severity.INFO.value: 0,
+    }
 
     def __init__(self, output_dir: Path) -> None:
         self._output_dir = output_dir
@@ -98,12 +106,43 @@ class ReportWriter:
             return "/".join(parts[:2])
         return parts[0]
 
+    @classmethod
+    def _risk_score(cls, records: Sequence[RiskRecord]) -> int:
+        raw_score = sum(
+            cls.SEVERITY_SCORE.get(cls._severity_value(record), 0) for record in records
+        )
+        return min(100, raw_score)
+
+    @staticmethod
+    def _risk_rating(score: int) -> str:
+        if score >= 80:
+            return "Critical"
+        if score >= 50:
+            return "High"
+        if score >= 20:
+            return "Medium"
+        if score > 0:
+            return "Low"
+        return "No findings"
+
+    @staticmethod
+    def _risk_recommendation(rating: str) -> str:
+        recommendations = {
+            "Critical": "公開・リリース前に即時対応が必要です。Critical / High を最優先で修正してください。",
+            "High": "短期的な修正計画を立て、Critical / High と件数の多いカテゴリから対応してください。",
+            "Medium": "通常の改善サイクルに組み込み、Medium 以上のリスクを優先的に低減してください。",
+            "Low": "重大な検知は限定的です。継続監視しつつ、低リスク項目を順次改善してください。",
+            "No findings": "今回のルールセットでは検知されませんでした。依存関係更新や追加ルールで継続的に確認してください。",
+        }
+        return recommendations[rating]
+
     def build_markdown(
         self,
         target: Path,
         records: Sequence[RiskRecord],
         errors: Sequence[Tuple[str, str]],
         generated_at: datetime,
+        skipped_files: Sequence[SkippedFile] = (),
     ) -> str:
         """人間向け Markdown レポート文字列を組み立てる。"""
         sorted_records = sorted(records, key=self._record_sort_key)
@@ -116,8 +155,30 @@ class ReportWriter:
             f"- **生成日時 (UTC):** {generated_at.strftime('%Y-%m-%d %H:%M:%S')} UTC",
             f"- **検知件数:** {len(records)}",
             f"- **ルール実行エラー件数:** {len(errors)}",
+            f"- **スキップしたファイル数:** {len(skipped_files)}",
             "",
         ]
+
+        if skipped_files:
+            lines.append("## スキップしたファイル")
+            lines.append("")
+            lines.append(
+                "以下のファイルは安全上限により展開・スキャン対象から除外しました。"
+            )
+            lines.append("")
+            self._append_table(
+                lines,
+                ("Path", "Reason", "Size bytes", "Limit bytes"),
+                (
+                    (
+                        skipped.path,
+                        skipped.reason,
+                        skipped.size_bytes if skipped.size_bytes is not None else "-",
+                        skipped.limit_bytes if skipped.limit_bytes is not None else "-",
+                    )
+                    for skipped in skipped_files
+                ),
+            )
 
         by_severity = Counter(self._severity_value(r) for r in records)
         by_category = Counter(r.category for r in records)
@@ -125,16 +186,35 @@ class ReportWriter:
             (r.rule_id, r.title, self._severity_value(r)) for r in records
         )
         by_directory = Counter(self._directory_bucket(r) for r in records)
+        risk_score = self._risk_score(records)
+        risk_rating = self._risk_rating(risk_score)
+        risk_recommendation = self._risk_recommendation(risk_rating)
+        critical_high_count = by_severity.get(
+            Severity.CRITICAL.value, 0
+        ) + by_severity.get(Severity.HIGH.value, 0)
 
         lines.append("## 2. エグゼクティブサマリ")
+        lines.append("")
+        lines.append("### 2.1 総合評価")
+        lines.append("")
+        self._append_table(
+            lines,
+            ("Risk Score", "Rating", "Critical / High", "Total Findings"),
+            ((f"{risk_score}/100", risk_rating, critical_high_count, len(records)),),
+        )
+        lines.append(f"**推奨対応:** {risk_recommendation}")
+        lines.append("")
+        lines.append(
+            "> スコアは深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を合計し、100点を上限にした簡易指標です。"
+        )
+        lines.append("")
+
+        lines.append("### 2.2 要約")
         lines.append("")
         if not records:
             lines.append("該当するリスクはありませんでした。")
             lines.append("")
         else:
-            critical_high_count = by_severity.get(
-                Severity.CRITICAL.value, 0
-            ) + by_severity.get(Severity.HIGH.value, 0)
             lines.append(
                 f"Critical / High が **{critical_high_count}件** 検出されています。"
                 "まずは下記の「対応優先リスク」と、件数の多いルールを確認してください。"
@@ -293,6 +373,7 @@ class ReportWriter:
         records: Sequence[RiskRecord],
         errors: Sequence[Tuple[str, str]],
         generated_at: datetime,
+        skipped_files: Sequence[SkippedFile] = (),
     ) -> Path:
         """`OUTPUT_DIR`（解決済みパス）に Markdown を書き出し、保存パスを返す。"""
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -300,7 +381,9 @@ class ReportWriter:
         base = f"report_{stamp}"
         md_path = self._output_dir / f"{base}.md"
 
-        md_body = self.build_markdown(target, records, errors, generated_at)
+        md_body = self.build_markdown(
+            target, records, errors, generated_at, skipped_files
+        )
         md_path.write_text(md_body, encoding="utf-8")
 
         return md_path

@@ -37,6 +37,11 @@ def test_report_writer_builds_summary_priority_details_and_errors(tmp_path):
     assert "# OSS Security Risk Report" in markdown
     assert "- **検知件数:** 2" in markdown
     assert "- **ルール実行エラー件数:** 1" in markdown
+    assert "### 2.1 総合評価" in markdown
+    assert "| Risk Score | Rating | Critical / High | Total Findings |" in markdown
+    assert "| 14/100 | Low | 1 | 2 |" in markdown
+    assert "**推奨対応:** 重大な検知は限定的です。" in markdown
+    assert "Critical=10, High=7, Medium=4, Low=1, Info=0" in markdown
     assert "Critical / High が **1件**" in markdown
     assert "| Severity | Count |" in markdown
     assert "| Critical | 1 |" in markdown
@@ -62,6 +67,30 @@ def test_report_writer_reports_no_findings(tmp_path):
     )
 
     assert "- **検知件数:** 0" in markdown
+    assert "| 0/100 | No findings | 0 | 0 |" in markdown
+    assert "今回のルールセットでは検知されませんでした。" in markdown
     assert "該当するリスクはありませんでした。" in markdown
     assert "Critical / High の検知はありません。" in markdown
     assert "## 6. ルール実行エラー" not in markdown
+
+
+def test_report_writer_caps_overall_risk_score_at_100(tmp_path):
+    records = [
+        RiskRecord(
+            rule_id=f"F-{index}",
+            category="secrets",
+            title="Critical Finding",
+            severity=Severity.CRITICAL,
+        )
+        for index in range(11)
+    ]
+
+    markdown = ReportWriter(tmp_path).build_markdown(
+        tmp_path,
+        records=records,
+        errors=(),
+        generated_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+    )
+
+    assert "| 100/100 | Critical | 11 | 11 |" in markdown
+    assert "公開・リリース前に即時対応が必要です。" in markdown

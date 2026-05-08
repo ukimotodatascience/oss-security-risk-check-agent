@@ -257,17 +257,50 @@ def severity_label(severity: str) -> str:
     return f"{icons.get(severity, '⚪')} {severity}"
 
 
+def render_overall_risk(records: Sequence[RiskRecord]) -> None:
+    """Markdown レポートと同じ基準で総合リスク評価を表示する。"""
+
+    risk_score = ReportWriter._risk_score(records)
+    risk_rating = ReportWriter._risk_rating(risk_score)
+    risk_recommendation = ReportWriter._risk_recommendation(risk_rating)
+    counts = severity_counts(records)
+    critical_high_count = counts.get(Severity.CRITICAL.value, 0) + counts.get(
+        Severity.HIGH.value, 0
+    )
+
+    with st.container(border=True):
+        st.subheader("🧭 総合リスク評価")
+        score_col, rating_col, priority_col, total_col = st.columns(4)
+        score_col.metric("Risk Score", f"{risk_score}/100")
+        rating_col.metric("Rating", risk_rating)
+        priority_col.metric("Critical / High", f"{critical_high_count:,}")
+        total_col.metric("Total Findings", f"{len(records):,}")
+
+        st.info(f"推奨対応: {risk_recommendation}")
+        st.caption(
+            "スコアは深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を合計し、100点を上限にした簡易指標です。"
+        )
+
+
 def render_result(result: ScanResult, report_text: str) -> None:
     """保存済みのスキャン結果を画面に描画する。"""
 
     st.toast("スキャンが完了しました。", icon="✅")
     st.success("スキャンが完了しました。結果を確認できます。")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("検知件数", f"{len(result.records):,}")
     col2.metric("ルール実行エラー", f"{len(result.errors):,}")
     col3.metric("読み込みルール数", f"{result.loaded_rule_count:,}")
     col4.metric("実行ルール数", f"{result.executed_rule_count:,}")
+    col5.metric("スキップ", f"{len(result.skipped_files):,}")
+
+    if result.skipped_files:
+        st.warning(
+            f"単一ファイルサイズ上限を超えた {len(result.skipped_files):,} 件のファイルをスキップしました。詳細は下の一覧とMarkdownレポートに含まれます。"
+        )
+
+    render_overall_risk(result.records)
 
     with st.container(border=True):
         st.subheader("📌 実行情報")
@@ -352,6 +385,22 @@ def render_result(result: ScanResult, report_text: str) -> None:
         with st.expander("⚠️ ルール実行エラー"):
             for rule_id, traceback_text in result.errors:
                 st.code(f"[{rule_id}]\n{traceback_text}")
+
+    if result.skipped_files:
+        with st.expander("⏭️ スキップしたファイル", expanded=True):
+            st.dataframe(
+                [
+                    {
+                        "Path": skipped.path,
+                        "Reason": skipped.reason,
+                        "Size bytes": skipped.size_bytes,
+                        "Limit bytes": skipped.limit_bytes,
+                    }
+                    for skipped in result.skipped_files
+                ],
+                width="stretch",
+                hide_index=True,
+            )
 
 
 def main() -> None:

@@ -4,7 +4,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from src.targets.models import ScanTargetSpec
+from src.targets.models import ScanTargetSpec, SkippedFile
 from src.targets.safe_extract import safe_extract_zip
 from src.targets.url_validator import parse_github_repo_url
 
@@ -28,9 +28,12 @@ class ArchiveSnapshotFetcher:
         self._max_files = max_files
         self._max_single_file_bytes = max_single_file_bytes
         self._timeout_sec = timeout_sec
+        self.skipped_files: tuple[SkippedFile, ...] = ()
 
     def fetch(self, spec: ScanTargetSpec, work_dir: Path) -> Path:
         """remote archive target を一時作業ディレクトリへ取得・展開する。"""
+
+        self.skipped_files = ()
 
         if not spec.repo_url:
             raise ValueError("TARGET_REPO_URL が指定されていません。")
@@ -45,13 +48,14 @@ class ArchiveSnapshotFetcher:
         archive_path = work_dir / "source.zip"
         self._download_limited(archive_url, archive_path)
 
-        extracted_root = safe_extract_zip(
+        extracted_root, skipped_files = safe_extract_zip(
             archive_path,
             work_dir / "source",
             max_files=self._max_files,
             max_total_size=self._max_extracted_bytes,
             max_single_file_size=self._max_single_file_bytes,
         )
+        self.skipped_files = skipped_files
 
         if spec.subdir:
             subdir = (extracted_root / spec.subdir).resolve()

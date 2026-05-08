@@ -190,11 +190,13 @@ CI では Python 3.11 を使い、`requirements.txt` と `requirements-dev.txt` 
 レポートは Markdown 形式で出力され、主に次を含みます。
 
 - 実行情報（対象ディレクトリ、生成日時、検知件数、ルール実行エラー件数）
-- エグゼクティブサマリ（Critical / High の件数と確認優先度）
+- エグゼクティブサマリ（総合リスクスコア、Rating、Critical / High の件数と確認優先度）
 - 集計（深刻度別、カテゴリ別、ルール別 Top 10、ディレクトリ別 Top 10）
 - 対応優先リスク（Critical / High の上位検知を表形式で表示）
 - 詳細検知一覧（深刻度 → ルール単位にグルーピングした表形式の一覧）
 - ルール実行エラー（発生時）
+
+総合リスクスコアは、深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を検知件数に応じて合計し、100点を上限にした簡易指標です。Rating はスコア帯に応じて `Critical` / `High` / `Medium` / `Low` / `No findings` として表示されます。
 
 ## ディレクトリ構成
 

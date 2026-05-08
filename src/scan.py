@@ -13,7 +13,12 @@ from src.models import RiskRecord
 from src.reporting import ReportWriter
 from src.rule_engine import load_all_rules, run_all
 from src.targets.archive_fetcher import ArchiveSnapshotFetcher
-from src.targets.models import RemoteFetchLimits, ResolvedTarget, ScanTargetSpec
+from src.targets.models import (
+    RemoteFetchLimits,
+    ResolvedTarget,
+    ScanTargetSpec,
+    SkippedFile,
+)
 from src.targets.resolver import TargetResolver
 
 
@@ -57,6 +62,7 @@ class ScanResult:
     executed_rule_count: int
     records: Sequence[RiskRecord]
     errors: Sequence[Tuple[str, str]]
+    skipped_files: Sequence[SkippedFile]
 
 
 class SecurityScan:
@@ -109,12 +115,20 @@ class SecurityScan:
 
             report_writer = ReportWriter(output_dir or self._project_root)
             report_markdown = report_writer.build_markdown(
-                resolved.scan_path, records, errors, generated_at
+                resolved.scan_path,
+                records,
+                errors,
+                generated_at,
+                resolved.skipped_files,
             )
             report_path = None
             if self._persist_report and output_dir is not None:
                 report_path = ReportWriter(output_dir).write(
-                    resolved.scan_path, records, errors, generated_at
+                    resolved.scan_path,
+                    records,
+                    errors,
+                    generated_at,
+                    resolved.skipped_files,
                 )
             result = ScanResult(
                 target=resolved,
@@ -126,6 +140,7 @@ class SecurityScan:
                 executed_rule_count=executed_count,
                 records=records,
                 errors=errors,
+                skipped_files=resolved.skipped_files,
             )
 
             self._print_result(result)
@@ -140,6 +155,10 @@ class SecurityScan:
         print(f"読み込みルール数: {result.loaded_rule_count}")
         print(f"実行ルール数: {result.executed_rule_count}")
         print(f"検知件数: {len(result.records)}")
+        if result.skipped_files:
+            print(f"スキップしたファイル数: {len(result.skipped_files)}")
+            for skipped in result.skipped_files:
+                print(f"  - {skipped.path}: {skipped.reason}")
         if result.errors:
             print(f"失敗したルール数: {len(result.errors)}", file=sys.stderr)
         print(f"レポート: {result.report_path or '(メモリ上で生成)'}")
