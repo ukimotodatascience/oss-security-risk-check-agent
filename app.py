@@ -271,14 +271,15 @@ def render_overall_risk(records: Sequence[RiskRecord]) -> None:
     with st.container(border=True):
         st.subheader("🧭 総合リスク評価")
         score_col, rating_col, priority_col, total_col = st.columns(4)
-        score_col.metric("Risk Score", f"{risk_score}/100")
+        score_col.metric("Risk Score", f"{risk_score}/{ReportWriter.MAX_RISK_SCORE}")
         rating_col.metric("Rating", risk_rating)
         priority_col.metric("Critical / High", f"{critical_high_count:,}")
         total_col.metric("Total Findings", f"{len(records):,}")
 
         st.info(f"推奨対応: {risk_recommendation}")
         st.caption(
-            "スコアは深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を合計し、100点を上限にした簡易指標です。"
+            "スコアは深刻度ごとのユニーク rule_id 数 × 重み（Critical=12, High=8, Medium=4, Low=1, Info=0）を基本に、"
+            "同一 rule_id の重複検知に対して対数加点（Severity 係数付き）を加え、1000点を上限にした指標です。"
         )
 
 

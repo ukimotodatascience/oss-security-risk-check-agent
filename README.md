@@ -196,7 +196,7 @@ CI では Python 3.11 を使い、`requirements.txt` と `requirements-dev.txt` 
 - 詳細検知一覧（深刻度 → ルール単位にグルーピングした表形式の一覧）
 - ルール実行エラー（発生時）
 
-総合リスクスコアは、深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を検知件数に応じて合計し、100点を上限にした簡易指標です。Rating はスコア帯に応じて `Critical` / `High` / `Medium` / `Low` / `No findings` として表示されます。
+総合リスクスコアは、深刻度ごとのユニーク `rule_id` 数に重み（Critical=12, High=8, Medium=4, Low=1, Info=0）を掛けた値をベースに、同一 `rule_id` の重複検知に対する対数加点（Severity 係数付き）を加算し、1000点を上限にした指標です。Rating はスコア帯に応じて `Critical` / `High` / `Medium` / `Low` / `No findings` として表示されます。
 
 ## ディレクトリ構成
 

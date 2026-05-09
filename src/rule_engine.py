@@ -6,7 +6,7 @@ import importlib
 import inspect
 import traceback
 from pathlib import Path
-from typing import Any, List, Sequence, Tuple
+from typing import Any, Callable, List, Sequence, Tuple
 
 from src.models import RiskRecord
 
@@ -46,7 +46,9 @@ def load_all_rules(project_root: Path) -> List[Any]:
 
 
 def run_all(
-    target: Path, rules: Sequence[Any]
+    target: Path,
+    rules: Sequence[Any],
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> Tuple[List[RiskRecord], List[Tuple[str, str]], int]:
     """各ルールを1つずつ実行し、検知結果・失敗情報・実行数を返す。"""
     records: List[RiskRecord] = []
@@ -64,10 +66,16 @@ def run_all(
         except Exception:
             errors.append((rule_id, traceback.format_exc()))
 
-    for rule in sorted(
+    sorted_rules = sorted(
         rules,
         key=lambda rule: _rule_sort_key(getattr(rule, "rule_id", type(rule).__name__)),
-    ):
+    )
+    total = len(sorted_rules)
+
+    for index, rule in enumerate(sorted_rules, start=1):
+        if progress_callback is not None:
+            rule_id = getattr(rule, "rule_id", type(rule).__name__)
+            progress_callback(index, total, rule_id)
         run(rule)
 
     return records, errors, executed_count

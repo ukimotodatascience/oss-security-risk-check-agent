@@ -69,7 +69,9 @@ def fake_load_all_rules(root: Path) -> list[FakeRule]:
 
 
 def fake_run_all_empty(
-    target: Path, rules: Sequence[Any]
+    target: Path,
+    rules: Sequence[Any],
+    progress_callback: Any = None,
 ) -> tuple[list[RiskRecord], list[tuple[str, str]], int]:
     return [], [], len(rules)
 
@@ -88,8 +90,12 @@ def test_security_scan_run_returns_result_without_persisting_report(tmp_path, ca
     )
 
     def fake_run_all(
-        target: Path, rules: Sequence[Any]
+        target: Path,
+        rules: Sequence[Any],
+        progress_callback: Any = None,
     ) -> tuple[list[RiskRecord], list[tuple[str, str]], int]:
+        if progress_callback is not None:
+            progress_callback(1, len(rules), "X-1")
         return [record], [("Z-9", "traceback")], len(rules)
 
     result = scan_module.SecurityScan(
@@ -110,6 +116,9 @@ def test_security_scan_run_returns_result_without_persisting_report(tmp_path, ca
     assert "# OSS Security Risk Report" in result.report_markdown
 
     printed = capsys.readouterr()
+    assert "[1/5] 設定を読み込んでいます" in printed.out
+    assert "[4/5] ルールを実行しています" in printed.out
+    assert "ルール実行中" in printed.out
     assert "対象: dummy-target" in printed.out
     assert "失敗したルール数: 1" in printed.err
 

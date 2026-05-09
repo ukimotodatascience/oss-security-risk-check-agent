@@ -45,7 +45,12 @@ ConfigFactory = Callable[[Path, ConfigOverrides | None], ScanConfigLike]
 TargetResolverFactory = Callable[[Any], TargetResolverLike]
 RuleLoader = Callable[[Path], Sequence[Any]]
 RuleRunner = Callable[
-    [Path, Sequence[Any]], Tuple[Sequence[RiskRecord], Sequence[Tuple[str, str]], int]
+    [
+        Path,
+        Sequence[Any],
+        Callable[[int, int, str], None] | None,
+    ],
+    Tuple[Sequence[RiskRecord], Sequence[Tuple[str, str]], int],
 ]
 
 
@@ -87,11 +92,13 @@ class SecurityScan:
         self._rule_runner = rule_runner or run_all
 
     def run(self) -> ScanResult:
+        self._print_progress_step(1, 5, "設定を読み込んでいます")
         config = self._config_factory(self._project_root, self._config_overrides())
         target_spec = config.resolve_target_spec()
         output_dir = config.resolve_output_dir() if self._persist_report else None
         limits = config.resolve_remote_fetch_limits()
 
+        self._print_progress_step(2, 5, "スキャン対象を解決しています")
         fetcher = ArchiveSnapshotFetcher(
             max_download_bytes=limits.max_download_bytes,
             max_extracted_bytes=limits.max_extracted_bytes,
@@ -101,6 +108,7 @@ class SecurityScan:
         )
         resolver = self._target_resolver_factory(fetcher)
 
+        self._print_progress_step(3, 5, "ルールを読み込んでいます")
         rules = self._rule_loader(self._project_root)
         if not rules:
             raise SystemExit(
@@ -109,10 +117,14 @@ class SecurityScan:
 
         generated_at = datetime.now(timezone.utc)
         with resolver.resolve(target_spec) as resolved:
+            self._print_progress_step(4, 5, "ルールを実行しています")
             records, errors, executed_count = self._rule_runner(
-                resolved.scan_path, rules
+                resolved.scan_path,
+                rules,
+                self._print_rule_progress,
             )
 
+            self._print_progress_step(5, 5, "レポートを生成しています")
             report_writer = ReportWriter(output_dir or self._project_root)
             report_markdown = report_writer.build_markdown(
                 resolved.scan_path,
@@ -145,6 +157,14 @@ class SecurityScan:
 
             self._print_result(result)
             return result
+
+    @staticmethod
+    def _print_progress_step(current: int, total: int, message: str) -> None:
+        print(f"[{current}/{total}] {message}")
+
+    @staticmethod
+    def _print_rule_progress(current: int, total: int, rule_id: str) -> None:
+        print(f"    - ルール実行中 [{current:>3}/{total}] {rule_id}")
 
     @staticmethod
     def _print_result(result: ScanResult) -> None:

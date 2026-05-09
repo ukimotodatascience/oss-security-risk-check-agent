@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
@@ -16,12 +17,20 @@ class ReportWriter:
 
     SUMMARY_LIMIT = 10
     PRIORITY_FINDINGS_LIMIT = 20
+    MAX_RISK_SCORE = 1000
     SEVERITY_SCORE = {
-        Severity.CRITICAL.value: 10,
-        Severity.HIGH.value: 7,
+        Severity.CRITICAL.value: 12,
+        Severity.HIGH.value: 8,
         Severity.MEDIUM.value: 4,
         Severity.LOW.value: 1,
         Severity.INFO.value: 0,
+    }
+    REPEAT_ALPHA = {
+        Severity.CRITICAL.value: 2.0,
+        Severity.HIGH.value: 1.5,
+        Severity.MEDIUM.value: 1.0,
+        Severity.LOW.value: 0.5,
+        Severity.INFO.value: 0.0,
     }
 
     def __init__(self, output_dir: Path) -> None:
@@ -108,18 +117,41 @@ class ReportWriter:
 
     @classmethod
     def _risk_score(cls, records: Sequence[RiskRecord]) -> int:
-        raw_score = sum(
-            cls.SEVERITY_SCORE.get(cls._severity_value(record), 0) for record in records
+        # Base: severity ごとのユニーク rule_id 数に重みを掛ける
+        unique_rules_by_severity: dict[str, set[str]] = defaultdict(set)
+        for record in records:
+            sev = cls._severity_value(record)
+            unique_rules_by_severity[sev].add(record.rule_id)
+
+        base_score = sum(
+            cls.SEVERITY_SCORE.get(sev, 0) * len(rule_ids)
+            for sev, rule_ids in unique_rules_by_severity.items()
         )
-        return min(100, raw_score)
+
+        # Repeat: 同一ルールの大量検知を対数で緩やかに加点
+        by_rule = Counter(r.rule_id for r in records)
+        severity_by_rule: dict[str, str] = {}
+        for record in records:
+            severity_by_rule.setdefault(record.rule_id, cls._severity_value(record))
+
+        repeat_score = 0.0
+        for rule_id, count in by_rule.items():
+            extra_count = max(0, count - 1)
+            if extra_count == 0:
+                continue
+            sev = severity_by_rule.get(rule_id, Severity.INFO.value)
+            alpha = cls.REPEAT_ALPHA.get(sev, 0.0)
+            repeat_score += alpha * math.log2(1 + extra_count)
+
+        return min(cls.MAX_RISK_SCORE, int(round(base_score + repeat_score)))
 
     @staticmethod
     def _risk_rating(score: int) -> str:
-        if score >= 80:
+        if score >= 800:
             return "Critical"
-        if score >= 50:
+        if score >= 500:
             return "High"
-        if score >= 20:
+        if score >= 200:
             return "Medium"
         if score > 0:
             return "Low"
@@ -200,12 +232,20 @@ class ReportWriter:
         self._append_table(
             lines,
             ("Risk Score", "Rating", "Critical / High", "Total Findings"),
-            ((f"{risk_score}/100", risk_rating, critical_high_count, len(records)),),
+            (
+                (
+                    f"{risk_score}/{self.MAX_RISK_SCORE}",
+                    risk_rating,
+                    critical_high_count,
+                    len(records),
+                ),
+            ),
         )
         lines.append(f"**推奨対応:** {risk_recommendation}")
         lines.append("")
         lines.append(
-            "> スコアは深刻度ごとの重み（Critical=10, High=7, Medium=4, Low=1, Info=0）を合計し、100点を上限にした簡易指標です。"
+            "> スコアは「深刻度ごとのユニーク rule_id 数 × 重み（Critical=12, High=8, Medium=4, Low=1, Info=0）」を基本に、"
+            "同一 rule_id の重複検知に対して対数加点（Severity 係数付き）を加え、1000点を上限にした指標です。"
         )
         lines.append("")
 
