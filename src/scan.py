@@ -52,6 +52,7 @@ RuleRunner = Callable[
     ],
     Tuple[Sequence[RiskRecord], Sequence[Tuple[str, str]], int],
 ]
+StepProgressCallback = Callable[[int, int, str], None]
 
 
 @dataclass(frozen=True)
@@ -73,11 +74,14 @@ class ScanResult:
 class SecurityScan:
     """ローカルまたは remote archive の対象を診断し、結果を出力する。"""
 
+    _PROGRESS_BAR_WIDTH = 24
+
     def __init__(
         self,
         project_root: Path,
         cli_options: CliOptionsLike | None = None,
         persist_report: bool = True,
+        step_progress_callback: StepProgressCallback | None = None,
         config_factory: ConfigFactory | None = None,
         target_resolver_factory: TargetResolverFactory | None = None,
         rule_loader: RuleLoader | None = None,
@@ -86,19 +90,20 @@ class SecurityScan:
         self._project_root = project_root
         self._cli_options = cli_options
         self._persist_report = persist_report
+        self._step_progress_callback = step_progress_callback
         self._config_factory = config_factory or ScanConfig
         self._target_resolver_factory = target_resolver_factory or TargetResolver
         self._rule_loader = rule_loader or load_all_rules
         self._rule_runner = rule_runner or run_all
 
     def run(self) -> ScanResult:
-        self._print_progress_step(1, 5, "設定を読み込んでいます")
+        self._notify_step_progress(1, 5, "設定を読み込んでいます")
         config = self._config_factory(self._project_root, self._config_overrides())
         target_spec = config.resolve_target_spec()
         output_dir = config.resolve_output_dir() if self._persist_report else None
         limits = config.resolve_remote_fetch_limits()
 
-        self._print_progress_step(2, 5, "スキャン対象を解決しています")
+        self._notify_step_progress(2, 5, "スキャン対象を解決しています")
         fetcher = ArchiveSnapshotFetcher(
             max_download_bytes=limits.max_download_bytes,
             max_extracted_bytes=limits.max_extracted_bytes,
@@ -108,7 +113,7 @@ class SecurityScan:
         )
         resolver = self._target_resolver_factory(fetcher)
 
-        self._print_progress_step(3, 5, "ルールを読み込んでいます")
+        self._notify_step_progress(3, 5, "ルールを読み込んでいます")
         rules = self._rule_loader(self._project_root)
         if not rules:
             raise SystemExit(
@@ -117,14 +122,14 @@ class SecurityScan:
 
         generated_at = datetime.now(timezone.utc)
         with resolver.resolve(target_spec) as resolved:
-            self._print_progress_step(4, 5, "ルールを実行しています")
+            self._notify_step_progress(4, 5, "ルールを実行しています")
             records, errors, executed_count = self._rule_runner(
                 resolved.scan_path,
                 rules,
                 self._print_rule_progress,
             )
 
-            self._print_progress_step(5, 5, "レポートを生成しています")
+            self._notify_step_progress(5, 5, "レポートを生成しています")
             report_writer = ReportWriter(output_dir or self._project_root)
             report_markdown = report_writer.build_markdown(
                 resolved.scan_path,
@@ -160,11 +165,39 @@ class SecurityScan:
 
     @staticmethod
     def _print_progress_step(current: int, total: int, message: str) -> None:
-        print(f"[{current}/{total}] {message}")
+        bar = SecurityScan._format_progress_bar(current, total)
+        percent = SecurityScan._format_percent(current, total)
+        print(f"[{current}/{total}] {bar} {percent} {message}")
+
+    def _notify_step_progress(self, current: int, total: int, message: str) -> None:
+        self._print_progress_step(current, total, message)
+        if self._step_progress_callback is not None:
+            self._step_progress_callback(current, total, message)
 
     @staticmethod
     def _print_rule_progress(current: int, total: int, rule_id: str) -> None:
-        print(f"    - ルール実行中 [{current:>3}/{total}] {rule_id}")
+        bar = SecurityScan._format_progress_bar(current, total)
+        percent = SecurityScan._format_percent(current, total)
+        print(f"    - ルール実行中 [{current:>3}/{total}] {bar} {percent} {rule_id}")
+
+    @classmethod
+    def _format_progress_bar(cls, current: int, total: int) -> str:
+        if total <= 0:
+            return "[------------------------]"
+
+        bounded_current = min(max(current, 0), total)
+        filled = int((bounded_current / total) * cls._PROGRESS_BAR_WIDTH)
+        if bounded_current == total:
+            filled = cls._PROGRESS_BAR_WIDTH
+        empty = cls._PROGRESS_BAR_WIDTH - filled
+        return f"[{'#' * filled}{'-' * empty}]"
+
+    @staticmethod
+    def _format_percent(current: int, total: int) -> str:
+        if total <= 0:
+            return "  0%"
+        bounded_current = min(max(current, 0), total)
+        return f"{int((bounded_current / total) * 100):>3}%"
 
     @staticmethod
     def _print_result(result: ScanResult) -> None:

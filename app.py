@@ -463,10 +463,25 @@ def main() -> None:
     )
 
     try:
+        progress_box = st.container()
+        progress_label = progress_box.empty()
+        progress_bar = progress_box.progress(0)
+
+        def on_step_progress(current: int, total: int, message: str) -> None:
+            total_steps = total if total > 0 else 1
+            ratio = max(0.0, min(1.0, current / total_steps))
+            progress_bar.progress(ratio)
+            progress_label.caption(f"進捗 [{current}/{total}] {message}")
+
         with st.spinner("リポジトリ snapshot を取得し、ルールを実行しています..."):
             result = SecurityScan(
-                project_root(), cli_options=options, persist_report=False
+                project_root(),
+                cli_options=options,
+                persist_report=False,
+                step_progress_callback=on_step_progress,
             ).run()
+        progress_bar.progress(1.0)
+        progress_label.caption("進捗 [5/5] 完了")
     except SystemExit as exc:
         st.error(str(exc))
         return

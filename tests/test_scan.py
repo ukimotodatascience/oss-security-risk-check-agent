@@ -116,9 +116,13 @@ def test_security_scan_run_returns_result_without_persisting_report(tmp_path, ca
     assert "# OSS Security Risk Report" in result.report_markdown
 
     printed = capsys.readouterr()
-    assert "[1/5] 設定を読み込んでいます" in printed.out
-    assert "[4/5] ルールを実行しています" in printed.out
+    assert "[1/5]" in printed.out
+    assert "設定を読み込んでいます" in printed.out
+    assert "[4/5]" in printed.out
+    assert "ルールを実行しています" in printed.out
     assert "ルール実行中" in printed.out
+    assert "#" in printed.out
+    assert "%" in printed.out
     assert "対象: dummy-target" in printed.out
     assert "失敗したルール数: 1" in printed.err
 
