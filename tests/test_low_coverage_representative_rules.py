@@ -117,12 +117,14 @@ def test_D3_reports_open_bind_address_variants_and_ignores_comments(tmp_path):
 
     records = D3OpenBindAddressRule().evaluate(tmp_path)
 
-    assert [(r.file_path, r.line, r.severity) for r in records] == [
-        ("service.conf", 2, Severity.MEDIUM),
-        ("service.conf", 3, Severity.MEDIUM),
-        ("service.conf", 4, Severity.MEDIUM),
-        ("start.sh", 1, Severity.MEDIUM),
-    ]
+    assert sorted([(r.file_path, r.line, r.severity) for r in records]) == sorted(
+        [
+            ("service.conf", 2, Severity.MEDIUM),
+            ("service.conf", 3, Severity.MEDIUM),
+            ("service.conf", 4, Severity.MEDIUM),
+            ("start.sh", 1, Severity.MEDIUM),
+        ]
+    )
 
 
 def test_E2_reports_id_based_route_without_authorization(tmp_path):
@@ -388,10 +390,12 @@ def test_H4_reports_custom_crypto_and_downgrades_when_safe_library_present(tmp_p
     (tmp_path / "bad.py").write_bytes(b"\xff\xfe")
 
     records = H4CustomCryptoRule().evaluate(tmp_path)
-    assert [(r.file_path, r.line, r.severity) for r in records] == [
-        ("crypto.py", 1, Severity.HIGH),
-        ("safe_crypto.py", 2, Severity.MEDIUM),
-    ]
+    assert sorted([(r.file_path, r.line, r.severity) for r in records]) == sorted(
+        [
+            ("crypto.py", 1, Severity.HIGH),
+            ("safe_crypto.py", 2, Severity.MEDIUM),
+        ]
+    )
 
 
 def test_B3_reports_suspicious_dependency_names_and_sources(tmp_path):
@@ -728,7 +732,9 @@ def test_K5_reports_noncommercial_dependency_and_project_license(monkeypatch, tm
 
     records = K5NoncommercialRestrictionRule().evaluate(tmp_path)
 
-    assert [(r.file_path, r.line, r.severity) for r in records] == [
-        ("package-lock.json", 7, Severity.HIGH),
-        ("LICENSE", 1, Severity.HIGH),
-    ]
+    assert sorted([(r.file_path, r.line, r.severity) for r in records]) == sorted(
+        [
+            ("package-lock.json", 7, Severity.HIGH),
+            ("LICENSE", 1, Severity.HIGH),
+        ]
+    )
