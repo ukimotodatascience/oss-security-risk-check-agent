@@ -36,6 +36,8 @@ class ScanConfigLike(Protocol):
 
     def resolve_remote_fetch_limits(self) -> RemoteFetchLimits: ...
 
+    def resolve_github_token(self) -> str | None: ...
+
 
 class TargetResolverLike(Protocol):
     def resolve(self, spec: ScanTargetSpec) -> ContextManager[ResolvedTarget]: ...
@@ -110,6 +112,7 @@ class SecurityScan:
             max_files=limits.max_files,
             max_single_file_bytes=limits.max_single_file_bytes,
             timeout_sec=limits.timeout_sec,
+            github_token=config.resolve_github_token(),
         )
         resolver = self._target_resolver_factory(fetcher)
 

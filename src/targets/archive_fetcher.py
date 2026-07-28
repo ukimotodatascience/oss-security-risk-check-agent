@@ -22,12 +22,14 @@ class ArchiveSnapshotFetcher:
         max_files: int,
         max_single_file_bytes: int,
         timeout_sec: int,
+        github_token: str | None = None,
     ) -> None:
         self._max_download_bytes = max_download_bytes
         self._max_extracted_bytes = max_extracted_bytes
         self._max_files = max_files
         self._max_single_file_bytes = max_single_file_bytes
         self._timeout_sec = timeout_sec
+        self._github_token = github_token
         self.skipped_files: tuple[SkippedFile, ...] = ()
 
     def fetch(self, spec: ScanTargetSpec, work_dir: Path) -> Path:
@@ -69,9 +71,12 @@ class ArchiveSnapshotFetcher:
         return extracted_root
 
     def _download_limited(self, url: str, dest: Path) -> None:
+        headers = {"User-Agent": self.USER_AGENT}
+        if self._github_token:
+            headers["Authorization"] = f"Bearer {self._github_token}"
         request = urllib.request.Request(
             url,
-            headers={"User-Agent": self.USER_AGENT},
+            headers=headers,
             method="GET",
         )
 

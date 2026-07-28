@@ -202,3 +202,44 @@ def test_archive_fetcher_wraps_url_errors(tmp_path, monkeypatch):
         make_fetcher()._download_limited(
             "https://example.com/source.zip", tmp_path / "source.zip"
         )
+
+
+def test_archive_fetcher_includes_auth_header_when_token_provided(
+    tmp_path, monkeypatch
+):
+    from src.targets import archive_fetcher as archive_module
+
+    payload = build_zip({"repo-main/README.md": "hello"})
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["user_agent"] = request.headers["User-agent"]
+        captured["auth"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(archive_module.urllib.request, "urlopen", fake_urlopen)
+
+    spec = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="main",
+    )
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=1024 * 1024,
+        max_extracted_bytes=1024 * 1024,
+        max_files=20,
+        max_single_file_bytes=1024,
+        timeout_sec=7,
+        github_token="secret_token",
+    )
+    fetcher.fetch(spec, tmp_path)
+
+    assert captured == {
+        "url": "https://api.github.com/repos/owner/repo/zipball/main",
+        "user_agent": "oss-security-risk-check-agent",
+        "auth": "Bearer secret_token",
+        "timeout": 7,
+    }

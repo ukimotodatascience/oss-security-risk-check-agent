@@ -56,3 +56,18 @@ def test_env_target_dir_still_works_without_cli_override(tmp_path, monkeypatch):
 
     assert spec.source_type == "local"
     assert spec.local_dir == local_target.resolve()
+
+
+def test_resolve_github_token_prioritizes_github_token_then_gh_token(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GITHUB_TOKEN", "gt_val")
+    monkeypatch.setenv("GH_TOKEN", "gh_val")
+    config = ScanConfig(tmp_path)
+    assert config.resolve_github_token() == "gt_val"
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert config.resolve_github_token() == "gh_val"
+
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert config.resolve_github_token() is None
