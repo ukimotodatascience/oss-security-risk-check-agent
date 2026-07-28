@@ -34,3 +34,23 @@ def test_parse_github_repo_url_strips_dot_git_suffix():
 def test_parse_github_repo_url_rejects_unsafe_or_unsupported_urls(url):
     with pytest.raises(ValueError):
         parse_github_repo_url(url)
+
+
+@pytest.mark.parametrize(
+    "url,expected_owner,expected_repo",
+    [
+        ("https://github.com/owner/repo/", "owner", "repo"),
+        ("https://github.com/owner/repo/tree/main", "owner", "repo"),
+        ("https://github.com/owner/repo/blob/main/README.md", "owner", "repo"),
+        ("https://github.com/owner/repo?tab=readme-ov-file", "owner", "repo"),
+        ("https://github.com/owner/repo#readme", "owner", "repo"),
+        ("git@github.com:owner/repo.git", "owner", "repo"),
+        ("git@github.com:owner/repo", "owner", "repo"),
+    ],
+)
+def test_parse_github_repo_url_accepts_flexible_formats(
+    url, expected_owner, expected_repo
+):
+    repo = parse_github_repo_url(url)
+    assert repo.owner == expected_owner
+    assert repo.repo == expected_repo

@@ -15,17 +15,29 @@ class GitHubRepoRef:
 
 
 def parse_github_repo_url(raw_url: str) -> GitHubRepoRef:
-    """GitHub の HTTPS repository URL を owner/repo に正規化する。"""
+    """GitHub の HTTPS または SSH repository URL から owner/repo を抽出して正規化する。"""
+    url = raw_url.strip()
 
-    parsed = urlparse(raw_url.strip())
-    if parsed.scheme != "https":
-        raise ValueError("TARGET_REPO_URL は https:// の GitHub URL のみ許可します。")
-    if parsed.hostname != "github.com":
-        raise ValueError("TARGET_REPO_URL は github.com の URL のみ対応しています。")
-    if parsed.username or parsed.password or parsed.port:
-        raise ValueError("TARGET_REPO_URL に認証情報やポート番号は含められません。")
+    # SSH 形式 (git@github.com:owner/repo.git) のハンドリング
+    if url.startswith("git@github.com:"):
+        path_part = url[len("git@github.com:") :]
+        path_part = path_part.split("?")[0].split("#")[0]
+        parts = [p for p in path_part.strip("/").split("/") if p]
+    else:
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            raise ValueError(
+                "TARGET_REPO_URL は https:// の GitHub URL のみ許可します。"
+            )
+        if parsed.hostname != "github.com":
+            raise ValueError(
+                "TARGET_REPO_URL は github.com の URL のみ対応しています。"
+            )
+        if parsed.username or parsed.password or parsed.port:
+            raise ValueError("TARGET_REPO_URL に認証情報やポート番号は含められません。")
 
-    parts = [p for p in parsed.path.strip("/").split("/") if p]
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+
     if len(parts) < 2:
         raise ValueError(
             "GitHub URL は https://github.com/{owner}/{repo} 形式で指定してください。"
