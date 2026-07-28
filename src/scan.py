@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,8 @@ from src.targets.models import (
 )
 from src.targets.resolver import TargetResolver
 
+logger = logging.getLogger(__name__)
+
 
 class CliOptionsLike(Protocol):
     target_url: str | None
@@ -37,6 +40,10 @@ class ScanConfigLike(Protocol):
     def resolve_remote_fetch_limits(self) -> RemoteFetchLimits: ...
 
     def resolve_github_token(self) -> str | None: ...
+
+    def resolve_log_level(self) -> str: ...
+
+    def resolve_log_file(self) -> Path | None: ...
 
 
 class TargetResolverLike(Protocol):
@@ -100,12 +107,14 @@ class SecurityScan:
 
     def run(self) -> ScanResult:
         self._notify_step_progress(1, 5, "設定を読み込んでいます")
+        logger.info("設定を読み込んでいます...")
         config = self._config_factory(self._project_root, self._config_overrides())
         target_spec = config.resolve_target_spec()
         output_dir = config.resolve_output_dir() if self._persist_report else None
         limits = config.resolve_remote_fetch_limits()
 
         self._notify_step_progress(2, 5, "スキャン対象を解決しています")
+        logger.info(f"スキャン対象を解決しています... (対象: {target_spec})")
         fetcher = ArchiveSnapshotFetcher(
             max_download_bytes=limits.max_download_bytes,
             max_extracted_bytes=limits.max_extracted_bytes,
@@ -117,22 +126,30 @@ class SecurityScan:
         resolver = self._target_resolver_factory(fetcher)
 
         self._notify_step_progress(3, 5, "ルールを読み込んでいます")
+        logger.info("ルールを読み込んでいます...")
         rules = self._rule_loader(self._project_root)
         if not rules:
+            logger.error("ルールが 1 つも読み込めませんでした。")
             raise SystemExit(
                 "ルールが 1 つも読み込めませんでした。src/rules の構成を確認してください。"
             )
+        logger.info(f"ルールを読み込みました (計 {len(rules)} 件)")
 
         generated_at = datetime.now(timezone.utc)
         with resolver.resolve(target_spec) as resolved:
             self._notify_step_progress(4, 5, "ルールを実行しています")
+            logger.info(f"ルールを実行しています... (対象パス: {resolved.scan_path})")
             records, errors, executed_count = self._rule_runner(
                 resolved.scan_path,
                 rules,
                 self._print_rule_progress,
             )
+            logger.info(
+                f"ルール実行完了 (実行数: {executed_count} 件, 検知数: {len(records)} 件, エラー数: {len(errors)} 件)"
+            )
 
             self._notify_step_progress(5, 5, "レポートを生成しています")
+            logger.info("レポートを生成しています...")
             report_writer = ReportWriter(output_dir or self._project_root)
             report_markdown = report_writer.build_markdown(
                 resolved.scan_path,
@@ -150,6 +167,7 @@ class SecurityScan:
                     generated_at,
                     resolved.skipped_files,
                 )
+                logger.info(f"レポートを保存しました: {report_path}")
             result = ScanResult(
                 target=resolved,
                 output_dir=output_dir,

@@ -42,3 +42,6 @@ Thumbs.db
 # Repository specific ignores
 __init__.py
 /docs/memo
+
+# Logs
+*.log
