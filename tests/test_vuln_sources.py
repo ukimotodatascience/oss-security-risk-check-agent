@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 
@@ -507,3 +508,75 @@ def test_vuln_lookup_service_concurrent_access(monkeypatch):
         t.join()
 
     assert not errors
+
+
+def test_vuln_lookup_service_inherits_file_cache_timestamp(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [vuln_module.VulnHit("CVE-TS", provider, "vuln", 5.0, ())]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1. 最初の照合
+    service.lookup("python", "pkg-ts", "1.0")
+
+    cache_files = list(tmp_path.glob("*.json"))
+    assert len(cache_files) == 1
+    cache_file = cache_files[0]
+
+    with cache_file.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    past_time = time.time() - 50.0
+    data["timestamp"] = past_time
+
+    with cache_file.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+
+    os.utime(cache_file, (past_time, past_time))
+
+    VulnLookupService._process_cache.clear()
+
+    # 2. ファイルキャッシュからの読み込み
+    service.lookup("python", "pkg-ts", "1.0")
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-ts", "1.0", providers_str, service._enable_fallback)
+
+    cached_val = VulnLookupService._process_cache.get(key)
+    assert cached_val is not None
+    ts, _ = cached_val
+    assert ts == pytest.approx(past_time, abs=1.0)
+
+
+def test_vuln_lookup_service_does_not_cache_schema_violations(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+
+    def fake_request(url, method="GET", headers=None, payload=None):
+        return {"invalid_key_no_vulns": []}
+
+    monkeypatch.setattr(service, "_request_json", fake_request)
+
+    hits = service.lookup("python", "pkg-schema-violation", "1.0")
+    assert hits == []
+
+    providers_str = ",".join(service._provider_order)
+    key = (
+        "python",
+        "pkg-schema-violation",
+        "1.0",
+        providers_str,
+        service._enable_fallback,
+    )
+    assert key not in VulnLookupService._process_cache

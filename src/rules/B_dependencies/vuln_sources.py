@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import os
 import time
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ class VulnLookupService:
     _process_cache: Dict[
         tuple[str, str, str, str, bool], tuple[float, List[VulnHit]]
     ] = {}
+    _inflight_locks: Dict[tuple[str, str, str, str, bool], threading.Lock] = {}
+    _inflight_locks_lock = threading.Lock()
 
     def __init__(self) -> None:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
@@ -59,6 +62,7 @@ class VulnLookupService:
             self._enable_fallback,
         )
 
+        # 1. 最初のキャッシュチェック（ロックなし高速解決）
         val = self._process_cache.get(key)
         if val is not None:
             ts, cached_hits = val
@@ -70,45 +74,70 @@ class VulnLookupService:
                 self._process_cache.pop(key, None)
 
         if self._cache_ttl > 0:
-            file_hits = self._read_file_cache(key)
-            if file_hits is not None:
+            file_cache_data = self._read_file_cache(key)
+            if file_cache_data is not None:
+                file_ts, file_hits = file_cache_data
                 logger.debug(f"File cache hit for {key}")
-                self._process_cache[key] = (time.time(), file_hits)
+                self._process_cache[key] = (file_ts, file_hits)
                 return file_hits
 
-        logger.info(
-            f"Querying vulnerability providers for {ecosystem}:{name}:{version}"
-        )
-        providers = self._provider_order or ["osv"]
-        all_hits: List[VulnHit] = []
-        seen_ids = set()
-        has_failure = False
+        # 2. 同一キーの照会を単一化する Single Flight ロック制御
+        with self._inflight_locks_lock:
+            if key not in self._inflight_locks:
+                self._inflight_locks[key] = threading.Lock()
+            lock = self._inflight_locks[key]
 
-        for provider in providers:
-            hits = self._query_provider(provider, ecosystem, name, version)
-            if hits is None:
-                logger.warning(f"Vulnerability provider '{provider}' query failed.")
-                has_failure = True
-                continue
-            for hit in hits:
-                if hit.vuln_id in seen_ids:
-                    continue
-                seen_ids.add(hit.vuln_id)
-                all_hits.append(hit)
+        with lock:
+            # ロック獲得後の再チェック
+            val = self._process_cache.get(key)
+            if val is not None:
+                ts, cached_hits = val
+                if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
+                    return cached_hits
 
-            if hits and not self._enable_fallback:
-                break
-
-        if not has_failure:
-            self._process_cache[key] = (time.time(), all_hits)
             if self._cache_ttl > 0:
-                self._write_file_cache(key, all_hits)
-        else:
-            logger.info(
-                "Skipped caching vulnerability query result due to provider failure."
-            )
+                file_cache_data = self._read_file_cache(key)
+                if file_cache_data is not None:
+                    file_ts, file_hits = file_cache_data
+                    self._process_cache[key] = (file_ts, file_hits)
+                    return file_hits
 
-        return all_hits
+            logger.info(
+                f"Querying vulnerability providers for {ecosystem}:{name}:{version}"
+            )
+            providers = self._provider_order or ["osv"]
+            all_hits: List[VulnHit] = []
+            seen_ids = set()
+            has_failure = False
+
+            for provider in providers:
+                hits = self._query_provider(provider, ecosystem, name, version)
+                if hits is None:
+                    logger.warning(f"Vulnerability provider '{provider}' query failed.")
+                    has_failure = True
+                    continue
+                for hit in hits:
+                    if hit.vuln_id in seen_ids:
+                        continue
+                    seen_ids.add(hit.vuln_id)
+                    all_hits.append(hit)
+
+                if hits and not self._enable_fallback:
+                    break
+
+            if not has_failure:
+                self._process_cache[key] = (time.time(), all_hits)
+                if self._cache_ttl > 0:
+                    self._write_file_cache(key, all_hits)
+            else:
+                logger.info(
+                    "Skipped caching vulnerability query result due to provider failure."
+                )
+
+            with self._inflight_locks_lock:
+                self._inflight_locks.pop(key, None)
+
+            return all_hits
 
     def _get_cache_file_path(self, key: tuple[str, str, str, str, bool]) -> Path:
         import hashlib
@@ -121,7 +150,7 @@ class VulnLookupService:
 
     def _read_file_cache(
         self, key: tuple[str, str, str, str, bool]
-    ) -> List[VulnHit] | None:
+    ) -> tuple[float, List[VulnHit]] | None:
         file_path = self._get_cache_file_path(key)
         if not file_path.exists():
             return None
@@ -134,6 +163,8 @@ class VulnLookupService:
             with file_path.open("r", encoding="utf-8") as fh:
                 data = json.load(fh)
 
+            timestamp = data.get("timestamp", mtime)
+
             hits: List[VulnHit] = []
             for item in data.get("hits", []):
                 hits.append(
@@ -145,7 +176,7 @@ class VulnLookupService:
                         references=item.get("references", []),
                     )
                 )
-            return hits
+            return timestamp, hits
         except Exception:
             return None
 
@@ -247,11 +278,14 @@ class VulnLookupService:
         )
         if data is None:
             return None
+        if not isinstance(data, dict):
+            return None
         if not data:
             return []
-        vulns = data.get("vulns")
-        if not isinstance(vulns, list):
-            return []
+        if "vulns" in data and isinstance(data["vulns"], list):
+            vulns = data["vulns"]
+        else:
+            return None
 
         hits: List[VulnHit] = []
         for v in vulns:
@@ -302,7 +336,7 @@ class VulnLookupService:
         if data is None:
             return None
         if not isinstance(data, list):
-            return []
+            return None
 
         hits: List[VulnHit] = []
         for adv in data:
@@ -343,12 +377,13 @@ class VulnLookupService:
         )
         if data is None:
             return None
-        if not data:
-            return []
-
+        if not isinstance(data, dict):
+            return None
+        if "vulnerabilities" not in data:
+            return None
         vulns = data.get("vulnerabilities")
         if not isinstance(vulns, list):
-            return []
+            return None
 
         hits: List[VulnHit] = []
         for item in vulns:
