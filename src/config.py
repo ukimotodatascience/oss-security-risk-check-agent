@@ -142,7 +142,18 @@ class ScanConfig:
 
     def resolve_vuln_cache_ttl(self) -> int:
         """脆弱性情報のキャッシュ有効期限（秒）を返す。0 の場合は無効。"""
-        return self._env_int("VULN_CACHE_TTL_SEC", 86400)
+        raw = self._env("VULN_CACHE_TTL_SEC")
+        if not raw:
+            return 86400
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise SystemExit(
+                f"VULN_CACHE_TTL_SEC は整数で指定してください: {raw}"
+            ) from exc
+        if value < 0:
+            raise SystemExit(f"VULN_CACHE_TTL_SEC は 0 以上で指定してください: {raw}")
+        return value
 
     @staticmethod
     def _env(name: str) -> str:

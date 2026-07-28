@@ -59,14 +59,15 @@ class VulnLookupService:
             self._enable_fallback,
         )
 
-        if key in self._process_cache:
-            ts, cached_hits = self._process_cache[key]
+        val = self._process_cache.get(key)
+        if val is not None:
+            ts, cached_hits = val
             if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
                 logger.debug(f"Memory cache hit for {key}")
                 return cached_hits
             else:
                 logger.debug(f"Memory cache expired for {key}")
-                del self._process_cache[key]
+                self._process_cache.pop(key, None)
 
         if self._cache_ttl > 0:
             file_hits = self._read_file_cache(key)
@@ -182,8 +183,11 @@ class VulnLookupService:
                 if os.path.exists(temp_name):
                     os.unlink(temp_name)
                 raise
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                f"Failed to write vulnerability cache file ({file_path}): {exc}",
+                exc_info=True,
+            )
 
     def _query_provider(
         self, provider: str, ecosystem: str, name: str, version: str

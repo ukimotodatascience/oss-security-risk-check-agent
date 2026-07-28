@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 
 import pytest
@@ -465,3 +466,44 @@ def test_vuln_lookup_service_process_cache_ttl(monkeypatch):
     hits3 = service.lookup("python", "pkg-short", "1.0")
     assert len(hits3) == 1
     assert calls == ["pkg-short", "pkg-short"]
+
+
+def test_vuln_lookup_service_concurrent_access(monkeypatch):
+    import threading
+
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+
+    def fake_query(provider, ecosystem, name, version):
+        time.sleep(0.05)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-9999",
+                source=provider,
+                summary="concurrent vuln",
+                severity_score=9.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    errors = []
+
+    def run_lookup():
+        try:
+            service.lookup("python", "pkg-concurrent-test", "1.0")
+            monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+            service.lookup("python", "pkg-concurrent-test", "1.0")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_lookup) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
