@@ -10,6 +10,19 @@ from src.targets.archive_fetcher import ArchiveSnapshotFetcher
 from src.targets.models import ScanTargetSpec
 
 
+@pytest.fixture(autouse=True)
+def mock_build_opener(monkeypatch):
+    from src.targets import archive_fetcher as archive_module
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            return archive_module.urllib.request.urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(
+        archive_module.urllib.request, "build_opener", lambda *args: FakeOpener()
+    )
+
+
 class FakeResponse:
     def __init__(self, payload: bytes, chunk_size: int | None = None) -> None:
         self._payload = payload
@@ -243,3 +256,49 @@ def test_archive_fetcher_includes_auth_header_when_token_provided(
         "auth": "Bearer secret_token",
         "timeout": 7,
     }
+
+
+def test_safe_redirect_handler_removes_auth_header_on_cross_domain_redirect():
+    from src.targets.archive_fetcher import SafeRedirectHandler
+
+    orig_req = urllib.request.Request(
+        "https://api.github.com/repos/owner/repo/zipball/main"
+    )
+    orig_req.add_header("Authorization", "Bearer secret_token")
+    orig_req.add_header("User-Agent", "my-agent")
+
+    handler = SafeRedirectHandler()
+    new_req = handler.redirect_request(
+        orig_req,
+        fp=None,
+        code=302,
+        msg="Found",
+        headers={},
+        newurl="https://codeload.github.com/owner/repo/zip/main",
+    )
+
+    assert new_req is not None
+    assert not new_req.has_header("Authorization")
+    assert new_req.get_header("User-agent") == "my-agent"
+
+
+def test_safe_redirect_handler_keeps_auth_header_on_same_domain_redirect():
+    from src.targets.archive_fetcher import SafeRedirectHandler
+
+    orig_req = urllib.request.Request(
+        "https://api.github.com/repos/owner/repo/zipball/main"
+    )
+    orig_req.add_header("Authorization", "Bearer secret_token")
+
+    handler = SafeRedirectHandler()
+    new_req = handler.redirect_request(
+        orig_req,
+        fp=None,
+        code=302,
+        msg="Found",
+        headers={},
+        newurl="https://api.github.com/owner/repo/zip/main",
+    )
+
+    assert new_req is not None
+    assert new_req.has_header("Authorization")

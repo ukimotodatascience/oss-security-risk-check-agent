@@ -1,12 +1,40 @@
 from __future__ import annotations
 
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Any
+
 
 from src.targets.models import ScanTargetSpec, SkippedFile
 from src.targets.safe_extract import safe_extract_zip
 from src.targets.url_validator import parse_github_repo_url
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """リダイレクト時にホスト名が異なる場合、Authorization ヘッダーを削除するハンドラー。"""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+
+        orig_parsed = urllib.parse.urlparse(req.full_url)
+        new_parsed = urllib.parse.urlparse(new_req.full_url)
+
+        if orig_parsed.netloc != new_parsed.netloc:
+            new_req.remove_header("Authorization")
+
+        return new_req
 
 
 class ArchiveSnapshotFetcher:
@@ -81,8 +109,9 @@ class ArchiveSnapshotFetcher:
         )
 
         downloaded = 0
+        opener = urllib.request.build_opener(SafeRedirectHandler())
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_sec) as response:
+            with opener.open(request, timeout=self._timeout_sec) as response:
                 with dest.open("wb") as fh:
                     while True:
                         chunk = response.read(1024 * 1024)
