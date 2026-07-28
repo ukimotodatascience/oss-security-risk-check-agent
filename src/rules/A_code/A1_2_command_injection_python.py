@@ -77,7 +77,9 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                     if callee in self._SHELL_LIKE_CALLS:
                         if has_external and (
                             is_string_build
-                            or isinstance(first_arg, (ast.Name, ast.Subscript, ast.Call))
+                            or isinstance(
+                                first_arg, (ast.Name, ast.Subscript, ast.Call)
+                            )
                         ):
                             records.append(
                                 RiskRecord(
@@ -131,8 +133,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                                     line=getattr(node, "lineno", None),
                                     message=(
                                         "External input reaches a command execution "
-                                        "wrapper"
-                                        + taint_detail
+                                        "wrapper" + taint_detail
                                     ),
                                 )
                             )
@@ -164,7 +165,9 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                                 rule_id=self.rule_id,
                                 category=self.category,
                                 title=self.title,
-                                severity=Severity.HIGH if shell_true else Severity.MEDIUM,
+                                severity=Severity.HIGH
+                                if shell_true
+                                else Severity.MEDIUM,
                                 file_path=rel_path,
                                 line=getattr(node, "lineno", None),
                                 message=(

@@ -9,7 +9,9 @@ from src.rules.A_code.A1_1_command_injection_common import (
     TITLE,
     dedupe_records,
 )
-from src.rules.A_code.A1_2_command_injection_python import PythonCommandInjectionDetector
+from src.rules.A_code.A1_2_command_injection_python import (
+    PythonCommandInjectionDetector,
+)
 from src.rules.A_code.A1_3_command_injection_js_ts import JsTsCommandInjectionDetector
 from src.rules.A_code.A1_4_command_injection_shell import ShellCommandInjectionDetector
 
