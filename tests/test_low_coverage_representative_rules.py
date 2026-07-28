@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.models import Severity
 from src.rules.D_config.D1_dangerous_defaults import D1DangerousDefaultsRule
 from src.rules.D_config.D3_open_bind_address import D3OpenBindAddressRule
@@ -275,7 +277,7 @@ def test_H6_reports_missing_tls_docs_and_expired_certificate_hint(tmp_path):
 
     records = H6ExpiredOrMissingTLSDocsRule().evaluate(tmp_path)
     assert [(r.file_path, r.line, r.severity) for r in records] == [
-        ("docs\\tls.md", 1, Severity.HIGH),
+        (str(Path("docs/tls.md")), 1, Severity.HIGH),
     ]
 
 
