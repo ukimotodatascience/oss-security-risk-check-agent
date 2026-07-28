@@ -10,6 +10,19 @@ from src.targets.archive_fetcher import ArchiveSnapshotFetcher
 from src.targets.models import ScanTargetSpec
 
 
+@pytest.fixture(autouse=True)
+def mock_build_opener(monkeypatch):
+    from src.targets import archive_fetcher as archive_module
+
+    class FakeOpener:
+        def open(self, request, timeout=None):
+            return archive_module.urllib.request.urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(
+        archive_module.urllib.request, "build_opener", lambda *args: FakeOpener()
+    )
+
+
 class FakeResponse:
     def __init__(self, payload: bytes, chunk_size: int | None = None) -> None:
         self._payload = payload
@@ -202,3 +215,90 @@ def test_archive_fetcher_wraps_url_errors(tmp_path, monkeypatch):
         make_fetcher()._download_limited(
             "https://example.com/source.zip", tmp_path / "source.zip"
         )
+
+
+def test_archive_fetcher_includes_auth_header_when_token_provided(
+    tmp_path, monkeypatch
+):
+    from src.targets import archive_fetcher as archive_module
+
+    payload = build_zip({"repo-main/README.md": "hello"})
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["user_agent"] = request.headers["User-agent"]
+        captured["auth"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(archive_module.urllib.request, "urlopen", fake_urlopen)
+
+    spec = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="main",
+    )
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=1024 * 1024,
+        max_extracted_bytes=1024 * 1024,
+        max_files=20,
+        max_single_file_bytes=1024,
+        timeout_sec=7,
+        github_token="secret_token",
+    )
+    fetcher.fetch(spec, tmp_path)
+
+    assert captured == {
+        "url": "https://api.github.com/repos/owner/repo/zipball/main",
+        "user_agent": "oss-security-risk-check-agent",
+        "auth": "Bearer secret_token",
+        "timeout": 7,
+    }
+
+
+def test_safe_redirect_handler_removes_auth_header_on_cross_domain_redirect():
+    from src.targets.archive_fetcher import SafeRedirectHandler
+
+    orig_req = urllib.request.Request(
+        "https://api.github.com/repos/owner/repo/zipball/main"
+    )
+    orig_req.add_header("Authorization", "Bearer secret_token")
+    orig_req.add_header("User-Agent", "my-agent")
+
+    handler = SafeRedirectHandler()
+    new_req = handler.redirect_request(
+        orig_req,
+        fp=None,
+        code=302,
+        msg="Found",
+        headers={},
+        newurl="https://codeload.github.com/owner/repo/zip/main",
+    )
+
+    assert new_req is not None
+    assert not new_req.has_header("Authorization")
+    assert new_req.get_header("User-agent") == "my-agent"
+
+
+def test_safe_redirect_handler_keeps_auth_header_on_same_domain_redirect():
+    from src.targets.archive_fetcher import SafeRedirectHandler
+
+    orig_req = urllib.request.Request(
+        "https://api.github.com/repos/owner/repo/zipball/main"
+    )
+    orig_req.add_header("Authorization", "Bearer secret_token")
+
+    handler = SafeRedirectHandler()
+    new_req = handler.redirect_request(
+        orig_req,
+        fp=None,
+        code=302,
+        msg="Found",
+        headers={},
+        newurl="https://api.github.com/owner/repo/zip/main",
+    )
+
+    assert new_req is not None
+    assert new_req.has_header("Authorization")

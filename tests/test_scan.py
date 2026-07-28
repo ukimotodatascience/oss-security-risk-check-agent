@@ -45,6 +45,9 @@ class FakeScanConfig:
             max_single_file_bytes=512,
         )
 
+    def resolve_github_token(self) -> str | None:
+        return None
+
 
 class FakeTargetResolver:
     def __init__(self, fetcher: Any) -> None:

@@ -109,6 +109,11 @@ class ScanConfig:
         out.mkdir(parents=True, exist_ok=True)
         return out
 
+    def resolve_github_token(self) -> str | None:
+        """環境変数 `GITHUB_TOKEN` または `GH_TOKEN` を読み込む。"""
+        token = self._env("GITHUB_TOKEN") or self._env("GH_TOKEN")
+        return token if token else None
+
     @staticmethod
     def _env(name: str) -> str:
         return os.environ.get(name, "").strip().strip('"').strip("'")
