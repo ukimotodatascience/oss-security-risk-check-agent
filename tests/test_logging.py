@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import pytest
 
 from src.config import ScanConfig
 from src.logger import setup_logging
@@ -60,3 +59,24 @@ def test_setup_logging_configures_root_logger(tmp_path):
     file_handlers = [h for h in handlers if isinstance(h, logging.FileHandler)]
     assert len(file_handlers) == 1
     assert Path(file_handlers[0].baseFilename) == log_file.resolve()
+
+
+def test_setup_logging_only_initializes_once(tmp_path):
+    from src import logger as logger_module
+
+    logger_module._logging_initialized = False
+
+    log_file1 = tmp_path / "test1.log"
+    log_file2 = tmp_path / "test2.log"
+
+    setup_logging(level="DEBUG", log_file=log_file1)
+    setup_logging(level="WARNING", log_file=log_file2)
+
+    root_logger = logging.getLogger()
+    assert root_logger.level == logging.DEBUG
+
+    file_handlers = [
+        h for h in root_logger.handlers if isinstance(h, logging.FileHandler)
+    ]
+    assert len(file_handlers) == 1
+    assert Path(file_handlers[0].baseFilename) == log_file1.resolve()

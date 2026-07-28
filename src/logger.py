@@ -5,6 +5,9 @@ import sys
 from pathlib import Path
 
 
+_logging_initialized = False
+
+
 def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
     """アプリケーション全体のロギングを設定する。
 
@@ -12,6 +15,10 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
         level: ログレベル文字列 ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")。
         log_file: ログ出力先ファイルパス。
     """
+    global _logging_initialized
+    if _logging_initialized:
+        return
+
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 
     handlers: list[logging.Handler] = []
@@ -19,9 +26,7 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
     # 標準出力へのハンドラー
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(numeric_level)
-    formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     console_handler.setFormatter(formatter)
     handlers.append(console_handler)
 
@@ -44,3 +49,4 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> None:
         handlers=handlers,
         force=True,  # 既存の基本的な設定があれば上書きする
     )
+    _logging_initialized = True
