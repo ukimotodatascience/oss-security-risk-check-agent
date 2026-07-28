@@ -231,11 +231,22 @@ uvx pre-commit run --all-files
 
 `uvx` で実行できない場合は、リポジトリ内に一時仮想環境 `.codex_tmp_venv` を作成し、その環境で pre-commit を実行してください。
 
+Windows の場合:
+
 ```powershell
 uv venv .codex_tmp_venv
 uv pip install --python .\.codex_tmp_venv\Scripts\python.exe pre-commit
 .\.codex_tmp_venv\Scripts\python.exe -m pre_commit run --all-files
 ```
+
+macOS / Linux の場合:
+
+```bash
+uv venv .codex_tmp_venv
+uv pip install --python .codex_tmp_venv/bin/python pre-commit
+.codex_tmp_venv/bin/python -m pre_commit run --all-files
+```
+
 
 * pre-commit は Codex 作業用の実行ツールとして扱い、プロジェクトが明示的に採用していない限り、`requirements.txt` や `pyproject.toml` などの依存定義ファイルへ追加しないでください。
 * ネットワーク制限、依存関係の取得失敗、`uv` が利用できない、Python環境の問題などにより pre-commit を実行できない場合は、実行できなかった理由を最後の報告に明記してください。
