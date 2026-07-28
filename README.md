@@ -1,6 +1,6 @@
 # oss-security-risk-check-agent
 
-OSS プロジェクト（主にソースコード/設定/依存関係/CI/CD 定義）を静的に走査し、セキュリティリスクを Markdown レポートとして出力する Python ツールです。  
+OSS プロジェクト（主にソースコード/設定/依存関係/CI/CD 定義）を静的に走査し、セキュリティリスクを Markdown レポートとして出力する Python ツールです。
 `TARGET_DIR` で指定したローカルディレクトリ、または `TARGET_REPO_URL` で指定した GitHub リポジトリ URL を対象に、`src/rules/` 配下のルールを実行して検知結果をまとめます。
 
 ## 特徴

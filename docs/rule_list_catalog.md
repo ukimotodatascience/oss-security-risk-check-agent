@@ -1,6 +1,6 @@
 # OSSセキュリティ診断ルールカタログ
 
-本書は `src/rule_engine.py` で実行されるルール ID の並び、および `src/rules/` 配下の実装と整合するよう整理したカタログです。  
+本書は `src/rule_engine.py` で実行されるルール ID の並び、および `src/rules/` 配下の実装と整合するよう整理したカタログです。
 **共通の戻り値型**は「共通返却形式」を参照してください。
 
 ---
@@ -152,7 +152,7 @@
 
 # A：コード自体の脆弱性（code）
 
-実装ディレクトリ: `src/rules/A_code/`  
+実装ディレクトリ: `src/rules/A_code/`
 補助実装: `src/rules/A_code/a1_detectors/`（A-1 の言語別検出）
 
 ## A-1 OSコマンドインジェクション（Command Injection）
@@ -1537,7 +1537,7 @@ Authorization ヘッダやボディを丸ごとログに残していないかを
 
 # J：メンテナンス・ガバナンス（maintenance）
 
-実装ディレクトリ: `src/rules/J_maintenance/`  
+実装ディレクトリ: `src/rules/J_maintenance/`
 （外部メタデータや API が必要なルールは、データ未取得時は記録が空となる場合がある。）
 
 ## J-1 停滞プロジェクト（Stale Project）

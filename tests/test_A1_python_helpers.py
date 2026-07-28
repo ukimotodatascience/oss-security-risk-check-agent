@@ -1,4 +1,4 @@
-﻿import ast
+import ast
 import textwrap
 
 from src.rules.A_code.A1_2_1_command_injection_python_taint import PythonTaintMixin

@@ -1,4 +1,4 @@
-﻿from src.rules.A_code.A1_3_1_command_injection_js_ts_sources import JsTsSourceMixin
+from src.rules.A_code.A1_3_1_command_injection_js_ts_sources import JsTsSourceMixin
 from src.rules.A_code.A1_3_2_command_injection_js_ts_sinks import JsTsSinkMixin
 from src.rules.A_code.A1_4_1_command_injection_shell_sources import ShellSourceMixin
 
