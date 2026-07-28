@@ -54,6 +54,12 @@ class FakeScanConfig:
     def resolve_log_file(self) -> Path | None:
         return None
 
+    def resolve_vuln_cache_dir(self) -> Path:
+        return self.project_root / "reports" / "cache"
+
+    def resolve_vuln_cache_ttl(self) -> int:
+        return 86400
+
 
 class FakeTargetResolver:
     def __init__(self, fetcher: Any) -> None:

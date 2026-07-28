@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,8 @@ class VulnHit:
 
 
 class VulnLookupService:
+    _process_cache: Dict[tuple[str, str, str], List[VulnHit]] = {}
+
     def __init__(self) -> None:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
         self._provider_order = [
@@ -30,13 +36,34 @@ class VulnLookupService:
         self._enable_fallback = (
             os.environ.get("VULN_ENABLE_FALLBACK", "true").strip().lower() == "true"
         )
-        self._cache: Dict[tuple[str, str, str], List[VulnHit]] = {}
+
+        cache_dir_raw = os.environ.get("VULN_CACHE_DIR")
+        if cache_dir_raw:
+            self._cache_dir = Path(cache_dir_raw).expanduser().resolve()
+        else:
+            import tempfile
+
+            self._cache_dir = Path(tempfile.gettempdir()) / "oss_vuln_cache"
+
+        self._cache_ttl = int(os.environ.get("VULN_CACHE_TTL_SEC", "86400") or "86400")
 
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
         key = (ecosystem.lower(), name.lower(), version)
-        if key in self._cache:
-            return self._cache[key]
 
+        if key in self._process_cache:
+            logger.debug(f"Memory cache hit for {key}")
+            return self._process_cache[key]
+
+        if self._cache_ttl > 0:
+            file_hits = self._read_file_cache(key)
+            if file_hits is not None:
+                logger.debug(f"File cache hit for {key}")
+                self._process_cache[key] = file_hits
+                return file_hits
+
+        logger.info(
+            f"Querying vulnerability providers for {ecosystem}:{name}:{version}"
+        )
         providers = self._provider_order or ["osv"]
         all_hits: List[VulnHit] = []
         seen_ids = set()
@@ -52,8 +79,84 @@ class VulnLookupService:
             if hits and not self._enable_fallback:
                 break
 
-        self._cache[key] = all_hits
+        self._process_cache[key] = all_hits
+
+        if self._cache_ttl > 0:
+            self._write_file_cache(key, all_hits)
+
         return all_hits
+
+    def _get_cache_file_path(self, key: tuple[str, str, str]) -> Path:
+        import hashlib
+
+        ecosystem, name, version = key
+        hash_val = hashlib.md5(
+            f"{ecosystem}:{name}:{version}".encode("utf-8")
+        ).hexdigest()
+        return self._cache_dir / f"{hash_val}.json"
+
+    def _read_file_cache(self, key: tuple[str, str, str]) -> List[VulnHit] | None:
+        file_path = self._get_cache_file_path(key)
+        if not file_path.exists():
+            return None
+
+        try:
+            mtime = file_path.stat().st_mtime
+            if time.time() - mtime > self._cache_ttl:
+                return None
+
+            with file_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+
+            hits: List[VulnHit] = []
+            for item in data.get("hits", []):
+                hits.append(
+                    VulnHit(
+                        vuln_id=item["vuln_id"],
+                        source=item["source"],
+                        summary=item["summary"],
+                        severity_score=item.get("severity_score"),
+                        references=item.get("references", []),
+                    )
+                )
+            return hits
+        except Exception:
+            return None
+
+    def _write_file_cache(self, key: tuple[str, str, str], hits: List[VulnHit]) -> None:
+        file_path = self._get_cache_file_path(key)
+        try:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            data = {
+                "timestamp": time.time(),
+                "hits": [
+                    {
+                        "vuln_id": h.vuln_id,
+                        "source": h.source,
+                        "summary": h.summary,
+                        "severity_score": h.severity_score,
+                        "references": h.references,
+                    }
+                    for h in hits
+                ],
+            }
+
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(
+                "w", dir=str(self._cache_dir), delete=False, encoding="utf-8"
+            ) as tf:
+                json.dump(data, tf)
+                temp_name = tf.name
+
+            try:
+                os.replace(temp_name, str(file_path))
+            except Exception:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
+                raise
+        except Exception:
+            pass
 
     def _query_provider(
         self, provider: str, ecosystem: str, name: str, version: str

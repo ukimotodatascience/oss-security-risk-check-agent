@@ -131,6 +131,17 @@ class ScanConfig:
             return None
         return Path(raw).expanduser().resolve()
 
+    def resolve_vuln_cache_dir(self) -> Path:
+        """脆弱性情報のキャッシュディレクトリを返す。"""
+        raw = self._env("VULN_CACHE_DIR")
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return self._project_root / ".reports" / ".cache"
+
+    def resolve_vuln_cache_ttl(self) -> int:
+        """脆弱性情報のキャッシュ有効期限（秒）を返す。0 の場合は無効。"""
+        return self._env_int("VULN_CACHE_TTL_SEC", 86400)
+
     @staticmethod
     def _env(name: str) -> str:
         return os.environ.get(name, "").strip().strip('"').strip("'")

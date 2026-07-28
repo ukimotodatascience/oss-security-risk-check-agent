@@ -46,6 +46,8 @@ def stable_vuln_env(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("NVD_API_KEY", raising=False)
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+    VulnLookupService._process_cache.clear()
 
 
 def test_lookup_queries_enabled_providers_deduplicates_and_caches(monkeypatch):
@@ -263,3 +265,83 @@ def test_query_nvd_maps_nested_cve_fields(monkeypatch):
     assert hits[0].vuln_id == "CVE-2024-0001"
     assert hits[0].summary == "English description"
     assert hits[0].severity_score == 9.8
+
+
+def test_vuln_lookup_service_shares_process_cache(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service1 = VulnLookupService()
+    service2 = VulnLookupService()
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append((provider, name))
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0002",
+                source=provider,
+                summary="mocked vuln",
+                severity_score=5.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service1, "_query_provider", fake_query)
+    monkeypatch.setattr(service2, "_query_provider", fake_query)
+
+    hits1 = service1.lookup("python", "mock-pkg", "1.0")
+    assert len(hits1) == 1
+    assert calls == [("osv", "mock-pkg")]
+
+    hits2 = service2.lookup("python", "mock-pkg", "1.0")
+    assert hits1 == hits2
+    assert calls == [("osv", "mock-pkg")]
+
+
+def test_vuln_lookup_service_file_cache_persistence_and_ttl(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "10")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0003",
+                source=provider,
+                summary="persistent vuln",
+                severity_score=6.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    hits1 = service.lookup("python", "pkg-persistent", "1.0")
+    assert len(hits1) == 1
+    assert calls == ["pkg-persistent"]
+
+    cache_files = list(tmp_path.glob("*.json"))
+    assert len(cache_files) == 1
+
+    VulnLookupService._process_cache.clear()
+
+    hits2 = service.lookup("python", "pkg-persistent", "1.0")
+    assert hits1[0].vuln_id == hits2[0].vuln_id
+    assert calls == ["pkg-persistent"]
+
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+    service_no_cache = VulnLookupService()
+    monkeypatch.setattr(service_no_cache, "_query_provider", fake_query)
+    VulnLookupService._process_cache.clear()
+
+    hits3 = service_no_cache.lookup("python", "pkg-persistent", "1.0")
+    assert len(hits3) == 1
+    assert calls == ["pkg-persistent", "pkg-persistent"]
