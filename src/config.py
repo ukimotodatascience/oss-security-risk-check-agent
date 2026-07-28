@@ -32,6 +32,8 @@ class ScanConfig:
         self._project_root = project_root
         self._overrides = overrides or ConfigOverrides()
         load_dotenv(self._project_root / ".env")
+        os.environ.setdefault("VULN_CACHE_DIR", str(self.resolve_vuln_cache_dir()))
+        os.environ.setdefault("VULN_CACHE_TTL_SEC", str(self.resolve_vuln_cache_ttl()))
 
     def resolve_target_dir(self) -> Path:
         """`TARGET_DIR` を読み、存在するディレクトリの絶対パスを返す。"""

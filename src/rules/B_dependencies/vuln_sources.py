@@ -48,7 +48,14 @@ class VulnLookupService:
         self._cache_ttl = int(os.environ.get("VULN_CACHE_TTL_SEC", "86400") or "86400")
 
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
-        key = (ecosystem.lower(), name.lower(), version)
+        providers_str = ",".join(self._provider_order)
+        key = (
+            ecosystem.lower(),
+            name.lower(),
+            version,
+            providers_str,
+            self._enable_fallback,
+        )
 
         if key in self._process_cache:
             logger.debug(f"Memory cache hit for {key}")
@@ -86,16 +93,18 @@ class VulnLookupService:
 
         return all_hits
 
-    def _get_cache_file_path(self, key: tuple[str, str, str]) -> Path:
+    def _get_cache_file_path(self, key: tuple[str, str, str, str, bool]) -> Path:
         import hashlib
 
-        ecosystem, name, version = key
+        ecosystem, name, version, providers, fallback = key
         hash_val = hashlib.md5(
-            f"{ecosystem}:{name}:{version}".encode("utf-8")
+            f"{ecosystem}:{name}:{version}:{providers}:{fallback}".encode("utf-8")
         ).hexdigest()
         return self._cache_dir / f"{hash_val}.json"
 
-    def _read_file_cache(self, key: tuple[str, str, str]) -> List[VulnHit] | None:
+    def _read_file_cache(
+        self, key: tuple[str, str, str, str, bool]
+    ) -> List[VulnHit] | None:
         file_path = self._get_cache_file_path(key)
         if not file_path.exists():
             return None
@@ -123,7 +132,9 @@ class VulnLookupService:
         except Exception:
             return None
 
-    def _write_file_cache(self, key: tuple[str, str, str], hits: List[VulnHit]) -> None:
+    def _write_file_cache(
+        self, key: tuple[str, str, str, str, bool], hits: List[VulnHit]
+    ) -> None:
         file_path = self._get_cache_file_path(key)
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)

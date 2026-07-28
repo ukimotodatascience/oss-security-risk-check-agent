@@ -345,3 +345,42 @@ def test_vuln_lookup_service_file_cache_persistence_and_ttl(tmp_path, monkeypatc
     hits3 = service_no_cache.lookup("python", "pkg-persistent", "1.0")
     assert len(hits3) == 1
     assert calls == ["pkg-persistent", "pkg-persistent"]
+
+
+def test_vuln_lookup_service_cache_distinguishes_provider_configs(monkeypatch):
+    VulnLookupService._process_cache.clear()
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(provider)
+        return [
+            vuln_module.VulnHit(
+                vuln_id=f"CVE-{provider}",
+                source=provider,
+                summary="vuln",
+                severity_score=5.0,
+                references=(),
+            )
+        ]
+
+    # OSV のみの場合のサービス
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service_osv = VulnLookupService()
+    monkeypatch.setattr(service_osv, "_query_provider", fake_query)
+
+    hits_osv = service_osv.lookup("python", "pkg-multi", "1.0")
+    assert len(hits_osv) == 1
+    assert hits_osv[0].source == "osv"
+    assert calls == ["osv"]
+
+    # 後から GITHUB も追加した場合のサービス
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github")
+    service_multi = VulnLookupService()
+    monkeypatch.setattr(service_multi, "_query_provider", fake_query)
+
+    hits_multi = service_multi.lookup("python", "pkg-multi", "1.0")
+    # キーが異なる（プロバイダ設定が異なる）ため、メモリ・ファイルキャッシュ共にヒットせず再照会される
+    assert len(hits_multi) == 2
+    assert hits_multi[1].source == "github"
+    assert calls == ["osv", "osv", "github"]
