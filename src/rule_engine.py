@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
 import traceback
 from pathlib import Path
 from typing import Any, Callable, List, Sequence, Tuple
 
 from src.models import RiskRecord
+
+logger = logging.getLogger(__name__)
 
 
 def _rule_sort_key(rule_id: str) -> Tuple[str, int, str]:
@@ -64,7 +67,9 @@ def run_all(
             if found:
                 records.extend(found)
         except Exception:
-            errors.append((rule_id, traceback.format_exc()))
+            tb = traceback.format_exc()
+            logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
+            errors.append((rule_id, tb))
 
     sorted_rules = sorted(
         rules,

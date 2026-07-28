@@ -67,7 +67,14 @@ class Main:
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
 
+        from src.config import ScanConfig
+        from src.logger import setup_logging
         from src.scan import SecurityScan
+
+        config = ScanConfig(root)
+        setup_logging(
+            level=config.resolve_log_level(), log_file=config.resolve_log_file()
+        )
 
         SecurityScan(root, cli_options=cls.parse_args()).run()
 

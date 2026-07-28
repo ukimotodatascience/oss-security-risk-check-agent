@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import logging
+import urllib.error
 import streamlit as st
 
 from src.models import RiskRecord, Severity
 from src.reporting import ReportWriter
-from src.scan import ScanResult
-from src.scan import SecurityScan
+from src.scan import ScanResult, SecurityScan
+
+logger = logging.getLogger(__name__)
 
 
 SEVERITY_COLORS = {
@@ -405,6 +408,13 @@ def render_result(result: ScanResult, report_text: str) -> None:
 
 
 def main() -> None:
+    # ロギングの初期化
+    from src.config import ScanConfig
+    from src.logger import setup_logging
+
+    config = ScanConfig(project_root())
+    setup_logging(level=config.resolve_log_level(), log_file=config.resolve_log_file())
+
     st.set_page_config(
         page_title="OSS Security Risk Check Agent",
         page_icon="🛡️",
@@ -485,8 +495,17 @@ def main() -> None:
     except SystemExit as exc:
         st.error(str(exc))
         return
-    except Exception as exc:  # noqa: BLE001 - Web UI では例外内容を画面へ返す
-        st.exception(exc)
+    except (ValueError, urllib.error.URLError) as exc:
+        logger.exception("スキャン処理中に取得エラーが発生しました。")
+        st.error(
+            f"スキャン対象の取得に失敗しました。URLが正しいこと、およびネットワーク接続状態を確認してください。\n\n詳細: {exc}"
+        )
+        return
+    except Exception:
+        logger.exception("予期しないエラーが発生しました。")
+        st.error(
+            "スキャン処理中に予期しないエラーが発生しました。ログを確認するか、システム管理者にお問い合わせください。"
+        )
         return
 
     report_text = result.report_markdown

@@ -48,6 +48,12 @@ class FakeScanConfig:
     def resolve_github_token(self) -> str | None:
         return None
 
+    def resolve_log_level(self) -> str:
+        return "INFO"
+
+    def resolve_log_file(self) -> Path | None:
+        return None
+
 
 class FakeTargetResolver:
     def __init__(self, fetcher: Any) -> None:

@@ -114,6 +114,23 @@ class ScanConfig:
         token = self._env("GITHUB_TOKEN") or self._env("GH_TOKEN")
         return token if token else None
 
+    def resolve_log_level(self) -> str:
+        """環境変数 `LOG_LEVEL` を解決する。無効または未設定の場合は 'INFO'。"""
+        raw = self._env("LOG_LEVEL").upper()
+        if raw in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            return raw
+        return "INFO"
+
+    def resolve_log_file(self) -> Path | None:
+        """環境変数 `LOG_FILE` を読み、ログ出力先ファイルのパスを返す。
+
+        未設定の場合は None を返す。
+        """
+        raw = self._env("LOG_FILE")
+        if not raw:
+            return None
+        return Path(raw).expanduser().resolve()
+
     @staticmethod
     def _env(name: str) -> str:
         return os.environ.get(name, "").strip().strip('"').strip("'")
