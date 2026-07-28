@@ -384,3 +384,84 @@ def test_vuln_lookup_service_cache_distinguishes_provider_configs(monkeypatch):
     assert len(hits_multi) == 2
     assert hits_multi[1].source == "github"
     assert calls == ["osv", "osv", "github"]
+
+
+def test_vuln_lookup_service_does_not_cache_failures(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github")
+    monkeypatch.setenv("VULN_ENABLE_FALLBACK", "true")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(provider)
+        if provider == "osv":
+            # OSVは通信障害
+            return None
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-GITHUB",
+                source="github",
+                summary="github vuln",
+                severity_score=4.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1回目の照合
+    hits1 = service.lookup("python", "pkg-fail", "1.0")
+    # OSVが失敗したので、結果はGitHubのデータのみ。かつ has_failure=True のためキャッシュに保存されないはず
+    assert len(hits1) == 1
+    assert calls == ["osv", "github"]
+
+    # 2回目の照合 -> キャッシュに入っていないため、再び外部API（モック）が叩かれる
+    hits2 = service.lookup("python", "pkg-fail", "1.0")
+    assert len(hits2) == 1
+    assert calls == ["osv", "github", "osv", "github"]
+
+
+def test_vuln_lookup_service_process_cache_ttl(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    # TTLを極端に短く（1秒）設定
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "1")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0004",
+                source=provider,
+                summary="short-lived vuln",
+                severity_score=6.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1回目の照合 -> キャッシュが作られる
+    hits1 = service.lookup("python", "pkg-short", "1.0")
+    assert len(hits1) == 1
+    assert calls == ["pkg-short"]
+
+    # すぐに2回目を照合 -> メモリキャッシュから返る
+    hits2 = service.lookup("python", "pkg-short", "1.0")
+    assert hits1 == hits2
+    assert calls == ["pkg-short"]
+
+    # 時間を進める（2秒スリープ）
+    import time
+
+    time.sleep(2.0)
+
+    # 3回目の照合 -> メモリキャッシュがTTL切れで破棄され、再びAPIが呼ばれる
+    hits3 = service.lookup("python", "pkg-short", "1.0")
+    assert len(hits3) == 1
+    assert calls == ["pkg-short", "pkg-short"]

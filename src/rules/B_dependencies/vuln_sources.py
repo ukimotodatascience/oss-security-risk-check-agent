@@ -24,7 +24,9 @@ class VulnHit:
 
 
 class VulnLookupService:
-    _process_cache: Dict[tuple[str, str, str], List[VulnHit]] = {}
+    _process_cache: Dict[
+        tuple[str, str, str, str, bool], tuple[float, List[VulnHit]]
+    ] = {}
 
     def __init__(self) -> None:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
@@ -58,14 +60,19 @@ class VulnLookupService:
         )
 
         if key in self._process_cache:
-            logger.debug(f"Memory cache hit for {key}")
-            return self._process_cache[key]
+            ts, cached_hits = self._process_cache[key]
+            if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
+                logger.debug(f"Memory cache hit for {key}")
+                return cached_hits
+            else:
+                logger.debug(f"Memory cache expired for {key}")
+                del self._process_cache[key]
 
         if self._cache_ttl > 0:
             file_hits = self._read_file_cache(key)
             if file_hits is not None:
                 logger.debug(f"File cache hit for {key}")
-                self._process_cache[key] = file_hits
+                self._process_cache[key] = (time.time(), file_hits)
                 return file_hits
 
         logger.info(
@@ -74,9 +81,14 @@ class VulnLookupService:
         providers = self._provider_order or ["osv"]
         all_hits: List[VulnHit] = []
         seen_ids = set()
+        has_failure = False
 
         for provider in providers:
             hits = self._query_provider(provider, ecosystem, name, version)
+            if hits is None:
+                logger.warning(f"Vulnerability provider '{provider}' query failed.")
+                has_failure = True
+                continue
             for hit in hits:
                 if hit.vuln_id in seen_ids:
                     continue
@@ -86,10 +98,14 @@ class VulnLookupService:
             if hits and not self._enable_fallback:
                 break
 
-        self._process_cache[key] = all_hits
-
-        if self._cache_ttl > 0:
-            self._write_file_cache(key, all_hits)
+        if not has_failure:
+            self._process_cache[key] = (time.time(), all_hits)
+            if self._cache_ttl > 0:
+                self._write_file_cache(key, all_hits)
+        else:
+            logger.info(
+                "Skipped caching vulnerability query result due to provider failure."
+            )
 
         return all_hits
 
@@ -171,7 +187,7 @@ class VulnLookupService:
 
     def _query_provider(
         self, provider: str, ecosystem: str, name: str, version: str
-    ) -> List[VulnHit]:
+    ) -> List[VulnHit] | None:
         if provider == "osv":
             return self._query_osv(ecosystem, name, version)
         if provider == "github":
@@ -207,7 +223,9 @@ class VulnLookupService:
                 time.sleep(min(0.5 * (2**attempt), 2.0))
         return None
 
-    def _query_osv(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
+    def _query_osv(
+        self, ecosystem: str, name: str, version: str
+    ) -> List[VulnHit] | None:
         osv_ecosystem = "PyPI" if ecosystem == "python" else "npm"
         payload = {
             "package": {"name": name, "ecosystem": osv_ecosystem},
@@ -223,6 +241,8 @@ class VulnLookupService:
             if os.environ.get("OSV_API_KEY", "").strip()
             else None,
         )
+        if data is None:
+            return None
         if not data:
             return []
         vulns = data.get("vulns")
@@ -261,7 +281,7 @@ class VulnLookupService:
             )
         return hits
 
-    def _query_github_advisory(self, ecosystem: str, name: str) -> List[VulnHit]:
+    def _query_github_advisory(self, ecosystem: str, name: str) -> List[VulnHit] | None:
         eco = "pip" if ecosystem == "python" else "npm"
         query = urlencode({"ecosystem": eco, "affects": name, "per_page": "20"})
         headers = {"Accept": "application/vnd.github+json"}
@@ -275,6 +295,8 @@ class VulnLookupService:
         data = self._request_json(
             f"https://api.github.com/advisories?{query}", headers=headers
         )
+        if data is None:
+            return None
         if not isinstance(data, list):
             return []
 
@@ -303,7 +325,7 @@ class VulnLookupService:
             )
         return hits
 
-    def _query_nvd(self, name: str, version: str) -> List[VulnHit]:
+    def _query_nvd(self, name: str, version: str) -> List[VulnHit] | None:
         query = urlencode(
             {"keywordSearch": f"{name} {version}", "resultsPerPage": "20"}
         )
@@ -315,6 +337,8 @@ class VulnLookupService:
             f"https://services.nvd.nist.gov/rest/json/cves/2.0?{query}",
             headers=headers,
         )
+        if data is None:
+            return None
         if not data:
             return []
 
