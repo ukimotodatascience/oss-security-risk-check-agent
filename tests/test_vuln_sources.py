@@ -720,7 +720,7 @@ def test_vuln_lookup_service_file_cache_size_limit(tmp_path, monkeypatch):
         service._write_file_cache(key, [])
         os.utime(file_path, (time.time() - (40 - 10 * i), time.time() - (40 - 10 * i)))
 
-    service._enforce_file_cache_limit()
+    service._enforce_file_cache_limit(force=True)
 
     assert not file_paths[0].exists()
     assert file_paths[1].exists()
@@ -730,49 +730,120 @@ def test_vuln_lookup_service_file_cache_size_limit(tmp_path, monkeypatch):
 
 def test_query_osv_invalid_schema_returns_none(monkeypatch):
     service = VulnLookupService()
+    service._local_state.had_invalid = False
 
     # 1. 辞書でない要素が含まれる場合
     mock_resp = {"vulns": ["not-a-dict"]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
-    assert service._query_osv("python", "pkg", "1.0") is None
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
 
     # 2. id が str でない場合
+    service._local_state.had_invalid = False
     mock_resp2 = {"vulns": [{"id": 123}]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
-    assert service._query_osv("python", "pkg", "1.0") is None
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
 
     # 3. references 内に不正な型がある場合
+    service._local_state.had_invalid = False
     mock_resp3 = {"vulns": [{"id": "OSV-1", "references": "not-a-list"}]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
-    assert service._query_osv("python", "pkg", "1.0") is None
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 4. 正常な要素と不正な要素が混在する場合
+    service._local_state.had_invalid = False
+    mock_resp4 = {
+        "vulns": [
+            {
+                "id": "OSV-OK",
+                "summary": "good vuln",
+            },
+            "corrupted-element",
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp4)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "OSV-OK"
+    assert service._local_state.had_invalid is True
 
 
 def test_query_github_advisory_invalid_schema_returns_none(monkeypatch):
     service = VulnLookupService()
+    service._local_state.had_invalid = False
 
     # 1. 辞書でない要素が含まれる場合
     mock_resp = ["not-a-dict"]
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
-    assert service._query_github_advisory("python", "pkg") is None
+    hits = service._query_github_advisory("python", "pkg")
+    assert hits == []
+    assert service._local_state.had_invalid is True
 
     # 2. ghsa_id が str でない場合
+    service._local_state.had_invalid = False
     mock_resp2 = [{"ghsa_id": 123}]
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
-    assert service._query_github_advisory("python", "pkg") is None
+    hits = service._query_github_advisory("python", "pkg")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 3. 正常と不正の混在
+    service._local_state.had_invalid = False
+    mock_resp3 = [
+        {
+            "ghsa_id": "GHSA-OK",
+            "summary": "good",
+        },
+        object(),
+    ]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    hits = service._query_github_advisory("python", "pkg")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "GHSA-OK"
+    assert service._local_state.had_invalid is True
 
 
 def test_query_nvd_invalid_schema_returns_none(monkeypatch):
     service = VulnLookupService()
+    service._local_state.had_invalid = False
 
     # 1. cve が dict でない場合
     mock_resp = {"vulnerabilities": [{"cve": "not-a-dict"}]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
-    assert service._query_nvd("pkg", "1.0") is None
+    hits = service._query_nvd("pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
 
     # 2. cve.id が str でない場合
+    service._local_state.had_invalid = False
     mock_resp2 = {"vulnerabilities": [{"cve": {"id": 123}}]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
-    assert service._query_nvd("pkg", "1.0") is None
+    hits = service._query_nvd("pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 3. 正常と不正の混在
+    service._local_state.had_invalid = False
+    mock_resp3 = {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "id": "CVE-OK",
+                }
+            },
+            {"not_cve": {}},
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    hits = service._query_nvd("pkg", "1.0")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "CVE-OK"
+    assert service._local_state.had_invalid is True
 
 
 def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
@@ -792,6 +863,7 @@ def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
     assert len(hits) == 1
     assert hits[0].vuln_id == "OSV-2024-VEC"
     assert hits[0].severity_score is None
+    assert getattr(service._local_state, "had_invalid", False) is False
 
 
 def test_vuln_lookup_service_shares_failure_with_concurrent_waiters(monkeypatch):
@@ -861,7 +933,32 @@ def test_vuln_lookup_service_only_deletes_its_own_cache_files(tmp_path, monkeypa
     assert foreign_file.exists()
     assert own_file.exists()
 
-    service._enforce_file_cache_limit()
+    service._enforce_file_cache_limit(force=True)
 
     assert not own_file.exists()
     assert foreign_file.exists()
+
+
+def test_vuln_lookup_service_file_cache_limit_throttling(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "10")
+    service = VulnLookupService()
+
+    VulnLookupService._file_cache_write_counter = 0
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-throttle", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    service._write_file_cache(key, [])
+    os.utime(file_path, (time.time() - 20, time.time() - 20))
+
+    service._enforce_file_cache_limit(force=False)
+    assert file_path.exists()
+    assert VulnLookupService._file_cache_write_counter == 2
+
+    VulnLookupService._file_cache_write_counter = 99
+    service._enforce_file_cache_limit(force=False)
+    assert not file_path.exists()
+    assert VulnLookupService._file_cache_write_counter == 0

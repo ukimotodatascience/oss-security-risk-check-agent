@@ -38,6 +38,8 @@ class VulnLookupService:
     ] = {}
     _inflight_locks: Dict[tuple[str, str, str, str, bool], Flight] = {}
     _inflight_locks_lock = threading.Lock()
+    _file_cache_write_counter = 0
+    _file_cache_write_lock = threading.Lock()
 
     def __init__(self) -> None:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
@@ -50,7 +52,9 @@ class VulnLookupService:
             os.environ.get("VULN_ENABLE_FALLBACK", "true").strip().lower() == "true"
         )
 
-        cache_dir_raw = os.environ.get("VULN_CACHE_DIR")
+        cache_dir_raw = (
+            os.environ.get("VULN_CACHE_DIR", "").strip().strip('"').strip("'")
+        )
         if cache_dir_raw:
             self._cache_dir = Path(cache_dir_raw).expanduser().resolve() / "vuln_cache"
         else:
@@ -58,7 +62,11 @@ class VulnLookupService:
 
             self._cache_dir = Path(tempfile.gettempdir()) / "oss_vuln_cache"
 
-        self._cache_ttl = int(os.environ.get("VULN_CACHE_TTL_SEC", "86400") or "86400")
+        cache_ttl_raw = (
+            os.environ.get("VULN_CACHE_TTL_SEC", "").strip().strip('"').strip("'")
+        )
+        self._cache_ttl = int(cache_ttl_raw or "86400")
+        self._local_state = threading.local()
 
     MAX_PROCESS_CACHE_SIZE = 2000
     MAX_FILE_CACHE_SIZE = 5000
@@ -85,8 +93,15 @@ class VulnLookupService:
             first_key = next(iter(self._process_cache))
             self._process_cache.pop(first_key, None)
 
-    def _enforce_file_cache_limit(self) -> None:
+    def _enforce_file_cache_limit(self, force: bool = False) -> None:
         try:
+            if not force:
+                with self._file_cache_write_lock:
+                    self.__class__._file_cache_write_counter += 1
+                    if self.__class__._file_cache_write_counter < 100:
+                        return
+                    self.__class__._file_cache_write_counter = 0
+
             if not self._cache_dir.exists():
                 return
 
@@ -182,6 +197,7 @@ class VulnLookupService:
                 seen_ids = set()
                 has_failure = False
 
+                self._local_state.had_invalid = False
                 for provider in providers:
                     hits = self._query_provider(provider, ecosystem, name, version)
                     if hits is None:
@@ -190,6 +206,14 @@ class VulnLookupService:
                         )
                         has_failure = True
                         continue
+
+                    if getattr(self._local_state, "had_invalid", False):
+                        logger.warning(
+                            f"Vulnerability provider '{provider}' returned some invalid schema elements. "
+                            "Results will not be cached."
+                        )
+                        has_failure = True
+
                     for hit in hits:
                         if hit.vuln_id in seen_ids:
                             continue
@@ -427,39 +451,53 @@ class VulnLookupService:
             return None
 
         hits: List[VulnHit] = []
+
         for v in vulns:
             if not isinstance(v, dict):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             vuln_id = v.get("id")
             if not isinstance(vuln_id, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             summary = v.get("summary")
             if summary is not None and not isinstance(summary, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             refs = []
             references_raw = v.get("references")
             if references_raw is not None:
                 if not isinstance(references_raw, list):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
+                ref_err = False
                 for r in references_raw:
                     if not isinstance(r, dict):
-                        return None
+                        ref_err = True
+                        break
                     url = r.get("url")
                     if not isinstance(url, str):
-                        return None
+                        ref_err = True
+                        break
                     refs.append(url)
+                if ref_err:
+                    self._local_state.had_invalid = True
+                    continue
 
             score = None
             severity_raw = v.get("severity")
             if severity_raw is not None:
                 if not isinstance(severity_raw, list):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
+                sev_err = False
                 for sev in severity_raw:
                     if not isinstance(sev, dict):
-                        return None
+                        sev_err = True
+                        break
                     raw = sev.get("score")
                     if isinstance(raw, str) and "CVSS:" in raw:
                         try:
@@ -467,6 +505,9 @@ class VulnLookupService:
                             break
                         except ValueError:
                             pass
+                if sev_err:
+                    self._local_state.had_invalid = True
+                    continue
 
             hits.append(
                 VulnHit(
@@ -499,31 +540,38 @@ class VulnLookupService:
             return None
 
         hits: List[VulnHit] = []
+
         for adv in data:
             if not isinstance(adv, dict):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             ghsa = adv.get("ghsa_id")
             if not isinstance(ghsa, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             summary = adv.get("summary")
             if summary is not None and not isinstance(summary, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             url = adv.get("html_url")
             if url is not None and not isinstance(url, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             score = None
             cvss = adv.get("cvss")
             if cvss is not None:
                 if not isinstance(cvss, dict):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
                 cvss_score = cvss.get("score")
                 if cvss_score is not None:
                     if not isinstance(cvss_score, (int, float)):
-                        return None
+                        self._local_state.had_invalid = True
+                        continue
                     score = float(cvss_score)
 
             refs = [url] if url else []
@@ -561,69 +609,96 @@ class VulnLookupService:
             return None
 
         hits: List[VulnHit] = []
+
         for item in vulns:
             if not isinstance(item, dict):
-                return None
+                self._local_state.had_invalid = True
+                continue
             cve = item.get("cve")
             if not isinstance(cve, dict):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             vuln_id = cve.get("id")
             if not isinstance(vuln_id, str):
-                return None
+                self._local_state.had_invalid = True
+                continue
 
             summary = "NVD vulnerability found"
             descs = cve.get("descriptions")
             if descs is not None:
                 if not isinstance(descs, list):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
+                desc_err = False
                 for d in descs:
                     if not isinstance(d, dict):
-                        return None
+                        desc_err = True
+                        break
                     if d.get("lang") == "en":
                         val = d.get("value")
                         if not isinstance(val, str):
-                            return None
+                            desc_err = True
+                            break
                         summary = val
                         break
+                if desc_err:
+                    self._local_state.had_invalid = True
+                    continue
 
             score = None
             metrics = cve.get("metrics")
             if metrics is not None:
                 if not isinstance(metrics, dict):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
+                metrics_err = False
                 for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                     arr = metrics.get(key)
                     if arr is not None:
                         if not isinstance(arr, list):
-                            return None
+                            metrics_err = True
+                            break
                         if arr:
                             m0 = arr[0]
                             if not isinstance(m0, dict):
-                                return None
+                                metrics_err = True
+                                break
                             cvss_data = m0.get("cvssData")
                             if cvss_data is not None:
                                 if not isinstance(cvss_data, dict):
-                                    return None
+                                    metrics_err = True
+                                    break
                                 base_score = cvss_data.get("baseScore")
                                 if base_score is not None:
                                     if not isinstance(base_score, (int, float)):
-                                        return None
+                                        metrics_err = True
+                                        break
                                     score = float(base_score)
                                     break
+                if metrics_err:
+                    self._local_state.had_invalid = True
+                    continue
 
             refs = []
             references = cve.get("references")
             if references is not None:
                 if not isinstance(references, list):
-                    return None
+                    self._local_state.had_invalid = True
+                    continue
+                ref_err = False
                 for r in references:
                     if not isinstance(r, dict):
-                        return None
+                        ref_err = True
+                        break
                     url = r.get("url")
                     if not isinstance(url, str):
-                        return None
+                        ref_err = True
+                        break
                     refs.append(url)
+                if ref_err:
+                    self._local_state.had_invalid = True
+                    continue
 
             hits.append(
                 VulnHit(
