@@ -773,3 +773,63 @@ def test_query_nvd_invalid_schema_returns_none(monkeypatch):
     mock_resp2 = {"vulnerabilities": [{"cve": {"id": 123}}]}
     monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
     assert service._query_nvd("pkg", "1.0") is None
+
+
+def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
+    service = VulnLookupService()
+    mock_resp = {
+        "vulns": [
+            {
+                "id": "OSV-2024-VEC",
+                "summary": "OSV Vector",
+                "severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            }
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits is not None
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "OSV-2024-VEC"
+    assert hits[0].severity_score is None
+
+
+def test_vuln_lookup_service_shares_failure_with_concurrent_waiters(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    service = VulnLookupService()
+
+    calls = []
+
+    def mock_query(*args):
+        calls.append(args)
+        time.sleep(0.1)
+        return None
+
+    monkeypatch.setattr(service, "_query_provider", mock_query)
+
+    import threading
+
+    results = []
+
+    def worker():
+        res = service.lookup("python", "pkg-fail-share", "1.0")
+        results.append(res)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+
+    t1.start()
+    time.sleep(0.02)
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+    assert len(calls) == 3
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-fail-share", "1.0", providers_str, service._enable_fallback)
+    assert key not in VulnLookupService._process_cache
+
+    assert len(results) == 2
+    assert results[0] == results[1]

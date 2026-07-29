@@ -28,6 +28,8 @@ class Flight:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.ref_count = 1
+        self.has_result = False
+        self.result: List[VulnHit] = []
 
 
 class VulnLookupService:
@@ -155,6 +157,9 @@ class VulnLookupService:
         with flight.lock:
             try:
                 # ロック獲得後の再チェック
+                if flight.has_result:
+                    return flight.result
+
                 val = self._process_cache.get(key)
                 if val is not None:
                     ts, cached_hits = val
@@ -193,6 +198,9 @@ class VulnLookupService:
 
                     if hits and not self._enable_fallback:
                         break
+
+                flight.result = all_hits
+                flight.has_result = True
 
                 if not has_failure:
                     self._process_cache[key] = (time.time(), all_hits)
@@ -458,7 +466,7 @@ class VulnLookupService:
                             score = float(raw.rsplit("/", 1)[-1])
                             break
                         except ValueError:
-                            return None
+                            pass
 
             hits.append(
                 VulnHit(
