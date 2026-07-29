@@ -421,29 +421,50 @@ class VulnLookupService:
         hits: List[VulnHit] = []
         for v in vulns:
             if not isinstance(v, dict):
-                continue
+                return None
+
+            vuln_id = v.get("id")
+            if not isinstance(vuln_id, str):
+                return None
+
+            summary = v.get("summary")
+            if summary is not None and not isinstance(summary, str):
+                return None
+
             refs = []
-            for r in v.get("references", []) or []:
-                if isinstance(r, dict) and isinstance(r.get("url"), str):
-                    refs.append(r["url"])
+            references_raw = v.get("references")
+            if references_raw is not None:
+                if not isinstance(references_raw, list):
+                    return None
+                for r in references_raw:
+                    if not isinstance(r, dict):
+                        return None
+                    url = r.get("url")
+                    if not isinstance(url, str):
+                        return None
+                    refs.append(url)
 
             score = None
-            for sev in v.get("severity", []) or []:
-                if not isinstance(sev, dict):
-                    continue
-                raw = sev.get("score")
-                if isinstance(raw, str) and "CVSS:" in raw:
-                    try:
-                        score = float(raw.rsplit("/", 1)[-1])
-                        break
-                    except ValueError:
-                        pass
+            severity_raw = v.get("severity")
+            if severity_raw is not None:
+                if not isinstance(severity_raw, list):
+                    return None
+                for sev in severity_raw:
+                    if not isinstance(sev, dict):
+                        return None
+                    raw = sev.get("score")
+                    if isinstance(raw, str) and "CVSS:" in raw:
+                        try:
+                            score = float(raw.rsplit("/", 1)[-1])
+                            break
+                        except ValueError:
+                            return None
 
             hits.append(
                 VulnHit(
-                    vuln_id=str(v.get("id", "OSV-UNKNOWN")),
+                    vuln_id=vuln_id,
                     source="osv",
-                    summary=str(v.get("summary") or "Known vulnerability found"),
+                    summary=summary if summary else "Known vulnerability found",
                     severity_score=score,
                     references=refs,
                 )
@@ -472,22 +493,37 @@ class VulnLookupService:
         hits: List[VulnHit] = []
         for adv in data:
             if not isinstance(adv, dict):
-                continue
-            ghsa = str(adv.get("ghsa_id") or "GHSA-UNKNOWN")
-            summary = str(adv.get("summary") or "GitHub advisory found")
+                return None
+
+            ghsa = adv.get("ghsa_id")
+            if not isinstance(ghsa, str):
+                return None
+
+            summary = adv.get("summary")
+            if summary is not None and not isinstance(summary, str):
+                return None
+
             url = adv.get("html_url")
+            if url is not None and not isinstance(url, str):
+                return None
+
             score = None
             cvss = adv.get("cvss")
-            if isinstance(cvss, dict):
+            if cvss is not None:
+                if not isinstance(cvss, dict):
+                    return None
                 cvss_score = cvss.get("score")
-                if isinstance(cvss_score, (int, float)):
+                if cvss_score is not None:
+                    if not isinstance(cvss_score, (int, float)):
+                        return None
                     score = float(cvss_score)
-            refs = [url] if isinstance(url, str) else []
+
+            refs = [url] if url else []
             hits.append(
                 VulnHit(
                     vuln_id=ghsa,
                     source="github",
-                    summary=summary,
+                    summary=summary if summary else "GitHub advisory found",
                     severity_score=score,
                     references=refs,
                 )
@@ -519,44 +555,67 @@ class VulnLookupService:
         hits: List[VulnHit] = []
         for item in vulns:
             if not isinstance(item, dict):
-                continue
+                return None
             cve = item.get("cve")
             if not isinstance(cve, dict):
-                continue
-            vuln_id = str(cve.get("id") or "CVE-UNKNOWN")
+                return None
+
+            vuln_id = cve.get("id")
+            if not isinstance(vuln_id, str):
+                return None
+
             summary = "NVD vulnerability found"
             descs = cve.get("descriptions")
-            if isinstance(descs, list):
+            if descs is not None:
+                if not isinstance(descs, list):
+                    return None
                 for d in descs:
-                    if (
-                        isinstance(d, dict)
-                        and d.get("lang") == "en"
-                        and isinstance(d.get("value"), str)
-                    ):
-                        summary = d["value"]
+                    if not isinstance(d, dict):
+                        return None
+                    if d.get("lang") == "en":
+                        val = d.get("value")
+                        if not isinstance(val, str):
+                            return None
+                        summary = val
                         break
 
             score = None
             metrics = cve.get("metrics")
-            if isinstance(metrics, dict):
+            if metrics is not None:
+                if not isinstance(metrics, dict):
+                    return None
                 for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
                     arr = metrics.get(key)
-                    if isinstance(arr, list) and arr:
-                        m0 = arr[0]
-                        if isinstance(m0, dict):
+                    if arr is not None:
+                        if not isinstance(arr, list):
+                            return None
+                        if arr:
+                            m0 = arr[0]
+                            if not isinstance(m0, dict):
+                                return None
                             cvss_data = m0.get("cvssData")
-                            if isinstance(cvss_data, dict) and isinstance(
-                                cvss_data.get("baseScore"), (int, float)
-                            ):
-                                score = float(cvss_data["baseScore"])
-                                break
+                            if cvss_data is not None:
+                                if not isinstance(cvss_data, dict):
+                                    return None
+                                base_score = cvss_data.get("baseScore")
+                                if base_score is not None:
+                                    if not isinstance(base_score, (int, float)):
+                                        return None
+                                    score = float(base_score)
+                                    break
 
             refs = []
             references = cve.get("references")
-            if isinstance(references, list):
+            if references is not None:
+                if not isinstance(references, list):
+                    return None
                 for r in references:
-                    if isinstance(r, dict) and isinstance(r.get("url"), str):
-                        refs.append(r["url"])
+                    if not isinstance(r, dict):
+                        return None
+                    url = r.get("url")
+                    if not isinstance(url, str):
+                        return None
+                    refs.append(url)
 
             hits.append(
                 VulnHit(

@@ -179,7 +179,6 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
                     "references": [{"url": "https://osv.dev/vuln/OSV-2024-1"}],
                     "severity": [{"score": "CVSS:3.1/AV:N/AC:L/9.1"}],
                 },
-                "ignored",
                 {"id": "OSV-NOSCORE", "severity": [{"score": "bad"}]},
             ]
         }
@@ -214,7 +213,6 @@ def test_query_github_advisory_maps_response_and_token(monkeypatch):
                 "html_url": "https://github.com/advisories/GHSA-xxxx-yyyy",
                 "cvss": {"score": 8.8},
             },
-            object(),
         ]
 
     monkeypatch.setattr(service, "_request_json", fake_request)
@@ -254,7 +252,6 @@ def test_query_nvd_maps_nested_cve_fields(monkeypatch):
                         ],
                     }
                 },
-                {"not_cve": {}},
             ]
         }
 
@@ -729,3 +726,50 @@ def test_vuln_lookup_service_file_cache_size_limit(tmp_path, monkeypatch):
     assert file_paths[1].exists()
     assert file_paths[2].exists()
     assert file_paths[3].exists()
+
+
+def test_query_osv_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+
+    # 1. 辞書でない要素が含まれる場合
+    mock_resp = {"vulns": ["not-a-dict"]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    assert service._query_osv("python", "pkg", "1.0") is None
+
+    # 2. id が str でない場合
+    mock_resp2 = {"vulns": [{"id": 123}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    assert service._query_osv("python", "pkg", "1.0") is None
+
+    # 3. references 内に不正な型がある場合
+    mock_resp3 = {"vulns": [{"id": "OSV-1", "references": "not-a-list"}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    assert service._query_osv("python", "pkg", "1.0") is None
+
+
+def test_query_github_advisory_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+
+    # 1. 辞書でない要素が含まれる場合
+    mock_resp = ["not-a-dict"]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    assert service._query_github_advisory("python", "pkg") is None
+
+    # 2. ghsa_id が str でない場合
+    mock_resp2 = [{"ghsa_id": 123}]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    assert service._query_github_advisory("python", "pkg") is None
+
+
+def test_query_nvd_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+
+    # 1. cve が dict でない場合
+    mock_resp = {"vulnerabilities": [{"cve": "not-a-dict"}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    assert service._query_nvd("pkg", "1.0") is None
+
+    # 2. cve.id が str でない場合
+    mock_resp2 = {"vulnerabilities": [{"cve": {"id": 123}}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    assert service._query_nvd("pkg", "1.0") is None
