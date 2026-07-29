@@ -59,6 +59,7 @@ class VulnLookupService:
         self._cache_ttl = int(os.environ.get("VULN_CACHE_TTL_SEC", "86400") or "86400")
 
     MAX_PROCESS_CACHE_SIZE = 2000
+    MAX_FILE_CACHE_SIZE = 5000
 
     def _decrement_flight(self, key: tuple[str, str, str, str, bool]) -> None:
         with self._inflight_locks_lock:
@@ -81,6 +82,37 @@ class VulnLookupService:
         while len(self._process_cache) > self.MAX_PROCESS_CACHE_SIZE:
             first_key = next(iter(self._process_cache))
             self._process_cache.pop(first_key, None)
+
+    def _enforce_file_cache_limit(self) -> None:
+        try:
+            if not self._cache_dir.exists():
+                return
+
+            json_files = list(self._cache_dir.glob("*.json"))
+            now = time.time()
+            valid_files = []
+
+            for file_path in json_files:
+                try:
+                    mtime = file_path.stat().st_mtime
+                    if self._cache_ttl > 0 and now - mtime > self._cache_ttl:
+                        file_path.unlink(missing_ok=True)
+                        continue
+                    valid_files.append((mtime, file_path))
+                except Exception:
+                    pass
+
+            if len(valid_files) > self.MAX_FILE_CACHE_SIZE:
+                valid_files.sort(key=lambda x: x[0])
+                to_delete_count = len(valid_files) - self.MAX_FILE_CACHE_SIZE
+                for i in range(to_delete_count):
+                    try:
+                        _, file_path = valid_files[i]
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning(f"Failed to enforce file cache limits: {exc}")
 
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
         providers_str = ",".join(self._provider_order)
@@ -308,6 +340,7 @@ class VulnLookupService:
 
             try:
                 os.replace(temp_name, str(file_path))
+                self._enforce_file_cache_limit()
             except Exception:
                 if os.path.exists(temp_name):
                     os.unlink(temp_name)

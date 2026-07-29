@@ -693,3 +693,39 @@ def test_vuln_lookup_service_file_cache_corrupted_deleted(tmp_path, monkeypatch)
     res = service._read_file_cache(key)
     assert res is None
     assert not file_path.exists()
+
+
+def test_vuln_lookup_service_file_cache_size_limit(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    monkeypatch.setattr(service, "MAX_FILE_CACHE_SIZE", 3)
+
+    keys = []
+    file_paths = []
+    providers_str = ",".join(service._provider_order)
+
+    for i in range(4):
+        key = (
+            "python",
+            f"pkg-limit-{i}",
+            "1.0",
+            providers_str,
+            service._enable_fallback,
+        )
+        file_path = service._get_cache_file_path(key)
+        keys.append(key)
+        file_paths.append(file_path)
+
+        service._write_file_cache(key, [])
+        os.utime(file_path, (time.time() - (40 - 10 * i), time.time() - (40 - 10 * i)))
+
+    service._enforce_file_cache_limit()
+
+    assert not file_paths[0].exists()
+    assert file_paths[1].exists()
+    assert file_paths[2].exists()
+    assert file_paths[3].exists()
