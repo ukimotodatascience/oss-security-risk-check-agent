@@ -5,6 +5,7 @@ import logging
 import threading
 import os
 import time
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -40,6 +41,20 @@ class VulnLookupService:
     _inflight_locks_lock = threading.Lock()
     _file_cache_write_counter = 0
     _file_cache_write_lock = threading.Lock()
+    _active_config = threading.local()
+
+    @classmethod
+    @contextlib.contextmanager
+    def use_config(cls, cache_dir: Path | None, cache_ttl: int | None):
+        old_dir = getattr(cls._active_config, "cache_dir", None)
+        old_ttl = getattr(cls._active_config, "cache_ttl", None)
+        cls._active_config.cache_dir = cache_dir
+        cls._active_config.cache_ttl = cache_ttl
+        try:
+            yield
+        finally:
+            cls._active_config.cache_dir = old_dir
+            cls._active_config.cache_ttl = old_ttl
 
     def __init__(self) -> None:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
@@ -56,17 +71,35 @@ class VulnLookupService:
             os.environ.get("VULN_CACHE_DIR", "").strip().strip('"').strip("'")
         )
         if cache_dir_raw:
-            self._cache_dir = Path(cache_dir_raw).expanduser().resolve() / "vuln_cache"
+            self._default_cache_dir = (
+                Path(cache_dir_raw).expanduser().resolve() / "vuln_cache"
+            )
         else:
             import tempfile
 
-            self._cache_dir = Path(tempfile.gettempdir()) / "oss_vuln_cache"
+            self._default_cache_dir = Path(tempfile.gettempdir()) / "oss_vuln_cache"
 
         cache_ttl_raw = (
             os.environ.get("VULN_CACHE_TTL_SEC", "").strip().strip('"').strip("'")
         )
-        self._cache_ttl = int(cache_ttl_raw or "86400")
+        self._default_cache_ttl = int(cache_ttl_raw or "86400")
         self._local_state = threading.local()
+
+    @property
+    def _cache_dir(self) -> Path:
+        active_dir = getattr(self._active_config, "cache_dir", None)
+        if active_dir is not None:
+            if active_dir.name == "vuln_cache":
+                return active_dir
+            return active_dir / "vuln_cache"
+        return self._default_cache_dir
+
+    @property
+    def _cache_ttl(self) -> int:
+        active_ttl = getattr(self._active_config, "cache_ttl", None)
+        if active_ttl is not None:
+            return active_ttl
+        return self._default_cache_ttl
 
     MAX_PROCESS_CACHE_SIZE = 2000
     MAX_FILE_CACHE_SIZE = 5000

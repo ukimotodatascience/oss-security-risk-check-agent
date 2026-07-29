@@ -962,3 +962,53 @@ def test_vuln_lookup_service_file_cache_limit_throttling(tmp_path, monkeypatch):
     service._enforce_file_cache_limit(force=False)
     assert not file_path.exists()
     assert VulnLookupService._file_cache_write_counter == 0
+
+
+def test_vuln_lookup_service_use_config_context_manager(tmp_path):
+    service = VulnLookupService()
+    default_dir = service._cache_dir
+    default_ttl = service._cache_ttl
+
+    custom_dir = tmp_path / "custom"
+    custom_ttl = 1234
+
+    # 1. コンテキスト内での値の変更と、抜けた後の復元
+    with VulnLookupService.use_config(cache_dir=custom_dir, cache_ttl=custom_ttl):
+        assert service._cache_dir == custom_dir / "vuln_cache"
+        assert service._cache_ttl == custom_ttl
+
+    assert service._cache_dir == default_dir
+    assert service._cache_ttl == default_ttl
+
+    # 2. マルチスレッドにおける独立性の検証
+    import threading
+
+    barrier = threading.Barrier(2)
+    thread1_success = False
+    thread2_success = False
+
+    def run_thread1():
+        nonlocal thread1_success
+        dir_t1 = tmp_path / "t1"
+        with VulnLookupService.use_config(cache_dir=dir_t1, cache_ttl=10):
+            barrier.wait()  # 両方のスレッドがコンテキストに入るのを待つ
+            if service._cache_dir == dir_t1 / "vuln_cache" and service._cache_ttl == 10:
+                thread1_success = True
+
+    def run_thread2():
+        nonlocal thread2_success
+        dir_t2 = tmp_path / "t2"
+        with VulnLookupService.use_config(cache_dir=dir_t2, cache_ttl=20):
+            barrier.wait()
+            if service._cache_dir == dir_t2 / "vuln_cache" and service._cache_ttl == 20:
+                thread2_success = True
+
+    t1 = threading.Thread(target=run_thread1)
+    t2 = threading.Thread(target=run_thread2)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert thread1_success is True
+    assert thread2_success is True

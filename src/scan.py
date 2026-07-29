@@ -143,11 +143,17 @@ class SecurityScan:
         with resolver.resolve(target_spec) as resolved:
             self._notify_step_progress(4, 5, "ルールを実行しています")
             logger.info(f"ルールを実行しています... (対象パス: {resolved.scan_path})")
-            records, errors, executed_count = self._rule_runner(
-                resolved.scan_path,
-                rules,
-                self._print_rule_progress,
-            )
+            from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+            with VulnLookupService.use_config(
+                cache_dir=config.resolve_vuln_cache_dir(),
+                cache_ttl=config.resolve_vuln_cache_ttl(),
+            ):
+                records, errors, executed_count = self._rule_runner(
+                    resolved.scan_path,
+                    rules,
+                    self._print_rule_progress,
+                )
             logger.info(
                 f"ルール実行完了 (実行数: {executed_count} 件, 検知数: {len(records)} 件, エラー数: {len(errors)} 件)"
             )

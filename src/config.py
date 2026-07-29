@@ -32,17 +32,8 @@ class ScanConfig:
         self._project_root = project_root
         self._overrides = overrides or ConfigOverrides()
         load_dotenv(self._project_root / ".env")
-        cache_dir = os.environ.get("VULN_CACHE_DIR", "").strip().strip('"').strip("'")
-        if not cache_dir:
-            os.environ["VULN_CACHE_DIR"] = str(self.resolve_vuln_cache_dir())
-        else:
-            os.environ["VULN_CACHE_DIR"] = str(self.resolve_vuln_cache_dir())
-
-        cache_ttl = os.environ.get("VULN_CACHE_TTL_SEC", "").strip().strip('"').strip("'")
-        if not cache_ttl:
-            os.environ["VULN_CACHE_TTL_SEC"] = str(self.resolve_vuln_cache_ttl())
-        else:
-            self.resolve_vuln_cache_ttl()
+        self.resolve_vuln_cache_dir()
+        self.resolve_vuln_cache_ttl()
 
     def resolve_target_dir(self) -> Path:
         """`TARGET_DIR` を読み、存在するディレクトリの絶対パスを返す。"""
