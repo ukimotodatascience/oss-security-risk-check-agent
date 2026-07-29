@@ -32,6 +32,8 @@ class ScanConfig:
         self._project_root = project_root
         self._overrides = overrides or ConfigOverrides()
         load_dotenv(self._project_root / ".env")
+        self.resolve_vuln_cache_dir()
+        self.resolve_vuln_cache_ttl()
 
     def resolve_target_dir(self) -> Path:
         """`TARGET_DIR` を読み、存在するディレクトリの絶対パスを返す。"""
@@ -130,6 +132,28 @@ class ScanConfig:
         if not raw:
             return None
         return Path(raw).expanduser().resolve()
+
+    def resolve_vuln_cache_dir(self) -> Path:
+        """脆弱性情報のキャッシュディレクトリを返す。"""
+        raw = self._env("VULN_CACHE_DIR")
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return self._project_root / ".reports" / ".cache"
+
+    def resolve_vuln_cache_ttl(self) -> int:
+        """脆弱性情報のキャッシュ有効期限（秒）を返す。0 の場合は無効。"""
+        raw = self._env("VULN_CACHE_TTL_SEC")
+        if not raw:
+            return 86400
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise SystemExit(
+                f"VULN_CACHE_TTL_SEC は整数で指定してください: {raw}"
+            ) from exc
+        if value < 0:
+            raise SystemExit(f"VULN_CACHE_TTL_SEC は 0 以上で指定してください: {raw}")
+        return value
 
     @staticmethod
     def _env(name: str) -> str:

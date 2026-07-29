@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-
+import pytest
 
 from src.config import ScanConfig
 from src.logger import setup_logging
@@ -80,3 +80,30 @@ def test_setup_logging_only_initializes_once(tmp_path):
     ]
     assert len(file_handlers) == 1
     assert Path(file_handlers[0].baseFilename) == log_file1.resolve()
+
+
+def test_resolve_vuln_cache_ttl_handling(tmp_path, monkeypatch):
+    # デフォルト
+    monkeypatch.delenv("VULN_CACHE_TTL_SEC", raising=False)
+    config = ScanConfig(tmp_path)
+    assert config.resolve_vuln_cache_ttl() == 86400
+
+    # 正常な値 (100)
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    config = ScanConfig(tmp_path)
+    assert config.resolve_vuln_cache_ttl() == 100
+
+    # キャッシュ無効化設定の 0
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+    config = ScanConfig(tmp_path)
+    assert config.resolve_vuln_cache_ttl() == 0
+
+    # 負の値は SystemExit
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "-1")
+    with pytest.raises(SystemExit):
+        ScanConfig(tmp_path)
+
+    # 整数以外は SystemExit
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "abc")
+    with pytest.raises(SystemExit):
+        ScanConfig(tmp_path)

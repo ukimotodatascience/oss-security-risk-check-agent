@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import urllib.error
 
 import pytest
@@ -46,6 +48,8 @@ def stable_vuln_env(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("NVD_API_KEY", raising=False)
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+    VulnLookupService._process_cache.clear()
 
 
 def test_lookup_queries_enabled_providers_deduplicates_and_caches(monkeypatch):
@@ -175,7 +179,6 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
                     "references": [{"url": "https://osv.dev/vuln/OSV-2024-1"}],
                     "severity": [{"score": "CVSS:3.1/AV:N/AC:L/9.1"}],
                 },
-                "ignored",
                 {"id": "OSV-NOSCORE", "severity": [{"score": "bad"}]},
             ]
         }
@@ -210,7 +213,6 @@ def test_query_github_advisory_maps_response_and_token(monkeypatch):
                 "html_url": "https://github.com/advisories/GHSA-xxxx-yyyy",
                 "cvss": {"score": 8.8},
             },
-            object(),
         ]
 
     monkeypatch.setattr(service, "_request_json", fake_request)
@@ -250,7 +252,6 @@ def test_query_nvd_maps_nested_cve_fields(monkeypatch):
                         ],
                     }
                 },
-                {"not_cve": {}},
             ]
         }
 
@@ -263,3 +264,751 @@ def test_query_nvd_maps_nested_cve_fields(monkeypatch):
     assert hits[0].vuln_id == "CVE-2024-0001"
     assert hits[0].summary == "English description"
     assert hits[0].severity_score == 9.8
+
+
+def test_vuln_lookup_service_shares_process_cache(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service1 = VulnLookupService()
+    service2 = VulnLookupService()
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append((provider, name))
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0002",
+                source=provider,
+                summary="mocked vuln",
+                severity_score=5.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service1, "_query_provider", fake_query)
+    monkeypatch.setattr(service2, "_query_provider", fake_query)
+
+    hits1 = service1.lookup("python", "mock-pkg", "1.0")
+    assert len(hits1) == 1
+    assert calls == [("osv", "mock-pkg")]
+
+    hits2 = service2.lookup("python", "mock-pkg", "1.0")
+    assert hits1 == hits2
+    assert calls == [("osv", "mock-pkg")]
+
+
+def test_vuln_lookup_service_file_cache_persistence_and_ttl(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "10")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0003",
+                source=provider,
+                summary="persistent vuln",
+                severity_score=6.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    hits1 = service.lookup("python", "pkg-persistent", "1.0")
+    assert len(hits1) == 1
+    assert calls == ["pkg-persistent"]
+
+    cache_files = list(service._cache_dir.glob("vuln_cache_*.json"))
+    assert len(cache_files) == 1
+
+    VulnLookupService._process_cache.clear()
+
+    hits2 = service.lookup("python", "pkg-persistent", "1.0")
+    assert hits1[0].vuln_id == hits2[0].vuln_id
+    assert calls == ["pkg-persistent"]
+
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+    service_no_cache = VulnLookupService()
+    monkeypatch.setattr(service_no_cache, "_query_provider", fake_query)
+    VulnLookupService._process_cache.clear()
+
+    hits3 = service_no_cache.lookup("python", "pkg-persistent", "1.0")
+    assert len(hits3) == 1
+    assert calls == ["pkg-persistent", "pkg-persistent"]
+
+
+def test_vuln_lookup_service_cache_distinguishes_provider_configs(monkeypatch):
+    VulnLookupService._process_cache.clear()
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(provider)
+        return [
+            vuln_module.VulnHit(
+                vuln_id=f"CVE-{provider}",
+                source=provider,
+                summary="vuln",
+                severity_score=5.0,
+                references=(),
+            )
+        ]
+
+    # OSV のみの場合のサービス
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service_osv = VulnLookupService()
+    monkeypatch.setattr(service_osv, "_query_provider", fake_query)
+
+    hits_osv = service_osv.lookup("python", "pkg-multi", "1.0")
+    assert len(hits_osv) == 1
+    assert hits_osv[0].source == "osv"
+    assert calls == ["osv"]
+
+    # 後から GITHUB も追加した場合のサービス
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github")
+    service_multi = VulnLookupService()
+    monkeypatch.setattr(service_multi, "_query_provider", fake_query)
+
+    hits_multi = service_multi.lookup("python", "pkg-multi", "1.0")
+    # キーが異なる（プロバイダ設定が異なる）ため、メモリ・ファイルキャッシュ共にヒットせず再照会される
+    assert len(hits_multi) == 2
+    assert hits_multi[1].source == "github"
+    assert calls == ["osv", "osv", "github"]
+
+
+def test_vuln_lookup_service_does_not_cache_failures(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github")
+    monkeypatch.setenv("VULN_ENABLE_FALLBACK", "true")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(provider)
+        if provider == "osv":
+            # OSVは通信障害
+            return None
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-GITHUB",
+                source="github",
+                summary="github vuln",
+                severity_score=4.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1回目の照合
+    hits1 = service.lookup("python", "pkg-fail", "1.0")
+    # OSVが失敗したので、結果はGitHubのデータのみ。かつ has_failure=True のためキャッシュに保存されないはず
+    assert len(hits1) == 1
+    assert calls == ["osv", "github"]
+
+    # 2回目の照合 -> キャッシュに入っていないため、再び外部API（モック）が叩かれる
+    hits2 = service.lookup("python", "pkg-fail", "1.0")
+    assert len(hits2) == 1
+    assert calls == ["osv", "github", "osv", "github"]
+
+
+def test_vuln_lookup_service_process_cache_ttl(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    # TTLを極端に短く（1秒）設定
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "1")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-0004",
+                source=provider,
+                summary="short-lived vuln",
+                severity_score=6.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1回目の照合 -> キャッシュが作られる
+    hits1 = service.lookup("python", "pkg-short", "1.0")
+    assert len(hits1) == 1
+    assert calls == ["pkg-short"]
+
+    # すぐに2回目を照合 -> メモリキャッシュから返る
+    hits2 = service.lookup("python", "pkg-short", "1.0")
+    assert hits1 == hits2
+    assert calls == ["pkg-short"]
+
+    # 時間を進める（2秒スリープ）
+    import time
+
+    time.sleep(2.0)
+
+    # 3回目の照合 -> メモリキャッシュがTTL切れで破棄され、再びAPIが呼ばれる
+    hits3 = service.lookup("python", "pkg-short", "1.0")
+    assert len(hits3) == 1
+    assert calls == ["pkg-short", "pkg-short"]
+
+
+def test_vuln_lookup_service_concurrent_access(monkeypatch):
+    import threading
+
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+
+    def fake_query(provider, ecosystem, name, version):
+        time.sleep(0.05)
+        return [
+            vuln_module.VulnHit(
+                vuln_id="CVE-2099-9999",
+                source=provider,
+                summary="concurrent vuln",
+                severity_score=9.0,
+                references=(),
+            )
+        ]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    errors = []
+
+    def run_lookup():
+        try:
+            service.lookup("python", "pkg-concurrent-test", "1.0")
+            monkeypatch.setenv("VULN_CACHE_TTL_SEC", "0")
+            service.lookup("python", "pkg-concurrent-test", "1.0")
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run_lookup) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+
+
+def test_vuln_lookup_service_inherits_file_cache_timestamp(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return [vuln_module.VulnHit("CVE-TS", provider, "vuln", 5.0, ())]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    # 1. 最初の照合
+    service.lookup("python", "pkg-ts", "1.0")
+
+    cache_files = list(service._cache_dir.glob("vuln_cache_*.json"))
+    assert len(cache_files) == 1
+    cache_file = cache_files[0]
+
+    with cache_file.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    past_time = time.time() - 50.0
+    data["timestamp"] = past_time
+
+    with cache_file.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+
+    os.utime(cache_file, (past_time, past_time))
+
+    VulnLookupService._process_cache.clear()
+
+    # 2. ファイルキャッシュからの読み込み
+    service.lookup("python", "pkg-ts", "1.0")
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-ts", "1.0", providers_str, service._enable_fallback)
+
+    cached_val = VulnLookupService._process_cache.get(key)
+    assert cached_val is not None
+    ts, _ = cached_val
+    assert ts == pytest.approx(past_time, abs=1.0)
+
+
+def test_vuln_lookup_service_does_not_cache_schema_violations(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+
+    service = VulnLookupService()
+
+    def fake_request(url, method="GET", headers=None, payload=None):
+        return {"invalid_key_no_vulns": []}
+
+    monkeypatch.setattr(service, "_request_json", fake_request)
+
+    hits = service.lookup("python", "pkg-schema-violation", "1.0")
+    assert hits == []
+
+    providers_str = ",".join(service._provider_order)
+    key = (
+        "python",
+        "pkg-schema-violation",
+        "1.0",
+        providers_str,
+        service._enable_fallback,
+    )
+    assert key not in VulnLookupService._process_cache
+
+
+def test_vuln_lookup_service_process_cache_size_limit(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    monkeypatch.setattr(service, "MAX_PROCESS_CACHE_SIZE", 3)
+
+    def fake_query(provider, ecosystem, name, version):
+        return [vuln_module.VulnHit(f"CVE-{name}", provider, "vuln", 5.0, ())]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    service.lookup("python", "pkg-a", "1.0")
+    service.lookup("python", "pkg-b", "1.0")
+    service.lookup("python", "pkg-c", "1.0")
+    service.lookup("python", "pkg-d", "1.0")
+
+    assert len(VulnLookupService._process_cache) == 3
+
+    providers_str = ",".join(service._provider_order)
+    key_a = ("python", "pkg-a", "1.0", providers_str, service._enable_fallback)
+    assert key_a not in VulnLookupService._process_cache
+
+
+def test_vuln_lookup_service_file_cache_type_validation(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-invalid-type", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    bad_data = {
+        "timestamp": time.time(),
+        "hits": [
+            {
+                "vuln_id": "CVE-BAD",
+                "source": "osv",
+                "summary": "bad summary",
+                "severity_score": "HIGH",
+                "references": [],
+            }
+        ],
+    }
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return []
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    hits = service.lookup("python", "pkg-invalid-type", "1.0")
+    assert hits == []
+    assert calls == ["pkg-invalid-type"]
+
+
+def test_vuln_lookup_service_file_cache_deleted_on_expiry(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-del-expiry", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    past_time = time.time() - 150.0
+    bad_data = {
+        "timestamp": past_time,
+        "hits": [],
+    }
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    assert file_path.exists()
+
+    res = service._read_file_cache(key)
+    assert res is None
+    assert not file_path.exists()
+
+
+def test_vuln_lookup_service_file_cache_corrupted_deleted(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-del-corrupt", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    bad_data = {"this-is-not-valid-json-schema": True}
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    assert file_path.exists()
+
+    res = service._read_file_cache(key)
+    assert res is None
+    assert not file_path.exists()
+
+
+def test_vuln_lookup_service_file_cache_size_limit(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    monkeypatch.setattr(service, "MAX_FILE_CACHE_SIZE", 3)
+
+    keys = []
+    file_paths = []
+    providers_str = ",".join(service._provider_order)
+
+    for i in range(4):
+        key = (
+            "python",
+            f"pkg-limit-{i}",
+            "1.0",
+            providers_str,
+            service._enable_fallback,
+        )
+        file_path = service._get_cache_file_path(key)
+        keys.append(key)
+        file_paths.append(file_path)
+
+        service._write_file_cache(key, [])
+        os.utime(file_path, (time.time() - (40 - 10 * i), time.time() - (40 - 10 * i)))
+
+    service._enforce_file_cache_limit(force=True)
+
+    assert not file_paths[0].exists()
+    assert file_paths[1].exists()
+    assert file_paths[2].exists()
+    assert file_paths[3].exists()
+
+
+def test_query_osv_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+    service._local_state.had_invalid = False
+
+    # 1. 辞書でない要素が含まれる場合
+    mock_resp = {"vulns": ["not-a-dict"]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 2. id が str でない場合
+    service._local_state.had_invalid = False
+    mock_resp2 = {"vulns": [{"id": 123}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 3. references 内に不正な型がある場合
+    service._local_state.had_invalid = False
+    mock_resp3 = {"vulns": [{"id": "OSV-1", "references": "not-a-list"}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 4. 正常な要素と不正な要素が混在する場合
+    service._local_state.had_invalid = False
+    mock_resp4 = {
+        "vulns": [
+            {
+                "id": "OSV-OK",
+                "summary": "good vuln",
+            },
+            "corrupted-element",
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp4)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "OSV-OK"
+    assert service._local_state.had_invalid is True
+
+
+def test_query_github_advisory_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+    service._local_state.had_invalid = False
+
+    # 1. 辞書でない要素が含まれる場合
+    mock_resp = ["not-a-dict"]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    hits = service._query_github_advisory("python", "pkg")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 2. ghsa_id が str でない場合
+    service._local_state.had_invalid = False
+    mock_resp2 = [{"ghsa_id": 123}]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    hits = service._query_github_advisory("python", "pkg")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 3. 正常と不正の混在
+    service._local_state.had_invalid = False
+    mock_resp3 = [
+        {
+            "ghsa_id": "GHSA-OK",
+            "summary": "good",
+        },
+        object(),
+    ]
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    hits = service._query_github_advisory("python", "pkg")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "GHSA-OK"
+    assert service._local_state.had_invalid is True
+
+
+def test_query_nvd_invalid_schema_returns_none(monkeypatch):
+    service = VulnLookupService()
+    service._local_state.had_invalid = False
+
+    # 1. cve が dict でない場合
+    mock_resp = {"vulnerabilities": [{"cve": "not-a-dict"}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    hits = service._query_nvd("pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 2. cve.id が str でない場合
+    service._local_state.had_invalid = False
+    mock_resp2 = {"vulnerabilities": [{"cve": {"id": 123}}]}
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp2)
+    hits = service._query_nvd("pkg", "1.0")
+    assert hits == []
+    assert service._local_state.had_invalid is True
+
+    # 3. 正常と不正の混在
+    service._local_state.had_invalid = False
+    mock_resp3 = {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "id": "CVE-OK",
+                }
+            },
+            {"not_cve": {}},
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp3)
+    hits = service._query_nvd("pkg", "1.0")
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "CVE-OK"
+    assert service._local_state.had_invalid is True
+
+
+def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
+    service = VulnLookupService()
+    mock_resp = {
+        "vulns": [
+            {
+                "id": "OSV-2024-VEC",
+                "summary": "OSV Vector",
+                "severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            }
+        ]
+    }
+    monkeypatch.setattr(service, "_request_json", lambda *a, **k: mock_resp)
+    hits = service._query_osv("python", "pkg", "1.0")
+    assert hits is not None
+    assert len(hits) == 1
+    assert hits[0].vuln_id == "OSV-2024-VEC"
+    assert hits[0].severity_score is None
+    assert getattr(service._local_state, "had_invalid", False) is False
+
+
+def test_vuln_lookup_service_shares_failure_with_concurrent_waiters(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    service = VulnLookupService()
+
+    calls = []
+
+    def mock_query(*args):
+        calls.append(args)
+        time.sleep(0.1)
+        return None
+
+    monkeypatch.setattr(service, "_query_provider", mock_query)
+
+    import threading
+
+    results = []
+
+    def worker():
+        res = service.lookup("python", "pkg-fail-share", "1.0")
+        results.append(res)
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+
+    t1.start()
+    time.sleep(0.02)
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+    assert len(calls) == 3
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-fail-share", "1.0", providers_str, service._enable_fallback)
+    assert key not in VulnLookupService._process_cache
+
+    assert len(results) == 2
+    assert results[0] == results[1]
+
+
+def test_vuln_lookup_service_only_deletes_its_own_cache_files(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    service = VulnLookupService()
+
+    assert service._cache_dir.name == "vuln_cache"
+
+    service._cache_dir.mkdir(parents=True, exist_ok=True)
+
+    foreign_file = service._cache_dir / "package.json"
+    with foreign_file.open("w", encoding="utf-8") as fh:
+        json.dump({"name": "foreign"}, fh)
+
+    os.utime(foreign_file, (time.time() - 200, time.time() - 200))
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-own", "1.0", providers_str, service._enable_fallback)
+    own_file = service._get_cache_file_path(key)
+
+    service._write_file_cache(key, [])
+    os.utime(own_file, (time.time() - 200, time.time() - 200))
+
+    assert foreign_file.exists()
+    assert own_file.exists()
+
+    service._enforce_file_cache_limit(force=True)
+
+    assert not own_file.exists()
+    assert foreign_file.exists()
+
+
+def test_vuln_lookup_service_file_cache_limit_throttling(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "10")
+    service = VulnLookupService()
+
+    VulnLookupService._file_cache_write_counter = 0
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-throttle", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    service._write_file_cache(key, [])
+    os.utime(file_path, (time.time() - 20, time.time() - 20))
+
+    service._enforce_file_cache_limit(force=False)
+    assert file_path.exists()
+    assert VulnLookupService._file_cache_write_counter == 2
+
+    VulnLookupService._file_cache_write_counter = 99
+    service._enforce_file_cache_limit(force=False)
+    assert not file_path.exists()
+    assert VulnLookupService._file_cache_write_counter == 0
+
+
+def test_vuln_lookup_service_use_config_context_manager(tmp_path):
+    service = VulnLookupService()
+    default_dir = service._cache_dir
+    default_ttl = service._cache_ttl
+
+    custom_dir = tmp_path / "custom"
+    custom_ttl = 1234
+
+    # 1. コンテキスト内での値の変更と、抜けた後の復元
+    with VulnLookupService.use_config(cache_dir=custom_dir, cache_ttl=custom_ttl):
+        assert service._cache_dir == custom_dir / "vuln_cache"
+        assert service._cache_ttl == custom_ttl
+
+    assert service._cache_dir == default_dir
+    assert service._cache_ttl == default_ttl
+
+    # 2. マルチスレッドにおける独立性の検証
+    import threading
+
+    barrier = threading.Barrier(2)
+    thread1_success = False
+    thread2_success = False
+
+    def run_thread1():
+        nonlocal thread1_success
+        dir_t1 = tmp_path / "t1"
+        with VulnLookupService.use_config(cache_dir=dir_t1, cache_ttl=10):
+            barrier.wait()  # 両方のスレッドがコンテキストに入るのを待つ
+            if service._cache_dir == dir_t1 / "vuln_cache" and service._cache_ttl == 10:
+                thread1_success = True
+
+    def run_thread2():
+        nonlocal thread2_success
+        dir_t2 = tmp_path / "t2"
+        with VulnLookupService.use_config(cache_dir=dir_t2, cache_ttl=20):
+            barrier.wait()
+            if service._cache_dir == dir_t2 / "vuln_cache" and service._cache_ttl == 20:
+                thread2_success = True
+
+    t1 = threading.Thread(target=run_thread1)
+    t2 = threading.Thread(target=run_thread2)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert thread1_success is True
+    assert thread2_success is True
