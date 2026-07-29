@@ -580,3 +580,66 @@ def test_vuln_lookup_service_does_not_cache_schema_violations(monkeypatch):
         service._enable_fallback,
     )
     assert key not in VulnLookupService._process_cache
+
+
+def test_vuln_lookup_service_process_cache_size_limit(monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    monkeypatch.setattr(service, "MAX_PROCESS_CACHE_SIZE", 3)
+
+    def fake_query(provider, ecosystem, name, version):
+        return [vuln_module.VulnHit(f"CVE-{name}", provider, "vuln", 5.0, ())]
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    service.lookup("python", "pkg-a", "1.0")
+    service.lookup("python", "pkg-b", "1.0")
+    service.lookup("python", "pkg-c", "1.0")
+    service.lookup("python", "pkg-d", "1.0")
+
+    assert len(VulnLookupService._process_cache) == 3
+
+    providers_str = ",".join(service._provider_order)
+    key_a = ("python", "pkg-a", "1.0", providers_str, service._enable_fallback)
+    assert key_a not in VulnLookupService._process_cache
+
+
+def test_vuln_lookup_service_file_cache_type_validation(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-invalid-type", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    bad_data = {
+        "timestamp": time.time(),
+        "hits": [
+            {
+                "vuln_id": "CVE-BAD",
+                "source": "osv",
+                "summary": "bad summary",
+                "severity_score": "HIGH",
+                "references": [],
+            }
+        ],
+    }
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    calls = []
+
+    def fake_query(provider, ecosystem, name, version):
+        calls.append(name)
+        return []
+
+    monkeypatch.setattr(service, "_query_provider", fake_query)
+
+    hits = service.lookup("python", "pkg-invalid-type", "1.0")
+    assert hits == []
+    assert calls == ["pkg-invalid-type"]

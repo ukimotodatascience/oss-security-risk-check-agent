@@ -24,11 +24,17 @@ class VulnHit:
     references: Sequence[str]
 
 
+class Flight:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.ref_count = 1
+
+
 class VulnLookupService:
     _process_cache: Dict[
         tuple[str, str, str, str, bool], tuple[float, List[VulnHit]]
     ] = {}
-    _inflight_locks: Dict[tuple[str, str, str, str, bool], threading.Lock] = {}
+    _inflight_locks: Dict[tuple[str, str, str, str, bool], Flight] = {}
     _inflight_locks_lock = threading.Lock()
 
     def __init__(self) -> None:
@@ -51,6 +57,30 @@ class VulnLookupService:
             self._cache_dir = Path(tempfile.gettempdir()) / "oss_vuln_cache"
 
         self._cache_ttl = int(os.environ.get("VULN_CACHE_TTL_SEC", "86400") or "86400")
+
+    MAX_PROCESS_CACHE_SIZE = 2000
+
+    def _decrement_flight(self, key: tuple[str, str, str, str, bool]) -> None:
+        with self._inflight_locks_lock:
+            flight = self._inflight_locks.get(key)
+            if flight is not None:
+                flight.ref_count -= 1
+                if flight.ref_count <= 0:
+                    self._inflight_locks.pop(key, None)
+
+    def _enforce_process_cache_limit(self) -> None:
+        now = time.time()
+        expired_keys = []
+        for k, (ts, _) in list(self._process_cache.items()):
+            if self._cache_ttl > 0 and now - ts > self._cache_ttl:
+                expired_keys.append(k)
+
+        for k in expired_keys:
+            self._process_cache.pop(k, None)
+
+        while len(self._process_cache) > self.MAX_PROCESS_CACHE_SIZE:
+            first_key = next(iter(self._process_cache))
+            self._process_cache.pop(first_key, None)
 
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
         providers_str = ",".join(self._provider_order)
@@ -79,20 +109,24 @@ class VulnLookupService:
                 file_ts, file_hits = file_cache_data
                 logger.debug(f"File cache hit for {key}")
                 self._process_cache[key] = (file_ts, file_hits)
+                self._enforce_process_cache_limit()
                 return file_hits
 
         # 2. 同一キーの照会を単一化する Single Flight ロック制御
         with self._inflight_locks_lock:
             if key not in self._inflight_locks:
-                self._inflight_locks[key] = threading.Lock()
-            lock = self._inflight_locks[key]
+                self._inflight_locks[key] = Flight()
+            else:
+                self._inflight_locks[key].ref_count += 1
+            flight = self._inflight_locks[key]
 
-        with lock:
+        with flight.lock:
             # ロック獲得後の再チェック
             val = self._process_cache.get(key)
             if val is not None:
                 ts, cached_hits = val
                 if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
+                    self._decrement_flight(key)
                     return cached_hits
 
             if self._cache_ttl > 0:
@@ -100,6 +134,8 @@ class VulnLookupService:
                 if file_cache_data is not None:
                     file_ts, file_hits = file_cache_data
                     self._process_cache[key] = (file_ts, file_hits)
+                    self._enforce_process_cache_limit()
+                    self._decrement_flight(key)
                     return file_hits
 
             logger.info(
@@ -127,6 +163,7 @@ class VulnLookupService:
 
             if not has_failure:
                 self._process_cache[key] = (time.time(), all_hits)
+                self._enforce_process_cache_limit()
                 if self._cache_ttl > 0:
                     self._write_file_cache(key, all_hits)
             else:
@@ -134,9 +171,7 @@ class VulnLookupService:
                     "Skipped caching vulnerability query result due to provider failure."
                 )
 
-            with self._inflight_locks_lock:
-                self._inflight_locks.pop(key, None)
-
+            self._decrement_flight(key)
             return all_hits
 
     def _get_cache_file_path(self, key: tuple[str, str, str, str, bool]) -> Path:
@@ -163,17 +198,52 @@ class VulnLookupService:
             with file_path.open("r", encoding="utf-8") as fh:
                 data = json.load(fh)
 
+            if not isinstance(data, dict):
+                return None
+
             timestamp = data.get("timestamp", mtime)
+            if not isinstance(timestamp, (int, float)):
+                return None
+
+            hits_data = data.get("hits")
+            if not isinstance(hits_data, list):
+                return None
 
             hits: List[VulnHit] = []
-            for item in data.get("hits", []):
+            for item in hits_data:
+                if not isinstance(item, dict):
+                    return None
+
+                vuln_id = item.get("vuln_id")
+                source = item.get("source")
+                summary = item.get("summary")
+                severity_score = item.get("severity_score")
+                references = item.get("references")
+
+                if not isinstance(vuln_id, str):
+                    return None
+                if not isinstance(source, str):
+                    return None
+                if not isinstance(summary, str):
+                    return None
+                if severity_score is not None and not isinstance(
+                    severity_score, (int, float)
+                ):
+                    return None
+                if not isinstance(references, (list, tuple)):
+                    return None
+                if not all(isinstance(r, str) for r in references):
+                    return None
+
                 hits.append(
                     VulnHit(
-                        vuln_id=item["vuln_id"],
-                        source=item["source"],
-                        summary=item["summary"],
-                        severity_score=item.get("severity_score"),
-                        references=item.get("references", []),
+                        vuln_id=vuln_id,
+                        source=source,
+                        summary=summary,
+                        severity_score=float(severity_score)
+                        if severity_score is not None
+                        else None,
+                        references=tuple(references),
                     )
                 )
             return timestamp, hits
