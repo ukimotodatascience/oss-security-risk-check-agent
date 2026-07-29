@@ -643,3 +643,53 @@ def test_vuln_lookup_service_file_cache_type_validation(tmp_path, monkeypatch):
     hits = service.lookup("python", "pkg-invalid-type", "1.0")
     assert hits == []
     assert calls == ["pkg-invalid-type"]
+
+
+def test_vuln_lookup_service_file_cache_deleted_on_expiry(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-del-expiry", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    past_time = time.time() - 150.0
+    bad_data = {
+        "timestamp": past_time,
+        "hits": [],
+    }
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    assert file_path.exists()
+
+    res = service._read_file_cache(key)
+    assert res is None
+    assert not file_path.exists()
+
+
+def test_vuln_lookup_service_file_cache_corrupted_deleted(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    service = VulnLookupService()
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-del-corrupt", "1.0", providers_str, service._enable_fallback)
+    file_path = service._get_cache_file_path(key)
+
+    bad_data = {"this-is-not-valid-json-schema": True}
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    with file_path.open("w", encoding="utf-8") as fh:
+        json.dump(bad_data, fh)
+
+    assert file_path.exists()
+
+    res = service._read_file_cache(key)
+    assert res is None
+    assert not file_path.exists()
