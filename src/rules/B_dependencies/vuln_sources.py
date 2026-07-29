@@ -52,7 +52,7 @@ class VulnLookupService:
 
         cache_dir_raw = os.environ.get("VULN_CACHE_DIR")
         if cache_dir_raw:
-            self._cache_dir = Path(cache_dir_raw).expanduser().resolve()
+            self._cache_dir = Path(cache_dir_raw).expanduser().resolve() / "vuln_cache"
         else:
             import tempfile
 
@@ -90,7 +90,7 @@ class VulnLookupService:
             if not self._cache_dir.exists():
                 return
 
-            json_files = list(self._cache_dir.glob("*.json"))
+            json_files = list(self._cache_dir.glob("vuln_cache_*.json"))
             now = time.time()
             valid_files = []
 
@@ -222,7 +222,7 @@ class VulnLookupService:
         hash_val = hashlib.md5(
             f"{ecosystem}:{name}:{version}:{providers}:{fallback}".encode("utf-8")
         ).hexdigest()
-        return self._cache_dir / f"{hash_val}.json"
+        return self._cache_dir / f"vuln_cache_{hash_val}.json"
 
     def _read_file_cache(
         self, key: tuple[str, str, str, str, bool]

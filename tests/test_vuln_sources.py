@@ -327,7 +327,7 @@ def test_vuln_lookup_service_file_cache_persistence_and_ttl(tmp_path, monkeypatc
     assert len(hits1) == 1
     assert calls == ["pkg-persistent"]
 
-    cache_files = list(tmp_path.glob("*.json"))
+    cache_files = list(service._cache_dir.glob("vuln_cache_*.json"))
     assert len(cache_files) == 1
 
     VulnLookupService._process_cache.clear()
@@ -525,7 +525,7 @@ def test_vuln_lookup_service_inherits_file_cache_timestamp(tmp_path, monkeypatch
     # 1. 最初の照合
     service.lookup("python", "pkg-ts", "1.0")
 
-    cache_files = list(tmp_path.glob("*.json"))
+    cache_files = list(service._cache_dir.glob("vuln_cache_*.json"))
     assert len(cache_files) == 1
     cache_file = cache_files[0]
 
@@ -625,7 +625,7 @@ def test_vuln_lookup_service_file_cache_type_validation(tmp_path, monkeypatch):
             }
         ],
     }
-    tmp_path.mkdir(parents=True, exist_ok=True)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with file_path.open("w", encoding="utf-8") as fh:
         json.dump(bad_data, fh)
 
@@ -658,7 +658,7 @@ def test_vuln_lookup_service_file_cache_deleted_on_expiry(tmp_path, monkeypatch)
         "timestamp": past_time,
         "hits": [],
     }
-    tmp_path.mkdir(parents=True, exist_ok=True)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with file_path.open("w", encoding="utf-8") as fh:
         json.dump(bad_data, fh)
 
@@ -681,7 +681,7 @@ def test_vuln_lookup_service_file_cache_corrupted_deleted(tmp_path, monkeypatch)
     file_path = service._get_cache_file_path(key)
 
     bad_data = {"this-is-not-valid-json-schema": True}
-    tmp_path.mkdir(parents=True, exist_ok=True)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with file_path.open("w", encoding="utf-8") as fh:
         json.dump(bad_data, fh)
 
@@ -833,3 +833,35 @@ def test_vuln_lookup_service_shares_failure_with_concurrent_waiters(monkeypatch)
 
     assert len(results) == 2
     assert results[0] == results[1]
+
+
+def test_vuln_lookup_service_only_deletes_its_own_cache_files(tmp_path, monkeypatch):
+    VulnLookupService._process_cache.clear()
+    monkeypatch.setenv("VULN_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("VULN_CACHE_TTL_SEC", "100")
+    service = VulnLookupService()
+
+    assert service._cache_dir.name == "vuln_cache"
+
+    service._cache_dir.mkdir(parents=True, exist_ok=True)
+
+    foreign_file = service._cache_dir / "package.json"
+    with foreign_file.open("w", encoding="utf-8") as fh:
+        json.dump({"name": "foreign"}, fh)
+
+    os.utime(foreign_file, (time.time() - 200, time.time() - 200))
+
+    providers_str = ",".join(service._provider_order)
+    key = ("python", "pkg-own", "1.0", providers_str, service._enable_fallback)
+    own_file = service._get_cache_file_path(key)
+
+    service._write_file_cache(key, [])
+    os.utime(own_file, (time.time() - 200, time.time() - 200))
+
+    assert foreign_file.exists()
+    assert own_file.exists()
+
+    service._enforce_file_cache_limit()
+
+    assert not own_file.exists()
+    assert foreign_file.exists()
