@@ -259,7 +259,7 @@ def _estimate_dependency_count_safe(target: Path) -> int:
     except Exception:
         return 10
 
-    return max(5, min(count, 100))
+    return max(5, min(count, 300))
 
 
 def _cleanup_executor_processes(
@@ -435,9 +435,15 @@ def run_all(
     cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
     cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
 
+    import multiprocessing
+
+    mp_context = multiprocessing.get_context("spawn")
+
     # 実行中のルールを強制終了できるように ProcessPoolExecutor を使用
     executor = concurrent.futures.ProcessPoolExecutor(
-        max_workers=1, initializer=_worker_initializer
+        max_workers=1,
+        initializer=_worker_initializer,
+        mp_context=mp_context,
     )
     try:
         for index, rule in enumerate(sorted_rules, start=1):
