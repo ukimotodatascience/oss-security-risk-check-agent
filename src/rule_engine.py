@@ -50,71 +50,15 @@ def _worker_initializer() -> None:
 
 def _estimate_dependency_count(target: Path) -> int:
     """診断対象ディレクトリ内の依存関係定義ファイルを走査し、大まかな依存件数をカウントする。"""
-    count = 0
-    if not target.exists():
+    try:
+        from src.rules.B_dependencies._dependency_utils import (
+            collect_dependency_declarations,
+        )
+
+        decls = collect_dependency_declarations(target)
+        return max(5, len(decls))
+    except Exception:
         return 10
-
-    dep_files = [
-        "requirements.txt",
-        "pyproject.toml",
-        "package.json",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "go.mod",
-        "Cargo.toml",
-        "Pipfile",
-        "poetry.lock",
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "Cargo.lock",
-    ]
-
-    found_any = False
-    for filename in dep_files:
-        filepath = target / filename
-        if filepath.is_file():
-            found_any = True
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-
-                if filename == "package.json":
-                    import json
-
-                    data = json.loads(content)
-                    deps = data.get("dependencies", {})
-                    dev_deps = data.get("devDependencies", {})
-                    count += len(deps) + len(dev_deps)
-                elif filename == "requirements.txt":
-                    lines = [
-                        line.strip()
-                        for line in content.splitlines()
-                        if line.strip() and not line.strip().startswith("#")
-                    ]
-                    count += len(lines)
-                elif filename == "pyproject.toml":
-                    for line in content.splitlines():
-                        if "dependencies" in line or "requires" in line:
-                            count += 5
-                elif filename == "go.mod":
-                    count += content.count("require ")
-                elif filename == "Cargo.toml":
-                    count += content.count("[dependencies]") * 5
-                elif "lock" in filename or "lock" in content:
-                    count += min(
-                        50, content.count("package") or content.count("name =") or 10
-                    )
-                else:
-                    count += 10
-            except Exception:
-                count += 10
-
-    if not found_any:
-        return 10
-
-    return max(5, count)
 
 
 def _cleanup_executor_processes(
@@ -266,6 +210,7 @@ def run_all(
     executed_count = 0
 
     timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC")
+    timeout_sec = None
     if timeout_sec_str is not None:
         try:
             timeout_sec = float(timeout_sec_str)
@@ -275,15 +220,7 @@ def run_all(
             logger.warning(
                 f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルト値を使用します。"
             )
-            timeout_sec_str = None
-
-    if timeout_sec_str is None:
-        # 依存関係件数に基づいて動的にタイムアウトを算出する (1件あたり最悪 100秒として計算、最低 300秒)
-        dep_count = _estimate_dependency_count(target)
-        timeout_sec = max(300.0, float(dep_count * 100.0))
-        logger.info(
-            f"推定依存件数: {dep_count}件。動的タイムアウト {timeout_sec}秒 を適用します。"
-        )
+            timeout_sec = None
 
     sorted_rules = sorted(
         rules,
@@ -309,6 +246,21 @@ def run_all(
 
             executed_count += 1
 
+            # 適用するタイムアウト値を決定する
+            if timeout_sec is not None:
+                current_timeout = timeout_sec
+            else:
+                if rule_id == "B-1":
+                    # B-1ルールのみ依存件数に基づき動的算出する (最低 300秒)
+                    dep_count = _estimate_dependency_count(target)
+                    current_timeout = max(300.0, float(dep_count * 100.0))
+                    logger.info(
+                        f"B-1ルールのための推定依存件数: {dep_count}件。動的タイムアウト {current_timeout}秒 を適用します。"
+                    )
+                else:
+                    # B-1以外のルールは一律 300秒
+                    current_timeout = 300.0
+
             # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
             try:
                 rule_bytes = pickle.dumps(rule)
@@ -319,16 +271,16 @@ def run_all(
                     cache_dir,
                     cache_ttl,
                 )
-                found = future.result(timeout=timeout_sec)
+                found = future.result(timeout=current_timeout)
                 if found:
                     records.extend(found)
             except concurrent.futures.TimeoutError:
-                msg = f"ルール {rule_id} の実行がタイムアウト（{timeout_sec}秒）しました。"
+                msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
                 logger.error(msg)
                 errors.append(
                     (
                         rule_id,
-                        f"TimeoutError: Rule execution timed out after {timeout_sec} seconds.",
+                        f"TimeoutError: Rule execution timed out after {current_timeout} seconds.",
                     )
                 )
 
@@ -360,6 +312,7 @@ def run_all(
                 logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
                 errors.append((rule_id, tb))
     finally:
+        _cleanup_executor_processes(executor)
         executor.shutdown(wait=False)
 
     return records, errors, executed_count

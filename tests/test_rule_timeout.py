@@ -193,19 +193,27 @@ def test_run_all_recovers_from_broken_process_pool(tmp_path):
 
 
 class TestDynamicTimeoutValidationRule:
-    rule_id = "A-5"
+    rule_id = "B-1"
 
     def evaluate(self, target: Path):
         return []
 
 
 def test_run_all_dynamic_timeout_calculation(tmp_path, monkeypatch):
+    from src.rule_engine import _estimate_dependency_count
+
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
 
-    # 35件のダミー依存記述を含む requirements.txt を作成
-    req_file = tmp_path / "requirements.txt"
+    # サブディレクトリ配下に依存定義ファイルを作成 (B-1 と同じ範囲の走査確認)
+    sub_dir = tmp_path / "sub"
+    sub_dir.mkdir()
+    req_file = sub_dir / "requirements.txt"
     req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
+
+    # _estimate_dependency_count がサブディレクトリの依存ファイルも拾えることを確認
+    dep_count = _estimate_dependency_count(tmp_path)
+    assert dep_count == 35
 
     rules = [TestDynamicTimeoutValidationRule()]
     records, errors, executed_count = run_all(tmp_path, rules)
