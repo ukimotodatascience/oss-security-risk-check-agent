@@ -1,4 +1,3 @@
-import os
 import time
 import pytest
 from pathlib import Path
@@ -71,8 +70,9 @@ def test_run_all_with_rule_timeout(tmp_path, monkeypatch):
     assert "TimeoutError" in err_msg
 
 
-def test_run_all_invalid_timeout_fallback(tmp_path, monkeypatch, caplog):
-    monkeypatch.setenv("RULE_TIMEOUT_SEC", "invalid_value")
+@pytest.mark.parametrize("invalid_val", ["invalid_value", "nan", "inf", "-5", "0"])
+def test_run_all_invalid_timeout_fallback(tmp_path, monkeypatch, caplog, invalid_val):
+    monkeypatch.setenv("RULE_TIMEOUT_SEC", invalid_val)
 
     class NormalRule:
         rule_id = "A-1"
@@ -83,9 +83,36 @@ def test_run_all_invalid_timeout_fallback(tmp_path, monkeypatch, caplog):
     rules = [NormalRule()]
 
     import logging
+
     # root または src.rule_engine の logger をキャプチャ
     with caplog.at_level(logging.WARNING, logger="src.rule_engine"):
         records, errors, executed_count = run_all(tmp_path, rules)
 
     assert executed_count == 1
     assert any("RULE_TIMEOUT_SEC" in record.message for record in caplog.records)
+
+
+def test_run_all_propagates_vuln_cache_config(tmp_path):
+    from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+    custom_cache_dir = tmp_path / "custom_vuln_cache"
+    custom_ttl = 9999
+
+    class DummyB1Rule:
+        rule_id = "B-1"
+
+        def evaluate(self, target: Path):
+            # スレッド（ワーカー）内で実行される evaluate メソッド内で
+            # VulnLookupService のアクティブ設定が正しく伝播していることを確認
+            svc = VulnLookupService()
+            assert svc._cache_dir == custom_cache_dir / "vuln_cache"
+            assert svc._cache_ttl == custom_ttl
+            return []
+
+    rules = [DummyB1Rule()]
+
+    with VulnLookupService.use_config(custom_cache_dir, custom_ttl):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []

@@ -6,6 +6,7 @@ import concurrent.futures
 import importlib
 import inspect
 import logging
+import math
 import os
 import traceback
 from pathlib import Path
@@ -63,6 +64,8 @@ def run_all(
     timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "30")
     try:
         timeout_sec = float(timeout_sec_str)
+        if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+            raise ValueError("RULE_TIMEOUT_SEC は正の有限値である必要があります。")
     except ValueError:
         logger.warning(
             f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 30 秒を使用します。"
@@ -75,6 +78,12 @@ def run_all(
     )
     total = len(sorted_rules)
 
+    # 脆弱性キャッシュ設定の伝播用パラメータを取得
+    from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+    cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
+    cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
+
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         for index, rule in enumerate(sorted_rules, start=1):
@@ -83,7 +92,13 @@ def run_all(
                 progress_callback(index, total, rule_id)
 
             executed_count += 1
-            future = executor.submit(rule.evaluate, target)
+
+            # ワーカーに脆弱性キャッシュの設定を伝播してルールを実行するラッパー
+            def evaluate_with_context(r=rule, t=target):
+                with VulnLookupService.use_config(cache_dir, cache_ttl):
+                    return r.evaluate(t)
+
+            future = executor.submit(evaluate_with_context)
             try:
                 found = future.result(timeout=timeout_sec)
                 if found:
