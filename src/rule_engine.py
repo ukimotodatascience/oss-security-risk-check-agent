@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import importlib
 import inspect
 import logging
+import os
 import traceback
 from pathlib import Path
 from typing import Any, Callable, List, Sequence, Tuple
@@ -53,23 +55,19 @@ def run_all(
     rules: Sequence[Any],
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> Tuple[List[RiskRecord], List[Tuple[str, str]], int]:
-    """各ルールを1つずつ実行し、検知結果・失敗情報・実行数を返す。"""
+    """各ルールを1つずつ実行し、検知結果・失敗情報・実行数を返す。タイムアウト制御あり。"""
     records: List[RiskRecord] = []
     errors: List[Tuple[str, str]] = []
     executed_count = 0
 
-    def run(rule: Any) -> None:
-        nonlocal executed_count
-        rule_id = getattr(rule, "rule_id", type(rule).__name__)
-        executed_count += 1
-        try:
-            found = rule.evaluate(target)
-            if found:
-                records.extend(found)
-        except Exception:
-            tb = traceback.format_exc()
-            logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
-            errors.append((rule_id, tb))
+    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "30")
+    try:
+        timeout_sec = float(timeout_sec_str)
+    except ValueError:
+        logger.warning(
+            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 30 秒を使用します。"
+        )
+        timeout_sec = 30.0
 
     sorted_rules = sorted(
         rules,
@@ -77,10 +75,35 @@ def run_all(
     )
     total = len(sorted_rules)
 
-    for index, rule in enumerate(sorted_rules, start=1):
-        if progress_callback is not None:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        for index, rule in enumerate(sorted_rules, start=1):
             rule_id = getattr(rule, "rule_id", type(rule).__name__)
-            progress_callback(index, total, rule_id)
-        run(rule)
+            if progress_callback is not None:
+                progress_callback(index, total, rule_id)
+
+            executed_count += 1
+            future = executor.submit(rule.evaluate, target)
+            try:
+                found = future.result(timeout=timeout_sec)
+                if found:
+                    records.extend(found)
+            except concurrent.futures.TimeoutError:
+                msg = f"ルール {rule_id} の実行がタイムアウト（{timeout_sec}秒）しました。"
+                logger.error(msg)
+                errors.append(
+                    (
+                        rule_id,
+                        f"TimeoutError: Rule execution timed out after {timeout_sec} seconds.",
+                    )
+                )
+                executor.shutdown(wait=False)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            except Exception:
+                tb = traceback.format_exc()
+                logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
+                errors.append((rule_id, tb))
+    finally:
+        executor.shutdown(wait=False)
 
     return records, errors, executed_count
