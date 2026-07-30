@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.models import RiskRecord
+from src.models import RiskRecord, Severity
 from src.rule_engine import load_all_rules, run_all
 
 
@@ -105,22 +105,85 @@ def test_run_all_executes_all_loaded_rules(tmp_path):
     assert all(isinstance(record, RiskRecord) for record in records)
 
 
+class IntegrityFakeRuleA1:
+    rule_id = "A-1"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Integrity Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=self.rule_id,
+            )
+        ]
+
+
+class IntegrityFakeRuleA2:
+    rule_id = "A-2"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Integrity Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=self.rule_id,
+            )
+        ]
+
+
+class IntegrityFakeRuleA10:
+    rule_id = "A-10"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Integrity Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=self.rule_id,
+            )
+        ]
+
+
+class IntegrityFakeRuleB1:
+    rule_id = "B-1"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Integrity Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=self.rule_id,
+            )
+        ]
+
+
 def test_run_all_executes_rules_in_natural_rule_id_order(tmp_path):
-    executed_rule_ids = []
-
-    class FakeRule:
-        def __init__(self, rule_id: str) -> None:
-            self.rule_id = rule_id
-
-        def evaluate(self, target: Path):
-            executed_rule_ids.append(self.rule_id)
-            return []
-
-    rules = [FakeRule("A-10"), FakeRule("B-1"), FakeRule("A-2"), FakeRule("A-1")]
+    rules = [
+        IntegrityFakeRuleA10(),
+        IntegrityFakeRuleB1(),
+        IntegrityFakeRuleA2(),
+        IntegrityFakeRuleA1(),
+    ]
 
     records, errors, executed_count = run_all(tmp_path, rules)
 
-    assert records == []
     assert errors == []
     assert executed_count == 4
-    assert executed_rule_ids == ["A-1", "A-2", "A-10", "B-1"]
+    # 各ルールの evaluate 戻り値から実行順序を確認する
+    assert [r.message for r in records] == ["A-1", "A-2", "A-10", "B-1"]

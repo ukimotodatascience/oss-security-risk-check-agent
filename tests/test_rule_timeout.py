@@ -5,65 +5,92 @@ from src.rule_engine import run_all
 from src.models import RiskRecord, Severity
 
 
+# テスト用のダミールールをモジュールトップレベルに定義
+# （子プロセスからの動的インポート・シリアライズを可能にするため）
+class TestNormalRule:
+    rule_id = "A-1"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Normal Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message="Normal find",
+            )
+        ]
+
+
+class TestHangRule:
+    rule_id = "A-2"
+
+    def evaluate(self, target: Path):
+        # タイムアウト（0.2秒）より十分長いスリープを実行してタイムアウトを誘発する。
+        # プロセスのハングアップを防ぐため、無限ループではなく有限時間で終了させる。
+        time.sleep(5.0)
+        return []
+
+
+class TestPostRule:
+    rule_id = "A-3"
+
+    def evaluate(self, target: Path):
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="Post Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=2,
+                message="Post find",
+            )
+        ]
+
+
+class TestFallbackRule:
+    rule_id = "A-1"
+
+    def evaluate(self, target: Path):
+        return []
+
+
+class TestDummyB1Rule:
+    rule_id = "B-1"
+
+    def evaluate(self, target: Path):
+        # 子プロセス内で実行される evaluate メソッド内で
+        # VulnLookupService のアクティブ設定が正しく伝播していることを確認
+        from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+        svc = VulnLookupService()
+        # _cache_dir はカスタム設定から伝播していることを確認
+        assert svc._cache_dir.parent.name == "custom_vuln_cache"
+        assert svc._cache_ttl == 9999
+        return []
+
+
 def test_run_all_with_rule_timeout(tmp_path, monkeypatch):
-    # タイムアウト値を環境変数で短く設定
-    monkeypatch.setenv("RULE_TIMEOUT_SEC", "0.2")
+    # タイムアウト値を環境変数で短く設定 (プロセスプールの起動時間を考慮して 1.0 秒)
+    monkeypatch.setenv("RULE_TIMEOUT_SEC", "1.0")
 
-    class NormalRule:
-        rule_id = "A-1"
-
-        def evaluate(self, target: Path):
-            return [
-                RiskRecord(
-                    rule_id=self.rule_id,
-                    category="code",
-                    title="Normal Alert",
-                    severity=Severity.LOW,
-                    file_path=target / "dummy.py",
-                    line=1,
-                    message="Normal find",
-                )
-            ]
-
-    class HangRule:
-        rule_id = "A-2"
-
-        def evaluate(self, target: Path):
-            # タイムアウト（0.2秒）より十分長いスリープを実行してタイムアウトを誘発する。
-            # プロセスのハングアップを防ぐため、無限ループではなく有限時間で終了させる。
-            time.sleep(5.0)
-            return []
-
-    class PostRule:
-        rule_id = "A-3"
-
-        def evaluate(self, target: Path):
-            return [
-                RiskRecord(
-                    rule_id=self.rule_id,
-                    category="code",
-                    title="Post Alert",
-                    severity=Severity.LOW,
-                    file_path=target / "dummy.py",
-                    line=2,
-                    message="Post find",
-                )
-            ]
-
-    rules = [NormalRule(), HangRule(), PostRule()]
+    rules = [TestNormalRule(), TestHangRule(), TestPostRule()]
 
     records, errors, executed_count = run_all(tmp_path, rules)
 
     # 実行数は3であるべき
     assert executed_count == 3
 
-    # NormalRule と PostRule の結果は取得できているべき
+    # TestNormalRule と TestPostRule の結果は取得できているべき
     rule_ids_in_records = {r.rule_id for r in records}
     assert "A-1" in rule_ids_in_records
     assert "A-3" in rule_ids_in_records
     assert "A-2" not in rule_ids_in_records
 
-    # エラー情報に HangRule (A-2) が登録されているべき
+    # エラー情報に TestHangRule (A-2) が登録されているべき
     assert len(errors) == 1
     err_rule_id, err_msg = errors[0]
     assert err_rule_id == "A-2"
@@ -74,13 +101,7 @@ def test_run_all_with_rule_timeout(tmp_path, monkeypatch):
 def test_run_all_invalid_timeout_fallback(tmp_path, monkeypatch, caplog, invalid_val):
     monkeypatch.setenv("RULE_TIMEOUT_SEC", invalid_val)
 
-    class NormalRule:
-        rule_id = "A-1"
-
-        def evaluate(self, target: Path):
-            return []
-
-    rules = [NormalRule()]
+    rules = [TestFallbackRule()]
 
     import logging
 
@@ -98,18 +119,7 @@ def test_run_all_propagates_vuln_cache_config(tmp_path):
     custom_cache_dir = tmp_path / "custom_vuln_cache"
     custom_ttl = 9999
 
-    class DummyB1Rule:
-        rule_id = "B-1"
-
-        def evaluate(self, target: Path):
-            # スレッド（ワーカー）内で実行される evaluate メソッド内で
-            # VulnLookupService のアクティブ設定が正しく伝播していることを確認
-            svc = VulnLookupService()
-            assert svc._cache_dir == custom_cache_dir / "vuln_cache"
-            assert svc._cache_ttl == custom_ttl
-            return []
-
-    rules = [DummyB1Rule()]
+    rules = [TestDummyB1Rule()]
 
     with VulnLookupService.use_config(custom_cache_dir, custom_ttl):
         records, errors, executed_count = run_all(tmp_path, rules)

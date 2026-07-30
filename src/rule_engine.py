@@ -51,6 +51,24 @@ def load_all_rules(project_root: Path) -> List[Any]:
     return rules
 
 
+def _evaluate_rule_in_process(
+    module_name: str,
+    class_name: str,
+    target: Path,
+    cache_dir: Path | None,
+    cache_ttl: int | None,
+) -> List[RiskRecord]:
+    """子プロセス内でルールクラスを動的にロードして評価を実行する。"""
+    import importlib
+    from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+    with VulnLookupService.use_config(cache_dir, cache_ttl):
+        module = importlib.import_module(module_name)
+        rule_class = getattr(module, class_name)
+        rule_instance = rule_class()
+        return rule_instance.evaluate(target)
+
+
 def run_all(
     target: Path,
     rules: Sequence[Any],
@@ -78,13 +96,14 @@ def run_all(
     )
     total = len(sorted_rules)
 
-    # 脆弱性キャッシュ設定の伝播用パラメータを取得
+    # 脆弱性キャッシュ設定 of 伝播用パラメータを取得
     from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
     cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
     cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    # 実行中のルールを強制終了できるように ProcessPoolExecutor を使用
+    executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
     try:
         for index, rule in enumerate(sorted_rules, start=1):
             rule_id = getattr(rule, "rule_id", type(rule).__name__)
@@ -93,12 +112,17 @@ def run_all(
 
             executed_count += 1
 
-            # ワーカーに脆弱性キャッシュの設定を伝播してルールを実行するラッパー
-            def evaluate_with_context(r=rule, t=target):
-                with VulnLookupService.use_config(cache_dir, cache_ttl):
-                    return r.evaluate(t)
+            module_name = rule.__class__.__module__
+            class_name = rule.__class__.__name__
 
-            future = executor.submit(evaluate_with_context)
+            future = executor.submit(
+                _evaluate_rule_in_process,
+                module_name,
+                class_name,
+                target,
+                cache_dir,
+                cache_ttl,
+            )
             try:
                 found = future.result(timeout=timeout_sec)
                 if found:
@@ -112,8 +136,17 @@ def run_all(
                         f"TimeoutError: Rule execution timed out after {timeout_sec} seconds.",
                     )
                 )
+
+                # ハングした子プロセスを強制終了する
+                for p in list(executor._processes.values()):
+                    try:
+                        p.terminate()
+                        p.join(timeout=1.0)
+                    except Exception:
+                        pass
+
                 executor.shutdown(wait=False)
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
             except Exception:
                 tb = traceback.format_exc()
                 logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
