@@ -1,4 +1,5 @@
 import time
+import threading
 import pytest
 from pathlib import Path
 from src.rule_engine import run_all
@@ -73,6 +74,30 @@ class TestDummyB1Rule:
         return []
 
 
+class DummyThreadLocalStateRule:
+    rule_id = "C-1"
+
+    def __init__(self) -> None:
+        self.state = threading.local()
+        # スレッドローカル状態にテスト用の属性を設定
+        self.state.test_val = "secret_state_value"
+
+    def evaluate(self, target: Path):
+        # 子プロセス内で self.state.test_val が正しく引き継がれていることを確認
+        assert getattr(self.state, "test_val", None) == "secret_state_value"
+        return [
+            RiskRecord(
+                rule_id=self.rule_id,
+                category="code",
+                title="State Propagation Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=self.state.test_val,
+            )
+        ]
+
+
 def test_run_all_with_rule_timeout(tmp_path, monkeypatch):
     # タイムアウト値を環境変数で短く設定 (プロセスプールの起動時間を考慮して 1.0 秒)
     monkeypatch.setenv("RULE_TIMEOUT_SEC", "1.0")
@@ -126,3 +151,14 @@ def test_run_all_propagates_vuln_cache_config(tmp_path):
 
     assert executed_count == 1
     assert errors == []
+
+
+def test_run_all_propagates_thread_local_dict_state(tmp_path):
+    rules = [DummyThreadLocalStateRule()]
+
+    records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
+    assert len(records) == 1
+    assert records[0].message == "secret_state_value"

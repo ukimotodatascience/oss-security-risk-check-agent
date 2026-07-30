@@ -9,6 +9,7 @@ import inspect
 import logging
 import math
 import os
+import pickle
 import threading
 import traceback
 from pathlib import Path
@@ -16,9 +17,23 @@ from typing import Any, Callable, List, Sequence, Tuple
 
 from src.models import RiskRecord
 
+
 # threading.local を pickle 可能にする設定を登録 (E402 回避のためインポート文の後に配置)
-# 変数名に 'l' は使わず '_' とする (E741 回避のため)
-copyreg.pickle(threading.local, lambda _: (threading.local, ()))
+def _reconstruct_local(state: dict[str, Any]) -> threading.local:
+    local_obj = threading.local()
+    local_obj.__dict__.update(state)
+    return local_obj
+
+
+def _pickle_local(local_obj: threading.local) -> Tuple[Callable, Tuple[dict[str, Any]]]:
+    try:
+        state = local_obj.__dict__.copy()
+    except AttributeError:
+        state = {}
+    return _reconstruct_local, (state,)
+
+
+copyreg.pickle(threading.local, _pickle_local)
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +73,21 @@ def load_all_rules(project_root: Path) -> List[Any]:
 
 
 def _evaluate_rule_in_process(
-    rule: Any,
+    rule_bytes: bytes,
     target: Path,
     cache_dir: Path | None,
     cache_ttl: int | None,
 ) -> List[RiskRecord]:
     """子プロセス内でルールを評価する。"""
     import copyreg
+    import pickle
     import threading
     from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
     # 子プロセス側でも threading.local の pickle を登録
-    copyreg.pickle(threading.local, lambda _: (threading.local, ()))
+    copyreg.pickle(threading.local, _pickle_local)
 
+    rule = pickle.loads(rule_bytes)
     with VulnLookupService.use_config(cache_dir, cache_ttl):
         return rule.evaluate(target)
 
@@ -120,9 +137,10 @@ def run_all(
 
             # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
             try:
+                rule_bytes = pickle.dumps(rule)
                 future = executor.submit(
                     _evaluate_rule_in_process,
-                    rule,
+                    rule_bytes,
                     target,
                     cache_dir,
                     cache_ttl,
@@ -145,6 +163,9 @@ def run_all(
                     try:
                         p.terminate()
                         p.join(timeout=1.0)
+                        if p.is_alive():
+                            p.kill()
+                            p.join(timeout=1.0)
                     except Exception:
                         pass
 
