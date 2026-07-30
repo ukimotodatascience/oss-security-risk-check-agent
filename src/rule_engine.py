@@ -156,35 +156,29 @@ def _estimate_dependency_count_safe(target: Path) -> int:
 
     try:
         candidates = []
-        # 直下および1階層下のディレクトリ走査（最大100エントリに制限）
-        for p in target.iterdir():
-            total_entries_checked += 1
-            if total_entries_checked > 100:
-                break
+        stack = [target]
+        while stack and total_entries_checked <= 100:
+            current_dir = stack.pop()
+            try:
+                for p in current_dir.iterdir():
+                    total_entries_checked += 1
+                    if total_entries_checked > 100:
+                        break
 
-            if p.is_file() and (
-                p.name in dep_names or p.name.startswith("requirements")
-            ):
-                candidates.append(p)
-            elif p.is_dir() and p.name not in {
-                ".git",
-                "node_modules",
-                ".venv",
-                "venv",
-                "__pycache__",
-            }:
-                try:
-                    for sub_p in p.iterdir():
-                        total_entries_checked += 1
-                        if total_entries_checked > 100:
-                            break
-                        if sub_p.is_file() and (
-                            sub_p.name in dep_names
-                            or sub_p.name.startswith("requirements")
-                        ):
-                            candidates.append(sub_p)
-                except Exception:
-                    pass
+                    if p.is_file() and (
+                        p.name in dep_names or p.name.startswith("requirements")
+                    ):
+                        candidates.append(p)
+                    elif p.is_dir() and p.name not in {
+                        ".git",
+                        "node_modules",
+                        ".venv",
+                        "venv",
+                        "__pycache__",
+                    }:
+                        stack.append(p)
+            except Exception:
+                pass
 
         for filepath in candidates:
             if files_scanned >= 20:

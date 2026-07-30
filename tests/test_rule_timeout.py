@@ -254,3 +254,39 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
         in record.message
         for record in caplog.records
     )
+
+
+def test_run_all_b1_timeout_scoping_recursive(tmp_path, monkeypatch, caplog):
+    import logging
+    import json
+
+    # RULE_TIMEOUT_SEC をアンセット状態にする
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # 3階層下の深いディレクトリに 35件の依存関係を含む requirements.txt を作成する
+    deep_dir = tmp_path / "apps" / "web" / "backend"
+    deep_dir.mkdir(parents=True, exist_ok=True)
+    req_file = deep_dir / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
+
+    # 2階層下の深いディレクトリに 15件の依存関係を含む package.json を作成する
+    another_deep_dir = tmp_path / "packages" / "lib"
+    another_deep_dir.mkdir(parents=True, exist_ok=True)
+    pkg_file = another_deep_dir / "package.json"
+    pkg_data = {
+        "dependencies": {f"dep-{i}": "^1.0.0" for i in range(10)},
+        "devDependencies": {f"dev-dep-{i}": "^1.0.0" for i in range(5)},
+    }
+    pkg_file.write_text(json.dumps(pkg_data))
+
+    rules = [TestDynamicTimeoutValidationRule()]
+    with caplog.at_level(logging.INFO, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
+    assert any(
+        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 5000.0秒 を適用します。"
+        in record.message
+        for record in caplog.records
+    )
