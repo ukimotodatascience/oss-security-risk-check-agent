@@ -199,24 +199,19 @@ class TestDynamicTimeoutValidationRule:
         return []
 
 
-def test_run_all_dynamic_timeout_calculation(tmp_path, monkeypatch):
-    from src.rule_engine import _estimate_dependency_count
+def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
+    import logging
 
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
 
-    # サブディレクトリ配下に依存定義ファイルを作成 (B-1 と同じ範囲の走査確認)
-    sub_dir = tmp_path / "sub"
-    sub_dir.mkdir()
-    req_file = sub_dir / "requirements.txt"
-    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
-
-    # _estimate_dependency_count がサブディレクトリの依存ファイルも拾えることを確認
-    dep_count = _estimate_dependency_count(tmp_path)
-    assert dep_count == 35
-
     rules = [TestDynamicTimeoutValidationRule()]
-    records, errors, executed_count = run_all(tmp_path, rules)
+    with caplog.at_level(logging.INFO, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
 
     assert executed_count == 1
     assert errors == []
+    assert any(
+        "B-1ルールの実行タイムアウトとして 1200.0秒 を適用します。" in record.message
+        for record in caplog.records
+    )

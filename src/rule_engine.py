@@ -37,8 +37,52 @@ def _pickle_local(local_obj: threading.local) -> Tuple[Callable, Tuple[dict[str,
 copyreg.pickle(threading.local, _pickle_local)
 
 
+def _setup_windows_job_object() -> None:
+    """Windows環境で現在のプロセスをJob Objectに関連付け、クローズ時に子孫を自動的にkillするように設定する。"""
+    import os
+
+    if os.name != "nt":
+        return
+
+    import ctypes
+
+    try:
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 構造体をバイト配列として定義
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [("raw", ctypes.c_byte * 112)]
+
+        kernel32 = ctypes.windll.kernel32
+        h_job = kernel32.CreateJobObjectW(None, None)
+        if not h_job:
+            return
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info.raw[16] = flags & 0xFF
+        info.raw[17] = (flags >> 8) & 0xFF
+        info.raw[18] = (flags >> 16) & 0xFF
+        info.raw[19] = (flags >> 24) & 0xFF
+
+        sizeof_info = ctypes.sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
+        res = kernel32.SetInformationJobObject(
+            h_job,
+            9,  # JobObjectExtendedLimitInformation
+            ctypes.byref(info),
+            sizeof_info,
+        )
+        if not res:
+            return
+
+        h_process = kernel32.GetCurrentProcess()
+        kernel32.AssignProcessToJobObject(h_job, h_process)
+    except Exception:
+        pass
+
+
 def _worker_initializer() -> None:
-    """プロセスプールのワーカープロセス初期化時に新しいプロセスグループを作成する。"""
+    """プロセスプールのワーカープロセス初期化時に新しいプロセスグループを作成し、WindowsではJob Objectに登録する。"""
     import os
 
     if hasattr(os, "setpgrp"):
@@ -47,18 +91,7 @@ def _worker_initializer() -> None:
         except Exception:
             pass
 
-
-def _estimate_dependency_count(target: Path) -> int:
-    """診断対象ディレクトリ内の依存関係定義ファイルを走査し、大まかな依存件数をカウントする。"""
-    try:
-        from src.rules.B_dependencies._dependency_utils import (
-            collect_dependency_declarations,
-        )
-
-        decls = collect_dependency_declarations(target)
-        return max(5, len(decls))
-    except Exception:
-        return 10
+    _setup_windows_job_object()
 
 
 def _cleanup_executor_processes(
@@ -251,11 +284,10 @@ def run_all(
                 current_timeout = timeout_sec
             else:
                 if rule_id == "B-1":
-                    # B-1ルールのみ依存件数に基づき動的算出する (最低 300秒)
-                    dep_count = _estimate_dependency_count(target)
-                    current_timeout = max(300.0, float(dep_count * 100.0))
+                    # B-1ルールのみ、外部API通信と依存ファイル走査の時間を考慮して十分に長い時間（1200秒＝20分）を確保する
+                    current_timeout = 1200.0
                     logger.info(
-                        f"B-1ルールのための推定依存件数: {dep_count}件。動的タイムアウト {current_timeout}秒 を適用します。"
+                        f"B-1ルールの実行タイムアウトとして {current_timeout}秒 を適用します。"
                     )
                 else:
                     # B-1以外のルールは一律 300秒
