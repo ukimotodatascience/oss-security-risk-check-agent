@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import concurrent.futures
+import copyreg
 import importlib
 import inspect
 import logging
 import math
 import os
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Callable, List, Sequence, Tuple
 
 from src.models import RiskRecord
+
+# threading.local を pickle 可能にする設定を登録 (E402 回避のためインポート文の後に配置)
+# 変数名に 'l' は使わず '_' とする (E741 回避のため)
+copyreg.pickle(threading.local, lambda _: (threading.local, ()))
 
 logger = logging.getLogger(__name__)
 
@@ -52,21 +58,21 @@ def load_all_rules(project_root: Path) -> List[Any]:
 
 
 def _evaluate_rule_in_process(
-    module_name: str,
-    class_name: str,
+    rule: Any,
     target: Path,
     cache_dir: Path | None,
     cache_ttl: int | None,
 ) -> List[RiskRecord]:
-    """子プロセス内でルールクラスを動的にロードして評価を実行する。"""
-    import importlib
+    """子プロセス内でルールを評価する。"""
+    import copyreg
+    import threading
     from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
+    # 子プロセス側でも threading.local の pickle を登録
+    copyreg.pickle(threading.local, lambda _: (threading.local, ()))
+
     with VulnLookupService.use_config(cache_dir, cache_ttl):
-        module = importlib.import_module(module_name)
-        rule_class = getattr(module, class_name)
-        rule_instance = rule_class()
-        return rule_instance.evaluate(target)
+        return rule.evaluate(target)
 
 
 def run_all(
@@ -112,18 +118,15 @@ def run_all(
 
             executed_count += 1
 
-            module_name = rule.__class__.__module__
-            class_name = rule.__class__.__name__
-
-            future = executor.submit(
-                _evaluate_rule_in_process,
-                module_name,
-                class_name,
-                target,
-                cache_dir,
-                cache_ttl,
-            )
+            # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
             try:
+                future = executor.submit(
+                    _evaluate_rule_in_process,
+                    rule,
+                    target,
+                    cache_dir,
+                    cache_ttl,
+                )
                 found = future.result(timeout=timeout_sec)
                 if found:
                     records.extend(found)
@@ -145,6 +148,19 @@ def run_all(
                     except Exception:
                         pass
 
+                executor.shutdown(wait=False)
+                executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+            except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
+                logger.error(
+                    f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"
+                )
+                errors.append(
+                    (
+                        rule_id,
+                        "BrokenProcessPool: Subprocess terminated unexpectedly.",
+                    )
+                )
+                # 壊れたプールを安全に再作成する
                 executor.shutdown(wait=False)
                 executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
             except Exception:

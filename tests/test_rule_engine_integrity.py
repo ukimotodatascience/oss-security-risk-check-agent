@@ -105,59 +105,9 @@ def test_run_all_executes_all_loaded_rules(tmp_path):
     assert all(isinstance(record, RiskRecord) for record in records)
 
 
-class IntegrityFakeRuleA1:
-    rule_id = "A-1"
-
-    def evaluate(self, target: Path):
-        return [
-            RiskRecord(
-                rule_id=self.rule_id,
-                category="code",
-                title="Integrity Alert",
-                severity=Severity.LOW,
-                file_path=target / "dummy.py",
-                line=1,
-                message=self.rule_id,
-            )
-        ]
-
-
-class IntegrityFakeRuleA2:
-    rule_id = "A-2"
-
-    def evaluate(self, target: Path):
-        return [
-            RiskRecord(
-                rule_id=self.rule_id,
-                category="code",
-                title="Integrity Alert",
-                severity=Severity.LOW,
-                file_path=target / "dummy.py",
-                line=1,
-                message=self.rule_id,
-            )
-        ]
-
-
-class IntegrityFakeRuleA10:
-    rule_id = "A-10"
-
-    def evaluate(self, target: Path):
-        return [
-            RiskRecord(
-                rule_id=self.rule_id,
-                category="code",
-                title="Integrity Alert",
-                severity=Severity.LOW,
-                file_path=target / "dummy.py",
-                line=1,
-                message=self.rule_id,
-            )
-        ]
-
-
-class IntegrityFakeRuleB1:
-    rule_id = "B-1"
+class IntegrityFakeRule:
+    def __init__(self, rule_id: str) -> None:
+        self.rule_id = rule_id
 
     def evaluate(self, target: Path):
         return [
@@ -175,10 +125,10 @@ class IntegrityFakeRuleB1:
 
 def test_run_all_executes_rules_in_natural_rule_id_order(tmp_path):
     rules = [
-        IntegrityFakeRuleA10(),
-        IntegrityFakeRuleB1(),
-        IntegrityFakeRuleA2(),
-        IntegrityFakeRuleA1(),
+        IntegrityFakeRule("A-10"),
+        IntegrityFakeRule("B-1"),
+        IntegrityFakeRule("A-2"),
+        IntegrityFakeRule("A-1"),
     ]
 
     records, errors, executed_count = run_all(tmp_path, rules)
