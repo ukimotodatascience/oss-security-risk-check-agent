@@ -48,6 +48,156 @@ def _worker_initializer() -> None:
             pass
 
 
+def _estimate_dependency_count(target: Path) -> int:
+    """診断対象ディレクトリ内の依存関係定義ファイルを走査し、大まかな依存件数をカウントする。"""
+    count = 0
+    if not target.exists():
+        return 10
+
+    dep_files = [
+        "requirements.txt",
+        "pyproject.toml",
+        "package.json",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "go.mod",
+        "Cargo.toml",
+        "Pipfile",
+        "poetry.lock",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+    ]
+
+    found_any = False
+    for filename in dep_files:
+        filepath = target / filename
+        if filepath.is_file():
+            found_any = True
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+
+                if filename == "package.json":
+                    import json
+
+                    data = json.loads(content)
+                    deps = data.get("dependencies", {})
+                    dev_deps = data.get("devDependencies", {})
+                    count += len(deps) + len(dev_deps)
+                elif filename == "requirements.txt":
+                    lines = [
+                        line.strip()
+                        for line in content.splitlines()
+                        if line.strip() and not line.strip().startswith("#")
+                    ]
+                    count += len(lines)
+                elif filename == "pyproject.toml":
+                    for line in content.splitlines():
+                        if "dependencies" in line or "requires" in line:
+                            count += 5
+                elif filename == "go.mod":
+                    count += content.count("require ")
+                elif filename == "Cargo.toml":
+                    count += content.count("[dependencies]") * 5
+                elif "lock" in filename or "lock" in content:
+                    count += min(
+                        50, content.count("package") or content.count("name =") or 10
+                    )
+                else:
+                    count += 10
+            except Exception:
+                count += 10
+
+    if not found_any:
+        return 10
+
+    return max(5, count)
+
+
+def _cleanup_executor_processes(
+    executor: concurrent.futures.ProcessPoolExecutor,
+) -> None:
+    """ハングした、またはクラッシュしたワーカープロセスおよびそのすべての子孫プロセスを確実に強制終了する。"""
+    import os
+
+    try:
+        processes = list(executor._processes.values())
+    except Exception:
+        return
+
+    for p in processes:
+        pid = p.pid
+        if pid is None:
+            continue
+
+        # 1. psutilを用いて、親プロセスが消える前に子孫プロセスのPIDリストを取得しておく
+        children_pids = []
+        try:
+            import psutil
+
+            parent_proc = psutil.Process(pid)
+            children_pids = [c.pid for c in parent_proc.children(recursive=True)]
+        except Exception:
+            pass
+
+        # 2. プロセスグループ（UNIX）がある場合は、まず SIGTERM をグループ全体に送信
+        pgid_killed = False
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                pgid_killed = True
+            except Exception:
+                pass
+
+        # 3. 各子プロセスに個別に terminate() を送信
+        for c_pid in children_pids:
+            try:
+                import psutil
+
+                psutil.Process(c_pid).terminate()
+            except Exception:
+                pass
+
+        # 4. ワーカー自体を終了
+        try:
+            p.terminate()
+        except Exception:
+            pass
+
+        # 5. join で待機
+        try:
+            p.join(timeout=0.5)
+        except Exception:
+            pass
+
+        # 6. ワーカー自身が終了したかに関わらず、子孫やグループ全体の残留に対して SIGKILL を送信する
+        if hasattr(os, "killpg") and pgid_killed:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+        for c_pid in children_pids:
+            try:
+                import psutil
+
+                proc = psutil.Process(c_pid)
+                if proc.is_running():
+                    proc.kill()
+            except Exception:
+                pass
+
+        try:
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=0.5)
+        except Exception:
+            pass
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -115,16 +265,25 @@ def run_all(
     errors: List[Tuple[str, str]] = []
     executed_count = 0
 
-    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "300")
-    try:
-        timeout_sec = float(timeout_sec_str)
-        if not math.isfinite(timeout_sec) or timeout_sec <= 0:
-            raise ValueError("RULE_TIMEOUT_SEC は正の有限値である必要があります。")
-    except ValueError:
-        logger.warning(
-            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 300 秒を使用します。"
+    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC")
+    if timeout_sec_str is not None:
+        try:
+            timeout_sec = float(timeout_sec_str)
+            if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+                raise ValueError("RULE_TIMEOUT_SEC は正の有限値である必要があります。")
+        except ValueError:
+            logger.warning(
+                f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルト値を使用します。"
+            )
+            timeout_sec_str = None
+
+    if timeout_sec_str is None:
+        # 依存関係件数に基づいて動的にタイムアウトを算出する (1件あたり最悪 100秒として計算、最低 300秒)
+        dep_count = _estimate_dependency_count(target)
+        timeout_sec = max(300.0, float(dep_count * 100.0))
+        logger.info(
+            f"推定依存件数: {dep_count}件。動的タイムアウト {timeout_sec}秒 を適用します。"
         )
-        timeout_sec = 300.0
 
     sorted_rules = sorted(
         rules,
@@ -174,67 +333,7 @@ def run_all(
                 )
 
                 # ハングした子プロセスおよびそのすべての子孫プロセスを強制終了する
-                for p in list(executor._processes.values()):
-                    if p.pid is not None:
-                        # 1. UNIX環境ではプロセスグループIDを指定して一括終了を試みる
-                        pgid_killed = False
-                        if hasattr(os, "killpg"):
-                            try:
-                                os.killpg(p.pid, signal.SIGTERM)
-                                pgid_killed = True
-                            except Exception:
-                                pass
-
-                        # 2. psutil を使用して再帰的にプロセスツリー全体（孫プロセス含む）を終了させる
-                        try:
-                            import psutil
-
-                            parent = psutil.Process(p.pid)
-                            children = parent.children(recursive=True)
-                            for child in children:
-                                try:
-                                    child.terminate()
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-
-                        # ワーカー自体の終了
-                        try:
-                            p.terminate()
-                        except Exception:
-                            pass
-
-                        # 待機
-                        try:
-                            p.join(timeout=1.0)
-                        except Exception:
-                            pass
-
-                        # それでも生存している場合は SIGKILL / kill を送信
-                        if p.is_alive():
-                            if hasattr(os, "killpg") and pgid_killed:
-                                try:
-                                    os.killpg(p.pid, signal.SIGKILL)
-                                except Exception:
-                                    pass
-                            try:
-                                import psutil
-
-                                parent = psutil.Process(p.pid)
-                                children = parent.children(recursive=True)
-                                for child in children:
-                                    try:
-                                        child.kill()
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                            try:
-                                p.kill()
-                                p.join(timeout=1.0)
-                            except Exception:
-                                pass
+                _cleanup_executor_processes(executor)
 
                 executor.shutdown(wait=False)
                 executor = concurrent.futures.ProcessPoolExecutor(
@@ -250,7 +349,8 @@ def run_all(
                         "BrokenProcessPool: Subprocess terminated unexpectedly.",
                     )
                 )
-                # 壊れたプールを安全に再作成する
+                # 壊れたプールから起動された子孫プロセスも含めて安全に回収する
+                _cleanup_executor_processes(executor)
                 executor.shutdown(wait=False)
                 executor = concurrent.futures.ProcessPoolExecutor(
                     max_workers=1, initializer=_worker_initializer

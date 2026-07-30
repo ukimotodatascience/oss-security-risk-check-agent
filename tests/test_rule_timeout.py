@@ -162,3 +162,53 @@ def test_run_all_propagates_thread_local_dict_state(tmp_path):
     assert errors == []
     assert len(records) == 1
     assert records[0].message == "secret_state_value"
+
+
+class TestCrashRule:
+    rule_id = "A-4"
+
+    def evaluate(self, target: Path):
+        import os
+
+        # プロセスを即座に異常終了させて BrokenProcessPool を誘発する
+        os._exit(1)
+
+
+def test_run_all_recovers_from_broken_process_pool(tmp_path):
+    rules = [TestCrashRule(), TestPostRule()]
+
+    records, errors, executed_count = run_all(tmp_path, rules)
+
+    # 実行数は 2 であるべき
+    assert executed_count == 2
+
+    # A-4 は BrokenProcessPool エラーとして記録されているべき
+    err_rule_ids = {err[0] for err in errors}
+    assert "A-4" in err_rule_ids
+    assert any("BrokenProcessPool" in err[1] for err in errors if err[0] == "A-4")
+
+    # クラッシュ後、プールが再作成されて A-3 (TestPostRule) の結果は正常に取得できているべき
+    rule_ids_in_records = {r.rule_id for r in records}
+    assert "A-3" in rule_ids_in_records
+
+
+class TestDynamicTimeoutValidationRule:
+    rule_id = "A-5"
+
+    def evaluate(self, target: Path):
+        return []
+
+
+def test_run_all_dynamic_timeout_calculation(tmp_path, monkeypatch):
+    # RULE_TIMEOUT_SEC をアンセット状態にする
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # 35件のダミー依存記述を含む requirements.txt を作成
+    req_file = tmp_path / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
+
+    rules = [TestDynamicTimeoutValidationRule()]
+    records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
