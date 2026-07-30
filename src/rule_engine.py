@@ -102,16 +102,16 @@ def run_all(
     errors: List[Tuple[str, str]] = []
     executed_count = 0
 
-    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "30")
+    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "60")
     try:
         timeout_sec = float(timeout_sec_str)
         if not math.isfinite(timeout_sec) or timeout_sec <= 0:
             raise ValueError("RULE_TIMEOUT_SEC は正の有限値である必要があります。")
     except ValueError:
         logger.warning(
-            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 30 秒を使用します。"
+            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 60 秒を使用します。"
         )
-        timeout_sec = 30.0
+        timeout_sec = 60.0
 
     sorted_rules = sorted(
         rules,
