@@ -496,7 +496,9 @@ def run_all(
 
                 executor.shutdown(wait=False)
                 executor = concurrent.futures.ProcessPoolExecutor(
-                    max_workers=1, initializer=_worker_initializer
+                    max_workers=1,
+                    initializer=_worker_initializer,
+                    mp_context=mp_context,
                 )
             except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
                 logger.error(
@@ -512,7 +514,9 @@ def run_all(
                 _cleanup_executor_processes(executor)
                 executor.shutdown(wait=False)
                 executor = concurrent.futures.ProcessPoolExecutor(
-                    max_workers=1, initializer=_worker_initializer
+                    max_workers=1,
+                    initializer=_worker_initializer,
+                    mp_context=mp_context,
                 )
             except Exception:
                 tb = traceback.format_exc()
