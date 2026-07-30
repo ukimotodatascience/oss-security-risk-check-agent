@@ -205,6 +205,10 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
 
+    # 35件の依存関係を含む requirements.txt を作成する
+    req_file = tmp_path / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
+
     rules = [TestDynamicTimeoutValidationRule()]
     with caplog.at_level(logging.INFO, logger="src.rule_engine"):
         records, errors, executed_count = run_all(tmp_path, rules)
@@ -212,6 +216,7 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールの実行タイムアウトとして 1200.0秒 を適用します。" in record.message
+        "B-1ルールのための推定依存件数: 35件。実行タイムアウトとして 3500.0秒 を適用します。"
+        in record.message
         for record in caplog.records
     )

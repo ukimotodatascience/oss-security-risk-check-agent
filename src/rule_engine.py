@@ -49,21 +49,63 @@ def _setup_windows_job_object() -> None:
     try:
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 
-        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 構造体をバイト配列として定義
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
         class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [("raw", ctypes.c_byte * 112)]
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
 
         kernel32 = ctypes.windll.kernel32
+
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+
+        kernel32.SetInformationJobObject.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
+        kernel32.SetInformationJobObject.restype = ctypes.c_int
+
+        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+
         h_job = kernel32.CreateJobObjectW(None, None)
         if not h_job:
-            return
+            raise ctypes.WinError()
 
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-        flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        info.raw[16] = flags & 0xFF
-        info.raw[17] = (flags >> 8) & 0xFF
-        info.raw[18] = (flags >> 16) & 0xFF
-        info.raw[19] = (flags >> 24) & 0xFF
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
         sizeof_info = ctypes.sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
         res = kernel32.SetInformationJobObject(
@@ -73,12 +115,14 @@ def _setup_windows_job_object() -> None:
             sizeof_info,
         )
         if not res:
-            return
+            raise ctypes.WinError()
 
         h_process = kernel32.GetCurrentProcess()
-        kernel32.AssignProcessToJobObject(h_job, h_process)
-    except Exception:
-        pass
+        res = kernel32.AssignProcessToJobObject(h_job, h_process)
+        if not res:
+            raise ctypes.WinError()
+    except Exception as e:
+        logger.warning(f"Windows Job Object のセットアップに失敗しました: {e}")
 
 
 def _worker_initializer() -> None:
@@ -92,6 +136,78 @@ def _worker_initializer() -> None:
             pass
 
     _setup_windows_job_object()
+
+
+def _estimate_dependency_count_safe(target: Path) -> int:
+    """親プロセスで安全かつ高速に依存関係件数を推定する（OOM/フリーズ防止制限付き）。"""
+    if not target.exists():
+        return 10
+
+    count = 0
+    files_scanned = 0
+    dep_names = {
+        "requirements.txt",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+        "Cargo.toml",
+    }
+
+    try:
+        candidates = []
+        # 直下
+        for p in target.iterdir():
+            if p.is_file() and (
+                p.name in dep_names or p.name.startswith("requirements")
+            ):
+                candidates.append(p)
+            elif p.is_dir() and p.name not in {
+                ".git",
+                "node_modules",
+                ".venv",
+                "venv",
+                "__pycache__",
+            }:
+                # 1階層下まで
+                try:
+                    for sub_p in p.iterdir():
+                        if sub_p.is_file() and (
+                            sub_p.name in dep_names
+                            or sub_p.name.startswith("requirements")
+                        ):
+                            candidates.append(sub_p)
+                except Exception:
+                    pass
+
+        for filepath in candidates:
+            if files_scanned >= 20:
+                break
+
+            try:
+                stat = filepath.stat()
+                if stat.st_size > 500 * 1024:
+                    count += 50  # 巨大ファイルは一律50件とみなす
+                    continue
+
+                files_scanned += 1
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    if filepath.name == "package.json":
+                        for line in f:
+                            if '"dependencies"' in line or '"devDependencies"' in line:
+                                count += 10
+                    elif "requirements" in filepath.name:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                count += 1
+                    else:
+                        count += 10
+            except Exception:
+                count += 10
+    except Exception:
+        return 10
+
+    return max(5, min(count, 100))
 
 
 def _cleanup_executor_processes(
@@ -284,10 +400,11 @@ def run_all(
                 current_timeout = timeout_sec
             else:
                 if rule_id == "B-1":
-                    # B-1ルールのみ、外部API通信と依存ファイル走査の時間を考慮して十分に長い時間（1200秒＝20分）を確保する
-                    current_timeout = 1200.0
+                    # B-1ルールのみ、親プロセスでのフリーズを防ぎつつ安全に推定された件数に基づいて動的タイムアウトを設定する
+                    dep_count = _estimate_dependency_count_safe(target)
+                    current_timeout = max(300.0, float(dep_count * 100.0))
                     logger.info(
-                        f"B-1ルールの実行タイムアウトとして {current_timeout}秒 を適用します。"
+                        f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
                     )
                 else:
                     # B-1以外のルールは一律 300秒
