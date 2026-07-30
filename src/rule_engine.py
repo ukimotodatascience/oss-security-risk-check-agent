@@ -206,12 +206,15 @@ def _estimate_dependency_count_safe(target: Path) -> int:
 
                     try:
                         data = json.loads(content)
-                        deps = data.get("dependencies", {})
-                        dev_deps = data.get("devDependencies", {})
-                        if isinstance(deps, dict):
-                            count += len(deps)
-                        if isinstance(dev_deps, dict):
-                            count += len(dev_deps)
+                        for field in (
+                            "dependencies",
+                            "devDependencies",
+                            "optionalDependencies",
+                            "peerDependencies",
+                        ):
+                            deps = data.get(field, {})
+                            if isinstance(deps, dict):
+                                count += len(deps)
                     except Exception:
                         count += 10
                 elif filepath.name == "requirements.txt" or filepath.name.startswith(

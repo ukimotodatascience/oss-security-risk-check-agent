@@ -210,11 +210,13 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     req_file = tmp_path / "requirements.txt"
     req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(35)))
 
-    # 15件の依存関係を含む package.json を作成する
+    # 20件の依存関係を含む package.json を作成する (4つのフィールドを合計)
     pkg_file = tmp_path / "package.json"
     pkg_data = {
         "dependencies": {f"dep-{i}": "^1.0.0" for i in range(10)},
         "devDependencies": {f"dev-dep-{i}": "^1.0.0" for i in range(5)},
+        "optionalDependencies": {f"opt-dep-{i}": "^1.0.0" for i in range(3)},
+        "peerDependencies": {f"peer-dep-{i}": "^1.0.0" for i in range(2)},
     }
     pkg_file.write_text(json.dumps(pkg_data))
 
@@ -225,7 +227,7 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 5000.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 55件。実行タイムアウトとして 5500.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
