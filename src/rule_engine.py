@@ -145,6 +145,7 @@ def _estimate_dependency_count_safe(target: Path) -> int:
 
     count = 0
     files_scanned = 0
+    total_entries_checked = 0
     dep_names = {
         "requirements.txt",
         "package.json",
@@ -155,8 +156,12 @@ def _estimate_dependency_count_safe(target: Path) -> int:
 
     try:
         candidates = []
-        # 直下
+        # 直下および1階層下のディレクトリ走査（最大100エントリに制限）
         for p in target.iterdir():
+            total_entries_checked += 1
+            if total_entries_checked > 100:
+                break
+
             if p.is_file() and (
                 p.name in dep_names or p.name.startswith("requirements")
             ):
@@ -168,9 +173,11 @@ def _estimate_dependency_count_safe(target: Path) -> int:
                 "venv",
                 "__pycache__",
             }:
-                # 1階層下まで
                 try:
                     for sub_p in p.iterdir():
+                        total_entries_checked += 1
+                        if total_entries_checked > 100:
+                            break
                         if sub_p.is_file() and (
                             sub_p.name in dep_names
                             or sub_p.name.startswith("requirements")
@@ -185,23 +192,65 @@ def _estimate_dependency_count_safe(target: Path) -> int:
 
             try:
                 stat = filepath.stat()
+                # 1ファイルあたり 500KB 上限
                 if stat.st_size > 500 * 1024:
-                    count += 50  # 巨大ファイルは一律50件とみなす
+                    count += 50
                     continue
 
                 files_scanned += 1
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    if filepath.name == "package.json":
-                        for line in f:
-                            if '"dependencies"' in line or '"devDependencies"' in line:
-                                count += 10
-                    elif "requirements" in filepath.name:
-                        for line in f:
-                            line = line.strip()
-                            if line and not line.startswith("#"):
-                                count += 1
-                    else:
+                    content = f.read()
+
+                if filepath.name == "package.json":
+                    import json
+
+                    try:
+                        data = json.loads(content)
+                        deps = data.get("dependencies", {})
+                        dev_deps = data.get("devDependencies", {})
+                        if isinstance(deps, dict):
+                            count += len(deps)
+                        if isinstance(dev_deps, dict):
+                            count += len(dev_deps)
+                    except Exception:
                         count += 10
+                elif filepath.name == "requirements.txt" or filepath.name.startswith(
+                    "requirements"
+                ):
+                    lines = [
+                        line.strip()
+                        for line in content.splitlines()
+                        if line.strip() and not line.strip().startswith("#")
+                    ]
+                    count += len(lines)
+                elif filepath.name == "pyproject.toml":
+                    lines = content.splitlines()
+                    in_deps_section = False
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith("[") and "dependencies" in line:
+                            in_deps_section = True
+                        elif line.startswith("["):
+                            in_deps_section = False
+                        elif in_deps_section and line and not line.startswith("#"):
+                            count += 1
+                elif filepath.name == "go.mod":
+                    count += content.count("require ")
+                elif filepath.name == "Cargo.toml":
+                    lines = content.splitlines()
+                    in_deps = False
+                    for line in lines:
+                        line = line.strip()
+                        if line.startswith("[dependencies]") or line.startswith(
+                            "[dev-dependencies]"
+                        ):
+                            in_deps = True
+                        elif line.startswith("["):
+                            in_deps = False
+                        elif in_deps and line and not line.startswith("#"):
+                            count += 1
+                else:
+                    count += 10
             except Exception:
                 count += 10
     except Exception:
