@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import pickle
+import signal
 import threading
 import traceback
 from pathlib import Path
@@ -34,6 +35,18 @@ def _pickle_local(local_obj: threading.local) -> Tuple[Callable, Tuple[dict[str,
 
 
 copyreg.pickle(threading.local, _pickle_local)
+
+
+def _worker_initializer() -> None:
+    """プロセスプールのワーカープロセス初期化時に新しいプロセスグループを作成する。"""
+    import os
+
+    if hasattr(os, "setpgrp"):
+        try:
+            os.setpgrp()
+        except Exception:
+            pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -102,16 +115,16 @@ def run_all(
     errors: List[Tuple[str, str]] = []
     executed_count = 0
 
-    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "60")
+    timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC", "300")
     try:
         timeout_sec = float(timeout_sec_str)
         if not math.isfinite(timeout_sec) or timeout_sec <= 0:
             raise ValueError("RULE_TIMEOUT_SEC は正の有限値である必要があります。")
     except ValueError:
         logger.warning(
-            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 60 秒を使用します。"
+            f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルトの 300 秒を使用します。"
         )
-        timeout_sec = 60.0
+        timeout_sec = 300.0
 
     sorted_rules = sorted(
         rules,
@@ -126,7 +139,9 @@ def run_all(
     cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
 
     # 実行中のルールを強制終了できるように ProcessPoolExecutor を使用
-    executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+    executor = concurrent.futures.ProcessPoolExecutor(
+        max_workers=1, initializer=_worker_initializer
+    )
     try:
         for index, rule in enumerate(sorted_rules, start=1):
             rule_id = getattr(rule, "rule_id", type(rule).__name__)
@@ -158,19 +173,73 @@ def run_all(
                     )
                 )
 
-                # ハングした子プロセスを強制終了する
+                # ハングした子プロセスおよびそのすべての子孫プロセスを強制終了する
                 for p in list(executor._processes.values()):
-                    try:
-                        p.terminate()
-                        p.join(timeout=1.0)
-                        if p.is_alive():
-                            p.kill()
+                    if p.pid is not None:
+                        # 1. UNIX環境ではプロセスグループIDを指定して一括終了を試みる
+                        pgid_killed = False
+                        if hasattr(os, "killpg"):
+                            try:
+                                os.killpg(p.pid, signal.SIGTERM)
+                                pgid_killed = True
+                            except Exception:
+                                pass
+
+                        # 2. psutil を使用して再帰的にプロセスツリー全体（孫プロセス含む）を終了させる
+                        try:
+                            import psutil
+
+                            parent = psutil.Process(p.pid)
+                            children = parent.children(recursive=True)
+                            for child in children:
+                                try:
+                                    child.terminate()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        # ワーカー自体の終了
+                        try:
+                            p.terminate()
+                        except Exception:
+                            pass
+
+                        # 待機
+                        try:
                             p.join(timeout=1.0)
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
+
+                        # それでも生存している場合は SIGKILL / kill を送信
+                        if p.is_alive():
+                            if hasattr(os, "killpg") and pgid_killed:
+                                try:
+                                    os.killpg(p.pid, signal.SIGKILL)
+                                except Exception:
+                                    pass
+                            try:
+                                import psutil
+
+                                parent = psutil.Process(p.pid)
+                                children = parent.children(recursive=True)
+                                for child in children:
+                                    try:
+                                        child.kill()
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            try:
+                                p.kill()
+                                p.join(timeout=1.0)
+                            except Exception:
+                                pass
 
                 executor.shutdown(wait=False)
-                executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=1, initializer=_worker_initializer
+                )
             except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
                 logger.error(
                     f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"
@@ -183,7 +252,9 @@ def run_all(
                 )
                 # 壊れたプールを安全に再作成する
                 executor.shutdown(wait=False)
-                executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                executor = concurrent.futures.ProcessPoolExecutor(
+                    max_workers=1, initializer=_worker_initializer
+                )
             except Exception:
                 tb = traceback.format_exc()
                 logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
