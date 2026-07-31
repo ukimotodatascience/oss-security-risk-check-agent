@@ -165,17 +165,24 @@ def _estimate_dependency_count_safe(target: Path) -> int:
                     if total_entries_checked > 100:
                         break
 
-                    if p.is_file() and (
-                        p.name in dep_names or p.name.startswith("requirements")
+                    if (
+                        p.is_file()
+                        and not p.is_symlink()
+                        and (p.name in dep_names or p.name.startswith("requirements"))
                     ):
                         candidates.append(p)
-                    elif p.is_dir() and p.name not in {
-                        ".git",
-                        "node_modules",
-                        ".venv",
-                        "venv",
-                        "__pycache__",
-                    }:
+                    elif (
+                        p.is_dir()
+                        and not p.is_symlink()
+                        and p.name
+                        not in {
+                            ".git",
+                            "node_modules",
+                            ".venv",
+                            "venv",
+                            "__pycache__",
+                        }
+                    ):
                         stack.append(p)
             except Exception:
                 pass
@@ -454,7 +461,23 @@ def run_all(
                 if rule_id == "B-1":
                     # B-1ルールのみ、親プロセスでのフリーズを防ぎつつ安全に推定された件数に基づいて動的タイムアウトを設定する
                     dep_count = _estimate_dependency_count_safe(target)
-                    current_timeout = max(300.0, float(dep_count * 100.0))
+                    try:
+                        api_timeout = float(
+                            os.environ.get("VULN_API_TIMEOUT_SEC", "10.0")
+                        )
+                    except ValueError:
+                        api_timeout = 10.0
+                    try:
+                        max_retries = int(os.environ.get("VULN_MAX_RETRIES", "3"))
+                    except ValueError:
+                        max_retries = 3
+
+                    # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
+                    attempts = 1 + max(0, max_retries)
+                    # 3つのプロバイダ (NVD, OSV, GHSA) を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
+                    sec_per_dep = max(100.0, 3.0 * attempts * api_timeout * 1.5)
+
+                    current_timeout = max(300.0, float(dep_count * sec_per_dep))
                     logger.info(
                         f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
                     )

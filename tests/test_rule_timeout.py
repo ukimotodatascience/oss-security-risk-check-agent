@@ -227,7 +227,7 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 55件。実行タイムアウトとして 5500.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 55件。実行タイムアウトとして 9900.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -250,7 +250,7 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 300件。実行タイムアウトとして 30000.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 300件。実行タイムアウトとして 54000.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -286,7 +286,67 @@ def test_run_all_b1_timeout_scoping_recursive(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 5000.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 9000.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
+
+
+def test_run_all_b1_timeout_scoping_with_custom_env(tmp_path, monkeypatch, caplog):
+    import logging
+
+    # RULE_TIMEOUT_SEC をアンセット状態にする
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # カスタムのAPIタイムアウトと再試行回数を設定する
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "60.0")
+    monkeypatch.setenv("VULN_MAX_RETRIES", "2")
+
+    # 10件の依存関係を含む requirements.txt を作成する
+    req_file = tmp_path / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(10)))
+
+    # 1依存あたり 3 * (1 + 2) * 60 * 1.5 = 810.0 秒
+    # 10件で 8100.0 秒
+    rules = [TestDynamicTimeoutValidationRule()]
+    with caplog.at_level(logging.INFO, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
+    assert any(
+        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 8100.0秒 を適用します。"
+        in record.message
+        for record in caplog.records
+    )
+
+
+def test_estimate_dependency_count_safe_excludes_symlink(tmp_path):
+    from src.rule_engine import _estimate_dependency_count_safe
+
+    # 実際のディレクトリとファイル
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    real_file = real_dir / "requirements.txt"
+    real_file.write_text("package-a==1.0\npackage-b==1.0")
+
+    # シンボリックリンクファイル
+    symlink_file = tmp_path / "requirements_link.txt"
+    try:
+        symlink_file.symlink_to(real_file)
+    except OSError:
+        # Windowsの権限エラー等で作成できない場合はテストをスキップ
+        return
+
+    # シンボリックリンクディレクトリ
+    symlink_dir = tmp_path / "sym_dir"
+    try:
+        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+    except OSError:
+        return
+
+    # シンボリックリンク経由で辿った場合は依存関係数が増えるが、
+    # シンボリックリンクを辿らないため、カウントは real_dir の requirements.txt (2件) のみになるはず
+    count = _estimate_dependency_count_safe(tmp_path)
+    # 最低値は 5
+    assert count == 5
