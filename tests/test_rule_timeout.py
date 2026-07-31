@@ -408,3 +408,40 @@ def test_run_all_global_executor_caches_reused(tmp_path):
 
     # プロセスプールが再利用されているため、PIDは一致するはず
     assert pid1 == pid2
+
+
+class SlowRule:
+    rule_id = "SlowRule"
+
+    def evaluate(self, target):
+        import time
+
+        time.sleep(0.5)
+        return []
+
+
+def test_run_all_concurrency_lock(tmp_path):
+    import threading
+    import time
+
+    rules = [SlowRule()]
+
+    results = []
+
+    def worker():
+        records, errors, count = run_all(tmp_path, rules)
+        results.append((records, errors, count))
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+
+    t1.start()
+    time.sleep(0.1)
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+    assert len(results) == 2
+    assert results[0][1] == []
+    assert results[1][1] == []
