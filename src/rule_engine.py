@@ -614,9 +614,18 @@ def run_all(
 
                         # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
                         attempts = 1 + max(0, max_retries)
-                        # 設定されたプロバイダ数を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
+                        # 再試行時の最大累積バックオフ遅延時間を計算する
+                        # 各試行でのスリープ時間は min(0.5 * (2**attempt), 2.0)
+                        backoff_total = 0.0
+                        for r in range(max(0, max_retries)):
+                            backoff_total += min(0.5 * (2**r), 2.0)
+
+                        # 設定されたプロバイダ数を考慮し、(試行合計時間 + バックオフ時間) に安全係数 1.5 倍をかける。最低 100秒/件 を確保
                         sec_per_dep = max(
-                            100.0, float(provider_count) * attempts * api_timeout * 1.5
+                            100.0,
+                            float(provider_count)
+                            * (attempts * api_timeout + backoff_total)
+                            * 1.5,
                         )
 
                         if dep_count_fallback:

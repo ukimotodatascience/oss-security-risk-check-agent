@@ -227,7 +227,7 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 55件。実行タイムアウトとして 9900.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 55件。実行タイムアウトとして 10766.25秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -250,7 +250,7 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1の推定依存件数が上限（300件）に達したため、有限のフェイルセーフ上限として実行タイムアウト 54000.0秒 を適用します。"
+        "B-1の推定依存件数が上限（300件）に達したため、有限のフェイルセーフ上限として実行タイムアウト 58725.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -286,7 +286,7 @@ def test_run_all_b1_timeout_scoping_recursive(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 9000.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 50件。実行タイムアウトとして 9787.5秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -315,7 +315,7 @@ def test_run_all_b1_timeout_scoping_with_custom_env(tmp_path, monkeypatch, caplo
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 8100.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 8167.5秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -471,7 +471,7 @@ def test_run_all_b1_timeout_scoping_with_provider_order(tmp_path, monkeypatch, c
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 2250.0秒 を適用します。"
+        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 2362.5秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -790,3 +790,28 @@ def test_estimate_dependency_count_safe_huge_manifest(tmp_path):
 
     dep_count = _estimate_dependency_count_safe(tmp_path)
     assert dep_count == 300
+
+
+def test_b1_budget_includes_retry_backoff(tmp_path, monkeypatch, caplog):
+    import logging
+
+    # 大きな再試行回数を設定
+    monkeypatch.setenv("VULN_MAX_RETRIES", "10")
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "1.0")
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv")
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # 依存関係数 10 件の requirements.txt を作成する
+    req = tmp_path / "requirements.txt"
+    req.write_text("\n".join(f"package-{i}==1.0" for i in range(10)))
+
+    rules = [TestDynamicTimeoutValidationRule()]
+    with caplog.at_level(logging.INFO, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert any(
+        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 1000.0秒 を適用します。"
+        in record.message
+        for record in caplog.records
+    )
