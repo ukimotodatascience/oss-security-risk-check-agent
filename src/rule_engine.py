@@ -527,6 +527,7 @@ def run_all(
                     if rule_id == "B-1":
                         # 件数推定処理も子プロセスへ隔離し、同期的なファイルシステムハング（NFS等）を防止する。
                         # 推定処理は 5.0秒でタイムアウトさせ、ハングや例外時は最大件数 300件 に安全にフォールバックする。
+                        dep_count_fallback = False
                         try:
                             future_count = executor.submit(
                                 _estimate_dependency_count_safe, target
@@ -534,6 +535,7 @@ def run_all(
                             dep_count = future_count.result(timeout=5.0)
                         except (concurrent.futures.TimeoutError, TimeoutError) as e:
                             dep_count = 300
+                            dep_count_fallback = True
                             logger.warning(
                                 f"B-1の依存件数推定が 5.0 秒以内に完了しなかったか、エラーが発生したため、安全のために最大件数の 300 件としてフォールバックします: {e}"
                             )
@@ -543,6 +545,7 @@ def run_all(
                                 executor = _get_global_executor()
                         except Exception as e:
                             dep_count = 300
+                            dep_count_fallback = True
                             logger.warning(
                                 f"B-1の依存件数推定中に例外が発生したため、最大件数の 300 件としてフォールバックします: {e}"
                             )
@@ -576,15 +579,22 @@ def run_all(
                             100.0, float(provider_count) * attempts * api_timeout * 1.5
                         )
 
-                        current_timeout = max(300.0, float(dep_count * sec_per_dep))
-                        logger.info(
-                            f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
-                        )
+                        if dep_count_fallback:
+                            current_timeout = 300.0
+                            logger.warning(
+                                f"B-1の依存件数推定が失敗したため、安全のために実行タイムアウトにフェイルセーフ上限 {current_timeout}秒 を適用します。"
+                            )
+                        else:
+                            current_timeout = max(300.0, float(dep_count * sec_per_dep))
+                            logger.info(
+                                f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
+                            )
                     else:
                         # B-1以外のルールは一律 300秒
                         current_timeout = 300.0
 
                 # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
+                future = None
                 try:
                     rule_bytes = pickle.dumps(rule)
                     future = executor.submit(
@@ -599,7 +609,7 @@ def run_all(
                         records.extend(found)
                 except (concurrent.futures.TimeoutError, TimeoutError) as e:
                     # タスク内で発生した TimeoutError 例外の伝播か、待機期限切れ（ハングタイムアウト）かを done() で区別する
-                    if not future.done():
+                    if future is not None and not future.done():
                         msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
                         logger.error(msg)
                         errors.append(

@@ -544,3 +544,72 @@ def test_run_all_cancellation_worker_cleanup(tmp_path):
     from src.rule_engine import _global_executor as final_executor
 
     assert final_executor is None
+
+
+class BadPickleRule:
+    rule_id = "BadPickle"
+
+    def evaluate(self, target):
+        return []
+
+    def __reduce__(self):
+        # pickle 時点での TimeoutError 送出をシミュレート
+        raise TimeoutError("Simulated serialization timeout")
+
+
+def mock_estimate_slow(target):
+    import time
+
+    time.sleep(6.0)
+    return 10
+
+
+def test_run_all_b1_timeout_failsafe_on_estimation_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    import logging
+    import src.rule_engine
+
+    # RULE_TIMEOUT_SEC をアンセット
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # 5つのプロバイダを指定 (タイムアウトは 2250秒 になる設定)
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github,nvd,osv,github")
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "10.0")
+    monkeypatch.setenv("VULN_MAX_RETRIES", "2")
+
+    # 10件の依存関係を含む requirements.txt を作成する
+    req_file = tmp_path / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(10)))
+
+    # 推定関数が5秒を超えてハングするのをモック
+    monkeypatch.setattr(
+        src.rule_engine, "_estimate_dependency_count_safe", mock_estimate_slow
+    )
+
+    rules = [TestDynamicTimeoutValidationRule()]
+    with caplog.at_level(logging.WARNING, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
+    # ログ出力の中にフェイルセーフ上限が適用された記述があることを確認する
+    assert any(
+        "B-1の依存件数推定が 5.0 秒以内に完了しなかったか" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "安全のために実行タイムアウトにフェイルセーフ上限 300.0秒 を適用します。"
+        in record.message
+        for record in caplog.records
+    )
+
+
+def test_pickle_timeout_error_unbound_local_avoidance(tmp_path):
+    rules = [BadPickleRule()]
+    records, errors, count = run_all(tmp_path, rules)
+
+    assert count == 1
+    assert len(errors) == 1
+    assert errors[0][0] == "BadPickle"
+    assert "Simulated serialization timeout" in errors[0][1]
