@@ -631,7 +631,7 @@ def test_estimate_dependency_count_safe_counts_file_symlink(tmp_path):
     from src.rule_engine import _estimate_dependency_count_safe
 
     target_file = tmp_path / "actual_reqs.txt"
-    target_file.write_text("package-1==1.0\npackage-2==1.0")
+    target_file.write_text("\n".join(f"package-{i}==1.0" for i in range(6)))
 
     symlink_file = tmp_path / "requirements.txt"
     try:
@@ -642,7 +642,7 @@ def test_estimate_dependency_count_safe_counts_file_symlink(tmp_path):
         pytest.skip("Symlink creation is not supported on this platform/configuration.")
 
     dep_count = _estimate_dependency_count_safe(tmp_path)
-    assert dep_count == 2
+    assert dep_count == 6
 
 
 class EnvCheckRule:
