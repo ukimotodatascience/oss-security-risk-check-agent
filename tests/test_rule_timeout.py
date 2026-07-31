@@ -445,3 +445,33 @@ def test_run_all_concurrency_lock(tmp_path):
     assert len(results) == 2
     assert results[0][1] == []
     assert results[1][1] == []
+
+
+def test_run_all_b1_timeout_scoping_with_provider_order(tmp_path, monkeypatch, caplog):
+    import logging
+
+    # RULE_TIMEOUT_SEC をアンセット状態にする
+    monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+
+    # 5つのプロバイダを指定
+    monkeypatch.setenv("VULN_PROVIDER_ORDER", "osv,github,nvd,osv,github")
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "10.0")
+    monkeypatch.setenv("VULN_MAX_RETRIES", "2")
+
+    # 10件の依存関係を含む requirements.txt を作成する
+    req_file = tmp_path / "requirements.txt"
+    req_file.write_text("\n".join(f"package-{i}==1.0" for i in range(10)))
+
+    # 1プロバイダあたり 5 * (1 + 2) * 10 * 1.5 = 225.0 秒 / 依存パッケージ
+    # 10件なので 2250.0 秒
+    rules = [TestDynamicTimeoutValidationRule()]
+    with caplog.at_level(logging.INFO, logger="src.rule_engine"):
+        records, errors, executed_count = run_all(tmp_path, rules)
+
+    assert executed_count == 1
+    assert errors == []
+    assert any(
+        "B-1ルールのための推定依存件数: 10件。実行タイムアウトとして 2250.0秒 を適用します。"
+        in record.message
+        for record in caplog.records
+    )

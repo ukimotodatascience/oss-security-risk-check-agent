@@ -413,6 +413,10 @@ def _reset_global_executor() -> None:
 def _cleanup_global_executor() -> None:
     global _global_executor
     if _global_executor is not None:
+        try:
+            _cleanup_executor_processes(_global_executor)
+        except Exception:
+            pass
         _global_executor.shutdown(wait=False)
 
 
@@ -529,10 +533,19 @@ def run_all(
                     except ValueError:
                         max_retries = 3
 
+                    # 環境変数 VULN_PROVIDER_ORDER から実際のプロバイダ数を取得（デフォルトは ["nvd", "osv", "ghsa"] の3つ）
+                    provider_str = os.environ.get("VULN_PROVIDER_ORDER", "nvd,osv,ghsa")
+                    providers = [
+                        p.strip() for p in provider_str.split(",") if p.strip()
+                    ]
+                    provider_count = max(1, len(providers))
+
                     # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
                     attempts = 1 + max(0, max_retries)
-                    # 3つのプロバイダ (NVD, OSV, GHSA) を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
-                    sec_per_dep = max(100.0, 3.0 * attempts * api_timeout * 1.5)
+                    # 設定されたプロバイダ数を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
+                    sec_per_dep = max(
+                        100.0, float(provider_count) * attempts * api_timeout * 1.5
+                    )
 
                     current_timeout = max(300.0, float(dep_count * sec_per_dep))
                     logger.info(
