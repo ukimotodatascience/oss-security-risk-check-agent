@@ -458,19 +458,25 @@ def _evaluate_rule_in_process(
     target: Path,
     cache_dir: Path | None,
     cache_ttl: int | None,
-) -> List[RiskRecord]:
-    """子プロセス内でルールを評価する。"""
+) -> Tuple[bool, List[RiskRecord], str | None]:
+    """子プロセス内でルールを評価し、(成功フラグ, 検知レコード, 例外詳細) を返す。"""
     import copyreg
     import pickle
     import threading
+    import traceback
     from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
     # 子プロセス側でも threading.local の pickle を登録
     copyreg.pickle(threading.local, _pickle_local)
 
-    rule = pickle.loads(rule_bytes)
-    with VulnLookupService.use_config(cache_dir, cache_ttl):
-        return rule.evaluate(target)
+    try:
+        rule = pickle.loads(rule_bytes)
+        with VulnLookupService.use_config(cache_dir, cache_ttl):
+            records = rule.evaluate(target)
+        return True, records, None
+    except BaseException as e:
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        return False, [], tb
 
 
 _run_all_lock = threading.Lock()
@@ -483,6 +489,7 @@ _tracked_env_vars = [
     "VULN_MAX_RETRIES",
     "VULN_PROVIDER_ORDER",
     "RULE_TIMEOUT_SEC",
+    "VULN_ENABLE_FALLBACK",
 ]
 _last_tracked_env_values: dict[str, str | None] = {}
 
@@ -617,9 +624,12 @@ def run_all(
                                 f"B-1の依存件数推定が失敗したため、安全のために実行タイムアウトにフェイルセーフ上限 {current_timeout}秒 を適用します。"
                             )
                         elif dep_count >= 300:
-                            current_timeout = None
+                            # 300件以上の場合は 54000.0秒（15時間）をベースとした有限のタイムアウトを維持する
+                            current_timeout = max(
+                                54000.0, float(dep_count * sec_per_dep)
+                            )
                             logger.info(
-                                f"B-1の推定依存件数が上限（{dep_count}件）に達したため、スキャンを確実に完了させるよう実行タイムアウト制限を無効化（タイムアウトなし）します。"
+                                f"B-1の推定依存件数が上限（{dep_count}件）に達したため、有限のフェイルセーフ上限として実行タイムアウト {current_timeout}秒 を適用します。"
                             )
                         else:
                             current_timeout = max(300.0, float(dep_count * sec_per_dep))
@@ -641,12 +651,18 @@ def run_all(
                         cache_dir,
                         cache_ttl,
                     )
-                    found = future.result(timeout=current_timeout)
-                    if found:
-                        records.extend(found)
-                except (concurrent.futures.TimeoutError, TimeoutError) as e:
-                    # タスク内で発生した TimeoutError 例外の伝播か、待機期限切れ（ハングタイムアウト）かを done() で区別する
-                    if future is not None and not future.done():
+                    try:
+                        success, found, tb = future.result(timeout=current_timeout)
+                        if success:
+                            if found:
+                                records.extend(found)
+                        else:
+                            logger.error(
+                                f"ルール {rule_id} の実行中にエラーが発生しました。\n{tb}"
+                            )
+                            errors.append((rule_id, tb))
+                    except (concurrent.futures.TimeoutError, TimeoutError):
+                        # ここで発生する TimeoutError 例外は 100% 確実に「親プロセス側の待機期限切れによるタイムアウト」となる。
                         msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
                         logger.error(msg)
                         errors.append(
@@ -658,15 +674,6 @@ def run_all(
                         # ハングした子プロセスを確実に kill し、プールをリセット再起動する
                         _reset_global_executor()
                         executor = _get_global_executor()
-                    else:
-                        # タスク内部で発生した例外が伝播してきた場合
-                        tb = "".join(
-                            traceback.format_exception(type(e), e, e.__traceback__)
-                        )
-                        logger.exception(
-                            f"ルール {rule_id} の実行中にエラー（TimeoutError）が発生しました。"
-                        )
-                        errors.append((rule_id, tb))
                 except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
                     logger.error(
                         f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"

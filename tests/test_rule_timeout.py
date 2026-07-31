@@ -250,7 +250,7 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1の推定依存件数が上限（300件）に達したため、スキャンを確実に完了させるよう実行タイムアウト制限を無効化（タイムアウトなし）します。"
+        "B-1の推定依存件数が上限（300件）に達したため、有限のフェイルセーフ上限として実行タイムアウト 54000.0秒 を適用します。"
         in record.message
         for record in caplog.records
     )
@@ -721,3 +721,61 @@ def test_reused_rule_uses_updated_vuln_config(tmp_path, monkeypatch):
     monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "5")
     # 同じインスタンスのまま動的に 5 に同期していること
     assert rule._lookup._timeout_sec == 5
+
+
+class FallbackCheckRule:
+    rule_id = "FallbackCheck"
+
+    def evaluate(self, target):
+        from src.rules.B_dependencies.vuln_sources import VulnLookupService
+
+        svc = VulnLookupService()
+        val = str(svc._enable_fallback).lower()
+        from src.models import RiskRecord, Severity
+
+        return [
+            RiskRecord(
+                rule_id="FallbackCheck",
+                category="code",
+                title="Fallback Check Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=val,
+            )
+        ]
+
+
+def test_run_all_refreshes_worker_on_fallback_env_change(tmp_path, monkeypatch):
+    from src.rule_engine import _get_global_executor, run_all
+
+    monkeypatch.setenv("VULN_ENABLE_FALLBACK", "false")
+    _get_global_executor()
+
+    rules = [FallbackCheckRule()]
+    records, errors, count = run_all(tmp_path, rules)
+    assert len(records) == 1
+    assert records[0].message == "false"
+
+    monkeypatch.setenv("VULN_ENABLE_FALLBACK", "true")
+    records2, errors2, count2 = run_all(tmp_path, rules)
+    assert len(records2) == 1
+    assert records2[0].message == "true"
+
+
+class ExceptionThrowingRule:
+    rule_id = "ExceptionThrower"
+
+    def evaluate(self, target):
+        raise ValueError("Simulated unexpected logic error inside worker")
+
+
+def test_evaluate_rule_in_process_returns_traceback_on_exception(tmp_path):
+    rules = [ExceptionThrowingRule()]
+    records, errors, count = run_all(tmp_path, rules)
+
+    assert count == 1
+    assert len(records) == 0
+    assert len(errors) == 1
+    assert errors[0][0] == "ExceptionThrower"
+    assert "Simulated unexpected logic error" in errors[0][1]
