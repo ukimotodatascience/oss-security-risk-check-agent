@@ -212,8 +212,9 @@ def _estimate_dependency_count_safe(target: Path) -> int:
                 stat = filepath.stat()
                 # 1ファイルあたり 500KB 上限
                 if stat.st_size > 500 * 1024:
-                    count += 50
-                    continue
+                    # 500KBを超える巨大なマニフェストファイルが存在する場合、実際の依存関係数が推定値を大幅に
+                    # 上回るリスクがあるため、安全のために最大件数である 300 件を返してフェイルセーフ上限予算を適用する。
+                    return 300
 
                 files_scanned += 1
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:

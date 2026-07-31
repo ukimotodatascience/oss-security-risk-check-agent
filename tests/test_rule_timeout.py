@@ -779,3 +779,14 @@ def test_evaluate_rule_in_process_returns_traceback_on_exception(tmp_path):
     assert len(errors) == 1
     assert errors[0][0] == "ExceptionThrower"
     assert "Simulated unexpected logic error" in errors[0][1]
+
+
+def test_estimate_dependency_count_safe_huge_manifest(tmp_path):
+    from src.rule_engine import _estimate_dependency_count_safe
+
+    # 500KBを超える巨大な requirements.txt を作成する
+    req = tmp_path / "requirements.txt"
+    req.write_text("a" * (501 * 1024))
+
+    dep_count = _estimate_dependency_count_safe(tmp_path)
+    assert dep_count == 300
