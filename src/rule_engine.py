@@ -616,6 +616,11 @@ def run_all(
                             logger.warning(
                                 f"B-1の依存件数推定が失敗したため、安全のために実行タイムアウトにフェイルセーフ上限 {current_timeout}秒 を適用します。"
                             )
+                        elif dep_count >= 300:
+                            current_timeout = None
+                            logger.info(
+                                f"B-1の推定依存件数が上限（{dep_count}件）に達したため、スキャンを確実に完了させるよう実行タイムアウト制限を無効化（タイムアウトなし）します。"
+                            )
                         else:
                             current_timeout = max(300.0, float(dep_count * sec_per_dep))
                             logger.info(

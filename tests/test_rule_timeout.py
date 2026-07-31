@@ -250,7 +250,7 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
     assert executed_count == 1
     assert errors == []
     assert any(
-        "B-1ルールのための推定依存件数: 300件。実行タイムアウトとして 54000.0秒 を適用します。"
+        "B-1の推定依存件数が上限（300件）に達したため、スキャンを確実に完了させるよう実行タイムアウト制限を無効化（タイムアウトなし）します。"
         in record.message
         for record in caplog.records
     )
@@ -702,3 +702,22 @@ def test_estimate_dependency_count_safe_too_many_candidates_returns_max(tmp_path
 
     dep_count = _estimate_dependency_count_safe(tmp_path)
     assert dep_count == 300
+
+
+def test_reused_rule_uses_updated_vuln_config(tmp_path, monkeypatch):
+    from src.rules.B_dependencies.B1_known_vulnerabilities import (
+        B1KnownVulnerabilitiesRule,
+    )
+
+    # ルールインスタンスを作成
+    rule = B1KnownVulnerabilitiesRule()
+
+    # 初回: タイムアウトを 15秒 に設定して実行
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "15")
+    # self._lookup._timeout_sec が動的に 15 になっていること
+    assert rule._lookup._timeout_sec == 15
+
+    # 2回目: タイムアウトを 5秒 に変更
+    monkeypatch.setenv("VULN_API_TIMEOUT_SEC", "5")
+    # 同じインスタンスのまま動的に 5 に同期していること
+    assert rule._lookup._timeout_sec == 5
