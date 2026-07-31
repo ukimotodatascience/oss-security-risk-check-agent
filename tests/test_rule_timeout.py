@@ -475,3 +475,72 @@ def test_run_all_b1_timeout_scoping_with_provider_order(tmp_path, monkeypatch, c
         in record.message
         for record in caplog.records
     )
+
+
+class LogTestRule:
+    rule_id = "LogTest"
+
+    def evaluate(self, target):
+        import logging
+
+        logger = logging.getLogger("src.rules.LogTest")
+        logger.info("LOG_FROM_WORKER_PROCESS_STAMP")
+        return []
+
+
+class InfiniteLoopRule:
+    rule_id = "InfiniteLoop"
+
+    def evaluate(self, target):
+        import time
+
+        while True:
+            time.sleep(0.1)
+        return []
+
+
+def test_worker_logging_propagation(tmp_path):
+    import logging
+    from src.logger import setup_logging
+    import src.logger
+    from src.rule_engine import _reset_global_executor, run_all
+
+    log_file = tmp_path / "test_app.log"
+    src.logger._logging_initialized = False
+    setup_logging(level="INFO", log_file=log_file)
+
+    # グローバル executor を強制リセットして最新のログ設定でワーカーを作成させる
+    _reset_global_executor()
+
+    rules = [LogTestRule()]
+    records, errors, count = run_all(tmp_path, rules)
+
+    # ロギング設定を一度リセットする
+    src.logger._logging_initialized = False
+    logging.getLogger().handlers.clear()
+
+    assert log_file.exists()
+    content = log_file.read_text(encoding="utf-8")
+    assert "LOG_FROM_WORKER_PROCESS_STAMP" in content
+
+
+def test_run_all_cancellation_worker_cleanup(tmp_path):
+    from src.rule_engine import _get_global_executor, run_all
+
+    rules = [InfiniteLoopRule()]
+
+    def progress_callback(index, total, rule_id):
+        raise KeyboardInterrupt("Simulated user Ctrl+C")
+
+    # executor を確実に生成しておく
+    _get_global_executor()
+
+    try:
+        run_all(tmp_path, rules, progress_callback=progress_callback)
+    except KeyboardInterrupt:
+        pass
+
+    # 中断によって _global_executor がリセット（None）されているはず
+    from src.rule_engine import _global_executor as final_executor
+
+    assert final_executor is None
