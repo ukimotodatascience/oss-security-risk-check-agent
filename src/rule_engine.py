@@ -274,6 +274,11 @@ def _estimate_dependency_count_safe(target: Path) -> int:
     except Exception:
         return 10
 
+    # 走査が途中で打ち切られた（エントリ数が100を超えた）場合、
+    # 依存関係が走査漏れになっている可能性が高いため、安全に最大件数 300 を返す
+    if total_entries_checked > 100:
+        return 300
+
     return max(5, min(count, 300))
 
 

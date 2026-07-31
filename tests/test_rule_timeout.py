@@ -613,3 +613,15 @@ def test_pickle_timeout_error_unbound_local_avoidance(tmp_path):
     assert len(errors) == 1
     assert errors[0][0] == "BadPickle"
     assert "Simulated serialization timeout" in errors[0][1]
+
+
+def test_estimate_dependency_count_safe_aborted_returns_max(tmp_path):
+    from src.rule_engine import _estimate_dependency_count_safe
+
+    # 105個のダミーディレクトリを作成して100件上限を超えるようにする
+    for i in range(105):
+        d = tmp_path / f"subdir-{i}"
+        d.mkdir()
+
+    dep_count = _estimate_dependency_count_safe(tmp_path)
+    assert dep_count == 300
