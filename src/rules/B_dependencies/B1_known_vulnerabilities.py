@@ -11,6 +11,9 @@ from src.rules.B_dependencies.vuln_sources import VulnHit, VulnLookupService
 
 class VulnLookup(Protocol):
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]: ...
+    def bulk_lookup(
+        self, ecosystem: str, dependencies: List[tuple[str, str]]
+    ) -> dict[tuple[str, str], List[VulnHit]]: ...
 
 
 class B1KnownVulnerabilitiesRule:
@@ -40,6 +43,8 @@ class B1KnownVulnerabilitiesRule:
         records: List[RiskRecord] = []
         deps = collect_dependency_declarations(target)
 
+        pinned_deps_by_eco: dict[str, list[tuple[str, str]]] = {}
+
         for dep in deps:
             if not is_pinned(dep):
                 # カタログ条件: バージョン未固定で照合不能 → 注意
@@ -57,24 +62,41 @@ class B1KnownVulnerabilitiesRule:
                 continue
 
             version = dep.spec.lstrip("=").strip()
-            hits = self._lookup.lookup(dep.ecosystem, dep.name, version)
-            for hit in hits:
-                refs = (
-                    f" refs: {', '.join(hit.references[:2])}" if hit.references else ""
-                )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=self._to_severity(hit.severity_score),
-                        file_path=dep.file_path,
-                        line=dep.line,
-                        message=(
-                            f"{dep.name} {dep.spec} は既知脆弱性に該当する可能性があります "
-                            f"[{hit.source}:{hit.vuln_id}] {hit.summary[:160]}{refs}"
-                        ),
+            pinned_deps_by_eco.setdefault(dep.ecosystem, []).append((dep, version))
+
+        for ecosystem, dep_list in pinned_deps_by_eco.items():
+            if hasattr(self._lookup, "bulk_lookup"):
+                query_list = [(dep.name, version) for dep, version in dep_list]
+                bulk_results = self._lookup.bulk_lookup(ecosystem, query_list)
+            else:
+                bulk_results = {
+                    (dep.name, version): self._lookup.lookup(
+                        ecosystem, dep.name, version
                     )
-                )
+                    for dep, version in dep_list
+                }
+
+            for dep, version in dep_list:
+                hits = bulk_results.get((dep.name, version), [])
+                for hit in hits:
+                    refs = (
+                        f" refs: {', '.join(hit.references[:2])}"
+                        if hit.references
+                        else ""
+                    )
+                    records.append(
+                        RiskRecord(
+                            rule_id=self.rule_id,
+                            category=self.category,
+                            title=self.title,
+                            severity=self._to_severity(hit.severity_score),
+                            file_path=dep.file_path,
+                            line=dep.line,
+                            message=(
+                                f"{dep.name} {dep.spec} は既知脆弱性に該当する可能性があります "
+                                f"[{hit.source}:{hit.vuln_id}] {hit.summary[:160]}{refs}"
+                            ),
+                        )
+                    )
 
         return records

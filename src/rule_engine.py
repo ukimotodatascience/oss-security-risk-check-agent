@@ -404,8 +404,10 @@ def load_all_rules(project_root: Path) -> List[Any]:
     return rules
 
 
-_global_executor: concurrent.futures.ProcessPoolExecutor | None = None
-_global_executor_lock = threading.Lock()
+_executor_pool: List[concurrent.futures.ProcessPoolExecutor] = []
+_executor_pool_lock = threading.Lock()
+_busy_executors: set[concurrent.futures.ProcessPoolExecutor] = set()
+_global_executor: Any = None
 
 
 def _get_logging_config() -> Tuple[str, Path | None]:
@@ -421,37 +423,65 @@ def _get_logging_config() -> Tuple[str, Path | None]:
 
 def _get_global_executor() -> concurrent.futures.ProcessPoolExecutor:
     global _global_executor
-    with _global_executor_lock:
-        if _global_executor is None:
+    with _executor_pool_lock:
+        available = None
+        for executor in _executor_pool:
+            if executor not in _busy_executors:
+                available = executor
+                break
+
+        if available is None:
             mp_context = multiprocessing.get_context("spawn")
             level_name, log_file = _get_logging_config()
-            _global_executor = concurrent.futures.ProcessPoolExecutor(
+            available = concurrent.futures.ProcessPoolExecutor(
                 max_workers=1,
                 initializer=_worker_initializer,
                 initargs=(level_name, log_file),
                 mp_context=mp_context,
             )
-        return _global_executor
+            _executor_pool.append(available)
+
+        _busy_executors.add(available)
+        _global_executor = available
+        return available
+
+
+def _release_executor(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+    with _executor_pool_lock:
+        if executor in _busy_executors:
+            _busy_executors.remove(executor)
+
+
+def _discard_executor(executor: concurrent.futures.ProcessPoolExecutor) -> None:
+    with _executor_pool_lock:
+        if executor in _busy_executors:
+            _busy_executors.remove(executor)
+        if executor in _executor_pool:
+            _executor_pool.remove(executor)
+        try:
+            _cleanup_executor_processes(executor)
+            executor.shutdown(wait=False)
+        except Exception:
+            pass
 
 
 def _reset_global_executor() -> None:
     global _global_executor
-    with _global_executor_lock:
-        if _global_executor is not None:
-            _cleanup_executor_processes(_global_executor)
-            _global_executor.shutdown(wait=False)
-            _global_executor = None
+    with _executor_pool_lock:
+        for executor in _executor_pool:
+            try:
+                _cleanup_executor_processes(executor)
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
+        _executor_pool.clear()
+        _busy_executors.clear()
+    _global_executor = None
 
 
 @atexit.register
 def _cleanup_global_executor() -> None:
-    global _global_executor
-    if _global_executor is not None:
-        try:
-            _cleanup_executor_processes(_global_executor)
-        except Exception:
-            pass
-        _global_executor.shutdown(wait=False)
+    _reset_global_executor()
 
 
 def _evaluate_rule_in_process(
@@ -495,12 +525,176 @@ _tracked_env_vars = [
 _last_tracked_env_values: dict[str, str | None] = {}
 
 
+def _evaluate_rule_thread(
+    rule_id: str,
+    rule_bytes: bytes,
+    target: Path,
+    cache_dir: Path | None,
+    cache_ttl: int | None,
+    timeout_sec: float | None,
+) -> Tuple[str, List[RiskRecord], str | None, int, List[Tuple[int, str]]]:
+    """1つのルールを個別のスレッドおよび個別の一時的 ProcessPoolExecutor で評価する。"""
+    records: List[RiskRecord] = []
+    error_tb: str | None = None
+    executed_count = 1
+    thread_logs: List[Tuple[int, str]] = []
+
+    executor = _get_global_executor()
+    need_discard = False
+
+    try:
+        # 1. 適用するタイムアウト値を決定する
+        current_timeout = 300.0
+        if timeout_sec is not None:
+            current_timeout = timeout_sec
+        else:
+            if rule_id == "B-1":
+                dep_count_fallback = False
+                try:
+                    future_count = executor.submit(
+                        _estimate_dependency_count_safe, target
+                    )
+                    dep_count = future_count.result(timeout=5.0)
+                except (concurrent.futures.TimeoutError, TimeoutError) as e:
+                    dep_count = 300
+                    dep_count_fallback = True
+                    thread_logs.append(
+                        (
+                            logging.WARNING,
+                            f"B-1の依存件数推定が 5.0 秒以内に完了しなかったか、エラーが発生したため、安全のために最大件数の 300 件としてフォールバックします: {e}",
+                        )
+                    )
+                    if not future_count.done():
+                        _discard_executor(executor)
+                        executor = _get_global_executor()
+                except Exception as e:
+                    dep_count = 300
+                    dep_count_fallback = True
+                    thread_logs.append(
+                        (
+                            logging.WARNING,
+                            f"B-1の依存件数推定中に例外が発生したため、最大件数の 300 件としてフォールバックします: {e}",
+                        )
+                    )
+                    _discard_executor(executor)
+                    executor = _get_global_executor()
+
+                try:
+                    api_timeout = float(os.environ.get("VULN_API_TIMEOUT_SEC", "10.0"))
+                except ValueError:
+                    api_timeout = 10.0
+                try:
+                    max_retries = int(os.environ.get("VULN_MAX_RETRIES", "3"))
+                except ValueError:
+                    max_retries = 3
+
+                provider_str = os.environ.get("VULN_PROVIDER_ORDER", "nvd,osv,ghsa")
+                providers = [p.strip() for p in provider_str.split(",") if p.strip()]
+                provider_count = max(1, len(providers))
+
+                attempts = 1 + max(0, max_retries)
+                backoff_total = 0.0
+                for r in range(max(0, max_retries)):
+                    backoff_total += min(0.5 * (2**r), 2.0)
+
+                sec_per_dep = max(
+                    100.0,
+                    float(provider_count)
+                    * (attempts * api_timeout + backoff_total)
+                    * 1.5,
+                )
+
+                if dep_count_fallback:
+                    current_timeout = 300.0
+                    thread_logs.append(
+                        (
+                            logging.WARNING,
+                            f"B-1の依存件数推定が失敗したため、安全のために実行タイムアウトにフェイルセーフ上限 {current_timeout}秒 を適用します。",
+                        )
+                    )
+                elif dep_count >= 300:
+                    current_timeout = max(54000.0, float(dep_count * sec_per_dep))
+                    thread_logs.append(
+                        (
+                            logging.INFO,
+                            f"B-1の推定依存件数が上限（{dep_count}件）に達したため、有限のフェイルセーフ上限として実行タイムアウト {current_timeout}秒 を適用します。",
+                        )
+                    )
+                else:
+                    current_timeout = max(300.0, float(dep_count * sec_per_dep))
+                    thread_logs.append(
+                        (
+                            logging.INFO,
+                            f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。",
+                        )
+                    )
+            else:
+                current_timeout = 300.0
+
+        # 2. ルール評価の実行
+        future = executor.submit(
+            _evaluate_rule_in_process,
+            rule_bytes,
+            target,
+            cache_dir,
+            cache_ttl,
+        )
+
+        try:
+            success, found, tb = future.result(timeout=current_timeout)
+            if success:
+                if found:
+                    records.extend(found)
+            else:
+                thread_logs.append(
+                    (
+                        logging.ERROR,
+                        f"ルール {rule_id} の実行中にエラーが発生しました。\n{tb}",
+                    )
+                )
+                error_tb = tb
+        except (concurrent.futures.TimeoutError, TimeoutError):
+            msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
+            thread_logs.append((logging.ERROR, msg))
+            error_tb = f"TimeoutError: Rule execution timed out after {current_timeout} seconds."
+            need_discard = True
+        except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
+            thread_logs.append(
+                (
+                    logging.ERROR,
+                    f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。",
+                )
+            )
+            error_tb = "BrokenProcessPool: Subprocess terminated unexpectedly."
+            need_discard = True
+        except Exception as e:
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            thread_logs.append(
+                (
+                    logging.ERROR,
+                    f"ルール {rule_id} の実行中にエラーが発生しました。\n{tb}",
+                )
+            )
+            error_tb = tb
+    except Exception as e:
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        thread_logs.append((logging.ERROR, f"スレッド実行で例外が発生しました。\n{tb}"))
+        error_tb = tb
+    finally:
+        if need_discard:
+            _discard_executor(executor)
+        else:
+            _release_executor(executor)
+
+    return rule_id, records, error_tb, executed_count, thread_logs
+
+
 def run_all(
     target: Path,
     rules: Sequence[Any],
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> Tuple[List[RiskRecord], List[Tuple[str, str]], int]:
-    """各ルールを1つずつ実行し、検知結果・失敗情報・実行数を返す。タイムアウト制御あり。"""
+    """各ルールを並列で実行し、検知結果・失敗情報・実行数を返す。各ルールは独立したプロセスとタイムアウト制御を持つ。"""
     with _run_all_lock:
         global _last_tracked_env_values
         env_changed = False
@@ -515,199 +709,111 @@ def run_all(
             _reset_global_executor()
             _last_tracked_env_values = current_env_values
 
-        completed = False
-        try:
-            records: List[RiskRecord] = []
-            errors: List[Tuple[str, str]] = []
-            executed_count = 0
+        records: List[RiskRecord] = []
+        errors: List[Tuple[str, str]] = []
+        executed_count = 0
 
-            timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC")
-            timeout_sec = None
-            if timeout_sec_str is not None:
-                try:
-                    timeout_sec = float(timeout_sec_str)
-                    if not math.isfinite(timeout_sec) or timeout_sec <= 0:
-                        raise ValueError(
-                            "RULE_TIMEOUT_SEC は正の有限値である必要があります。"
-                        )
-                except ValueError:
-                    logger.warning(
-                        f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルト値を使用します。"
+        timeout_sec_str = os.environ.get("RULE_TIMEOUT_SEC")
+        timeout_sec = None
+        if timeout_sec_str is not None:
+            try:
+                timeout_sec = float(timeout_sec_str)
+                if not math.isfinite(timeout_sec) or timeout_sec <= 0:
+                    raise ValueError(
+                        "RULE_TIMEOUT_SEC は正の有限値である必要があります。"
                     )
-                    timeout_sec = None
+            except ValueError:
+                logger.warning(
+                    f"RULE_TIMEOUT_SEC の指定が無効です: '{timeout_sec_str}'。デフォルト値を使用します。"
+                )
+                timeout_sec = None
 
-            sorted_rules = sorted(
-                rules,
-                key=lambda rule: _rule_sort_key(
-                    getattr(rule, "rule_id", type(rule).__name__)
-                ),
-            )
-            total = len(sorted_rules)
+        sorted_rules = sorted(
+            rules,
+            key=lambda rule: _rule_sort_key(
+                getattr(rule, "rule_id", type(rule).__name__)
+            ),
+        )
+        total = len(sorted_rules)
 
-            # 脆弱性キャッシュ設定 of 伝播用パラメータを取得
-            from src.rules.B_dependencies.vuln_sources import VulnLookupService
+        from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
-            cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
-            cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
+        cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
+        cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
 
-            # グローバルな ProcessPoolExecutor シングルトンを使用する
-            executor = _get_global_executor()
+        completed_count = 0
+        callback_lock = threading.Lock()
 
+        def _run_callback() -> None:
+            nonlocal completed_count
+            if progress_callback is None:
+                return
+            with callback_lock:
+                completed_count += 1
+
+        thread_executor = concurrent.futures.ThreadPoolExecutor()
+        try:
+            futures = []
             for index, rule in enumerate(sorted_rules, start=1):
                 rule_id = getattr(rule, "rule_id", type(rule).__name__)
                 if progress_callback is not None:
                     progress_callback(index, total, rule_id)
 
-                executed_count += 1
-
-                # 適用するタイムアウト値を決定する
-                if timeout_sec is not None:
-                    current_timeout = timeout_sec
-                else:
-                    if rule_id == "B-1":
-                        # 件数推定処理も子プロセスへ隔離し、同期的なファイルシステムハング（NFS等）を防止する。
-                        # 推定処理は 5.0秒でタイムアウトさせ、ハングや例外時は最大件数 300件 に安全にフォールバックする。
-                        dep_count_fallback = False
-                        try:
-                            future_count = executor.submit(
-                                _estimate_dependency_count_safe, target
-                            )
-                            dep_count = future_count.result(timeout=5.0)
-                        except (concurrent.futures.TimeoutError, TimeoutError) as e:
-                            dep_count = 300
-                            dep_count_fallback = True
-                            logger.warning(
-                                f"B-1の依存件数推定が 5.0 秒以内に完了しなかったか、エラーが発生したため、安全のために最大件数の 300 件としてフォールバックします: {e}"
-                            )
-                            # タイムアウトした場合は executor がブロックされている可能性があるため再生成する
-                            if not future_count.done():
-                                _reset_global_executor()
-                                executor = _get_global_executor()
-                        except Exception as e:
-                            dep_count = 300
-                            dep_count_fallback = True
-                            logger.warning(
-                                f"B-1の依存件数推定中に例外が発生したため、最大件数の 300 件としてフォールバックします: {e}"
-                            )
-                            _reset_global_executor()
-                            executor = _get_global_executor()
-
-                        try:
-                            api_timeout = float(
-                                os.environ.get("VULN_API_TIMEOUT_SEC", "10.0")
-                            )
-                        except ValueError:
-                            api_timeout = 10.0
-                        try:
-                            max_retries = int(os.environ.get("VULN_MAX_RETRIES", "3"))
-                        except ValueError:
-                            max_retries = 3
-
-                        # 環境変数 VULN_PROVIDER_ORDER から実際のプロバイダ数を取得（デフォルトは ["nvd", "osv", "ghsa"] の3つ）
-                        provider_str = os.environ.get(
-                            "VULN_PROVIDER_ORDER", "nvd,osv,ghsa"
-                        )
-                        providers = [
-                            p.strip() for p in provider_str.split(",") if p.strip()
-                        ]
-                        provider_count = max(1, len(providers))
-
-                        # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
-                        attempts = 1 + max(0, max_retries)
-                        # 再試行時の最大累積バックオフ遅延時間を計算する
-                        # 各試行でのスリープ時間は min(0.5 * (2**attempt), 2.0)
-                        backoff_total = 0.0
-                        for r in range(max(0, max_retries)):
-                            backoff_total += min(0.5 * (2**r), 2.0)
-
-                        # 設定されたプロバイダ数を考慮し、(試行合計時間 + バックオフ時間) に安全係数 1.5 倍をかける。最低 100秒/件 を確保
-                        sec_per_dep = max(
-                            100.0,
-                            float(provider_count)
-                            * (attempts * api_timeout + backoff_total)
-                            * 1.5,
-                        )
-
-                        if dep_count_fallback:
-                            current_timeout = 300.0
-                            logger.warning(
-                                f"B-1の依存件数推定が失敗したため、安全のために実行タイムアウトにフェイルセーフ上限 {current_timeout}秒 を適用します。"
-                            )
-                        elif dep_count >= 300:
-                            # 300件以上の場合は 54000.0秒（15時間）をベースとした有限のタイムアウトを維持する
-                            current_timeout = max(
-                                54000.0, float(dep_count * sec_per_dep)
-                            )
-                            logger.info(
-                                f"B-1の推定依存件数が上限（{dep_count}件）に達したため、有限のフェイルセーフ上限として実行タイムアウト {current_timeout}秒 を適用します。"
-                            )
-                        else:
-                            current_timeout = max(300.0, float(dep_count * sec_per_dep))
-                            logger.info(
-                                f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
-                            )
-                    else:
-                        # B-1以外のルールは一律 300秒
-                        current_timeout = 300.0
-
-                # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
-                future = None
                 try:
                     rule_bytes = pickle.dumps(rule)
-                    future = executor.submit(
-                        _evaluate_rule_in_process,
-                        rule_bytes,
-                        target,
-                        cache_dir,
-                        cache_ttl,
-                    )
-                    try:
-                        success, found, tb = future.result(timeout=current_timeout)
-                        if success:
-                            if found:
-                                records.extend(found)
-                        else:
-                            logger.error(
-                                f"ルール {rule_id} の実行中にエラーが発生しました。\n{tb}"
-                            )
-                            errors.append((rule_id, tb))
-                    except (concurrent.futures.TimeoutError, TimeoutError):
-                        # ここで発生する TimeoutError 例外は 100% 確実に「親プロセス側の待機期限切れによるタイムアウト」となる。
-                        msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
-                        logger.error(msg)
-                        errors.append(
-                            (
-                                rule_id,
-                                f"TimeoutError: Rule execution timed out after {current_timeout} seconds.",
-                            )
-                        )
-                        # ハングした子プロセスを確実に kill し、プールをリセット再起動する
-                        _reset_global_executor()
-                        executor = _get_global_executor()
-                except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
-                    logger.error(
-                        f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"
-                    )
-                    errors.append(
-                        (
+                    futures.append(
+                        thread_executor.submit(
+                            _evaluate_rule_thread,
                             rule_id,
-                            "BrokenProcessPool: Subprocess terminated unexpectedly.",
+                            rule_bytes,
+                            target,
+                            cache_dir,
+                            cache_ttl,
+                            timeout_sec,
                         )
                     )
-                    # 壊れたプールから起動された子孫プロセスも含めて安全に回収し、再生成する
-                    _reset_global_executor()
-                    executor = _get_global_executor()
                 except Exception as e:
                     tb = "".join(
                         traceback.format_exception(type(e), e, e.__traceback__)
                     )
-                    logger.exception(
-                        f"ルール {rule_id} の実行中にエラーが発生しました。"
-                    )
                     errors.append((rule_id, tb))
+                    executed_count += 1
+                    _run_callback()
 
-            completed = True
-            return records, errors, executed_count
+            records_by_rule: dict[str, List[RiskRecord]] = {}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    rule_id, found_records, error_tb, count, thread_logs = (
+                        future.result()
+                    )
+                    # ログメッセージをメインスレッド側で実際に出力
+                    for level, msg in thread_logs:
+                        logger.log(level, msg)
+
+                    executed_count += count
+                    if found_records:
+                        records_by_rule[rule_id] = found_records
+                    if error_tb:
+                        errors.append((rule_id, error_tb))
+                    _run_callback()
+                except Exception as e:
+                    tb = "".join(
+                        traceback.format_exception(type(e), e, e.__traceback__)
+                    )
+                    logger.exception("スレッド実行中に未予期のエラーが発生しました。")
+                    errors.append(("unknown", tb))
+
+            # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合
+            for rule in sorted_rules:
+                r_id = getattr(rule, "rule_id", type(rule).__name__)
+                if r_id in records_by_rule:
+                    records.extend(records_by_rule[r_id])
+        except BaseException:
+            _reset_global_executor()
+            raise
         finally:
-            if not completed:
-                _reset_global_executor()
+            thread_executor.shutdown(wait=False)
+
+        errors.sort(key=lambda x: _rule_sort_key(x[0]))
+
+        return records, errors, executed_count

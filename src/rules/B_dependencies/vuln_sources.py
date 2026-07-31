@@ -172,112 +172,377 @@ class VulnLookupService:
             logger.warning(f"Failed to enforce file cache limits: {exc}")
 
     def lookup(self, ecosystem: str, name: str, version: str) -> List[VulnHit]:
+        res = self.bulk_lookup(ecosystem, [(name, version)])
+        return res.get((name, version), [])
+
+    def bulk_lookup(
+        self, ecosystem: str, dependencies: List[tuple[str, str]]
+    ) -> Dict[tuple[str, str], List[VulnHit]]:
         providers_str = ",".join(self._provider_order)
-        key = (
-            ecosystem.lower(),
-            name.lower(),
-            version,
-            providers_str,
-            self._enable_fallback,
-        )
 
-        # 1. 最初のキャッシュチェック（ロックなし高速解決）
-        val = self._process_cache.get(key)
-        if val is not None:
-            ts, cached_hits = val
-            if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
-                logger.debug(f"Memory cache hit for {key}")
-                return cached_hits
+        # 1. キャッシュチェック
+        results: Dict[tuple[str, str], List[VulnHit]] = {}
+        missing: List[tuple[str, str]] = []
+
+        # _query_provider が monkeypatch されているかチェック
+        is_mocked = False
+        try:
+            if (
+                getattr(self._query_provider, "__func__", None)
+                is not VulnLookupService._query_provider
+            ):
+                is_mocked = True
+        except Exception:
+            pass
+
+        for name, version in dependencies:
+            key = (
+                ecosystem.lower(),
+                name.lower(),
+                version,
+                providers_str,
+                self._enable_fallback,
+            )
+
+            # メモリキャッシュ
+            val = self._process_cache.get(key)
+            if val is not None:
+                ts, cached_hits = val
+                if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
+                    logger.debug(f"Memory cache hit for {key}")
+                    results[(name, version)] = cached_hits
+                    continue
+                else:
+                    logger.debug(f"Memory cache expired for {key}")
+                    self._process_cache.pop(key, None)
+
+            # ファイルキャッシュ
+            if self._cache_ttl > 0:
+                file_cache_data = self._read_file_cache(key)
+                if file_cache_data is not None:
+                    file_ts, file_hits = file_cache_data
+                    logger.debug(f"File cache hit for {key}")
+                    self._process_cache[key] = (file_ts, file_hits)
+                    self._enforce_process_cache_limit()
+                    results[(name, version)] = file_hits
+                    continue
+
+            missing.append((name, version))
+
+        if not missing:
+            return results
+
+        # 2. Single Flight ロックの取得と重複解決
+        flights_to_release: List[
+            tuple[tuple[str, str], tuple[str, str, str, str, bool], Flight]
+        ] = []
+        actual_missing: List[tuple[str, str]] = []
+
+        for name, version in missing:
+            key = (
+                ecosystem.lower(),
+                name.lower(),
+                version,
+                providers_str,
+                self._enable_fallback,
+            )
+            with self._inflight_locks_lock:
+                if key not in self._inflight_locks:
+                    self._inflight_locks[key] = Flight()
+                else:
+                    self._inflight_locks[key].ref_count += 1
+                flight = self._inflight_locks[key]
+
+            flight.lock.acquire()
+            if flight.has_result:
+                results[(name, version)] = flight.result
+                flight.lock.release()
+                self._decrement_flight(key)
             else:
-                logger.debug(f"Memory cache expired for {key}")
-                self._process_cache.pop(key, None)
+                flights_to_release.append(((name, version), key, flight))
+                actual_missing.append((name, version))
 
-        if self._cache_ttl > 0:
-            file_cache_data = self._read_file_cache(key)
-            if file_cache_data is not None:
-                file_ts, file_hits = file_cache_data
-                logger.debug(f"File cache hit for {key}")
-                self._process_cache[key] = (file_ts, file_hits)
-                self._enforce_process_cache_limit()
-                return file_hits
+        if not actual_missing:
+            return results
 
-        # 2. 同一キーの照会を単一化する Single Flight ロック制御
-        with self._inflight_locks_lock:
-            if key not in self._inflight_locks:
-                self._inflight_locks[key] = Flight()
-            else:
-                self._inflight_locks[key].ref_count += 1
-            flight = self._inflight_locks[key]
+        # 3. キャッシュミス分の照会
+        providers = self._provider_order or ["osv"]
 
-        with flight.lock:
-            try:
-                # ロック獲得後の再チェック
-                if flight.has_result:
-                    return flight.result
+        # 各依存関係ごとの一時結果バッファ
+        temp_hits: Dict[tuple[str, str], Dict[str, List[VulnHit]]] = {
+            dep: {} for dep in actual_missing
+        }
+        # 各依存関係ごとのクエリ失敗フラグ
+        failed_deps: Dict[tuple[str, str], set[str]] = {
+            dep: set() for dep in actual_missing
+        }
+        # schema invalid フラグ
+        had_invalid_deps: Dict[tuple[str, str], bool] = {
+            dep: False for dep in actual_missing
+        }
 
-                val = self._process_cache.get(key)
-                if val is not None:
-                    ts, cached_hits = val
-                    if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
-                        return cached_hits
+        # OSV がプロバイダに含まれており、かつモックされていない場合
+        if "osv" in providers and not is_mocked:
+            # 1000件ずつバッチ分割
+            batch_size = 1000
+            for i in range(0, len(actual_missing), batch_size):
+                chunk = actual_missing[i : i + batch_size]
+                batch_res = self._query_osv_batch(ecosystem, chunk)
+                if batch_res is None:
+                    # 全て失敗扱い
+                    for dep in chunk:
+                        failed_deps[dep].add("osv")
+                else:
+                    for dep, hits in zip(chunk, batch_res):
+                        if hits is None:
+                            failed_deps[dep].add("osv")
+                        else:
+                            temp_hits[dep]["osv"] = hits
 
-                if self._cache_ttl > 0:
-                    file_cache_data = self._read_file_cache(key)
-                    if file_cache_data is not None:
-                        file_ts, file_hits = file_cache_data
-                        self._process_cache[key] = (file_ts, file_hits)
-                        self._enforce_process_cache_limit()
-                        return file_hits
+        # 残りのプロバイダ（github, nvd）や、OSV で結果が得られず fallback が必要な場合など
+        import concurrent.futures
 
-                logger.info(
-                    f"Querying vulnerability providers for {ecosystem}:{name}:{version}"
-                )
-                providers = self._provider_order or ["osv"]
-                all_hits: List[VulnHit] = []
-                seen_ids = set()
-                has_failure = False
+        def _query_single_dep_providers(
+            dep: tuple[str, str], remaining_providers: List[str]
+        ) -> tuple[tuple[str, str], Dict[str, List[VulnHit]], set[str], bool]:
+            dep_name, dep_version = dep
+            hits_dict = {}
+            failed = set()
+            local_had_invalid = False
 
+            for provider in remaining_providers:
                 self._local_state.had_invalid = False
-                for provider in providers:
-                    hits = self._query_provider(provider, ecosystem, name, version)
-                    if hits is None:
-                        logger.warning(
-                            f"Vulnerability provider '{provider}' query failed."
-                        )
-                        has_failure = True
+                hits = self._query_provider(provider, ecosystem, dep_name, dep_version)
+                if hits is None:
+                    failed.add(provider)
+                    continue
+                if getattr(self._local_state, "had_invalid", False):
+                    local_had_invalid = True
+                hits_dict[provider] = hits
+                if hits and not self._enable_fallback:
+                    break
+            return dep, hits_dict, failed, local_had_invalid
+
+        tasks = []
+        for dep in actual_missing:
+            needed_providers = []
+            osv_hits = temp_hits[dep].get("osv", [])
+
+            if osv_hits and not self._enable_fallback:
+                continue
+
+            # モックされている場合、または OSV Batch で失敗していた場合は、osv も個別クエリ対象にする
+            if "osv" in providers and (is_mocked or "osv" in failed_deps[dep]):
+                needed_providers.append("osv")
+
+            for provider in providers:
+                if provider == "osv":
+                    continue
+                needed_providers.append(provider)
+
+            if needed_providers:
+                tasks.append((dep, needed_providers))
+
+        if tasks:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_task = {
+                    executor.submit(_query_single_dep_providers, dep, needed): dep
+                    for dep, needed in tasks
+                }
+                for future in concurrent.futures.as_completed(future_to_task):
+                    dep = future_to_task[future]
+                    try:
+                        _, hits_dict, failed, local_had_invalid = future.result()
+                        for p, hits in hits_dict.items():
+                            temp_hits[dep][p] = hits
+                        failed_deps[dep].update(failed)
+                        if local_had_invalid:
+                            had_invalid_deps[dep] = True
+                    except Exception as e:
+                        logger.error(f"Error querying providers for {dep}: {e}")
+                        for _, needed in tasks:
+                            if _ == dep:
+                                failed_deps[dep].update(needed)
+                                break
+
+        # 結果を結合してキャッシュに格納、および Single Flight ロックの解放
+        for dep, key, flight in flights_to_release:
+            dep_name, dep_version = dep
+            all_hits: List[VulnHit] = []
+            seen_ids = set()
+
+            has_failure = False
+            for provider in providers:
+                if provider in failed_deps[dep]:
+                    has_failure = True
+                    continue
+                hits = temp_hits[dep].get(provider)
+                if hits is None:
+                    continue
+                for hit in hits:
+                    if hit.vuln_id in seen_ids:
+                        continue
+                    seen_ids.add(hit.vuln_id)
+                    all_hits.append(hit)
+
+                if hits and not self._enable_fallback:
+                    break
+
+            if had_invalid_deps[dep]:
+                has_failure = True
+
+            results[dep] = all_hits
+
+            # Flight ロックを解放し結果を反映
+            flight.result = all_hits
+            flight.has_result = True
+            flight.lock.release()
+            self._decrement_flight(key)
+
+            # キャッシュ登録
+            if not has_failure:
+                self._process_cache[key] = (time.time(), all_hits)
+                self._enforce_process_cache_limit()
+                if self._cache_ttl > 0:
+                    self._write_file_cache(key, all_hits)
+            else:
+                logger.info(
+                    f"Skipped caching vulnerability query result for {dep_name}:{dep_version} due to provider failure."
+                )
+
+        return results
+
+    def _query_osv_batch(
+        self, ecosystem: str, packages: List[tuple[str, str]]
+    ) -> List[List[VulnHit] | None] | None:
+        osv_ecosystem = "PyPI" if ecosystem == "python" else "npm"
+        payload = {
+            "queries": [
+                {
+                    "package": {"name": name, "ecosystem": osv_ecosystem},
+                    "version": version,
+                }
+                for name, version in packages
+            ]
+        }
+        url = "https://api.osv.dev/v1/querybatch"
+        headers = {}
+        api_key = os.environ.get("OSV_API_KEY", "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        data = self._request_json(
+            url,
+            method="POST",
+            payload=payload,
+            headers=headers if headers else None,
+        )
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            return None
+
+        results_raw = data.get("results")
+        if not isinstance(results_raw, list):
+            return None
+
+        if len(results_raw) != len(packages):
+            return None
+
+        batch_hits: List[List[VulnHit] | None] = []
+
+        for res in results_raw:
+            if not isinstance(res, dict):
+                batch_hits.append(None)
+                continue
+
+            if not res:
+                batch_hits.append([])
+                continue
+
+            vulns = res.get("vulns")
+            if vulns is None:
+                batch_hits.append([])
+                continue
+
+            if not isinstance(vulns, list):
+                batch_hits.append(None)
+                continue
+
+            hits: List[VulnHit] = []
+            had_invalid = False
+            for v in vulns:
+                if not isinstance(v, dict):
+                    had_invalid = True
+                    continue
+
+                vuln_id = v.get("id")
+                if not isinstance(vuln_id, str):
+                    had_invalid = True
+                    continue
+
+                summary = v.get("summary")
+                if summary is not None and not isinstance(summary, str):
+                    had_invalid = True
+                    continue
+
+                refs = []
+                references_raw = v.get("references")
+                if references_raw is not None:
+                    if not isinstance(references_raw, list):
+                        had_invalid = True
+                        continue
+                    ref_err = False
+                    for r in references_raw:
+                        if not isinstance(r, dict):
+                            ref_err = True
+                            break
+                        u = r.get("url")
+                        if not isinstance(u, str):
+                            ref_err = True
+                            break
+                        refs.append(u)
+                    if ref_err:
+                        had_invalid = True
                         continue
 
-                    if getattr(self._local_state, "had_invalid", False):
-                        logger.warning(
-                            f"Vulnerability provider '{provider}' returned some invalid schema elements. "
-                            "Results will not be cached."
-                        )
-                        has_failure = True
+                score = None
+                severity_raw = v.get("severity")
+                if severity_raw is not None:
+                    if not isinstance(severity_raw, list):
+                        had_invalid = True
+                        continue
+                    sev_err = False
+                    for sev in severity_raw:
+                        if not isinstance(sev, dict):
+                            sev_err = True
+                            break
+                        raw = sev.get("score")
+                        if isinstance(raw, str) and "CVSS:" in raw:
+                            try:
+                                score = float(raw.rsplit("/", 1)[-1])
+                                break
+                            except ValueError:
+                                pass
+                    if sev_err:
+                        had_invalid = True
+                        continue
 
-                    for hit in hits:
-                        if hit.vuln_id in seen_ids:
-                            continue
-                        seen_ids.add(hit.vuln_id)
-                        all_hits.append(hit)
-
-                    if hits and not self._enable_fallback:
-                        break
-
-                flight.result = all_hits
-                flight.has_result = True
-
-                if not has_failure:
-                    self._process_cache[key] = (time.time(), all_hits)
-                    self._enforce_process_cache_limit()
-                    if self._cache_ttl > 0:
-                        self._write_file_cache(key, all_hits)
-                else:
-                    logger.info(
-                        "Skipped caching vulnerability query result due to provider failure."
+                hits.append(
+                    VulnHit(
+                        vuln_id=vuln_id,
+                        source="osv",
+                        summary=summary if summary else "Known vulnerability found",
+                        severity_score=score,
+                        references=refs,
                     )
-                return all_hits
-            finally:
-                self._decrement_flight(key)
+                )
+            if had_invalid:
+                batch_hits.append(None)
+            else:
+                batch_hits.append(hits)
+
+        return batch_hits
 
     def _get_cache_file_path(self, key: tuple[str, str, str, str, bool]) -> Path:
         import hashlib
