@@ -179,10 +179,8 @@ def _estimate_dependency_count_safe(target: Path) -> int:
                     if total_entries_checked > 100:
                         break
 
-                    if (
-                        p.is_file()
-                        and not p.is_symlink()
-                        and (p.name in dep_names or p.name.startswith("requirements"))
+                    if p.is_file() and (
+                        p.name in dep_names or p.name.startswith("requirements")
                     ):
                         candidates.append(p)
                     elif (
@@ -471,6 +469,17 @@ def _evaluate_rule_in_process(
 
 
 _run_all_lock = threading.Lock()
+_tracked_env_vars = [
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "NVD_API_KEY",
+    "OSV_API_KEY",
+    "VULN_API_TIMEOUT_SEC",
+    "VULN_MAX_RETRIES",
+    "VULN_PROVIDER_ORDER",
+    "RULE_TIMEOUT_SEC",
+]
+_last_tracked_env_values: dict[str, str | None] = {}
 
 
 def run_all(
@@ -480,6 +489,19 @@ def run_all(
 ) -> Tuple[List[RiskRecord], List[Tuple[str, str]], int]:
     """各ルールを1つずつ実行し、検知結果・失敗情報・実行数を返す。タイムアウト制御あり。"""
     with _run_all_lock:
+        global _last_tracked_env_values
+        env_changed = False
+        current_env_values = {}
+        for var in _tracked_env_vars:
+            val = os.environ.get(var)
+            current_env_values[var] = val
+            if val != _last_tracked_env_values.get(var):
+                env_changed = True
+
+        if env_changed:
+            _reset_global_executor()
+            _last_tracked_env_values = current_env_values
+
         completed = False
         try:
             records: List[RiskRecord] = []

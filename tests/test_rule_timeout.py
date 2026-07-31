@@ -625,3 +625,66 @@ def test_estimate_dependency_count_safe_aborted_returns_max(tmp_path):
 
     dep_count = _estimate_dependency_count_safe(tmp_path)
     assert dep_count == 300
+
+
+def test_estimate_dependency_count_safe_counts_file_symlink(tmp_path):
+    from src.rule_engine import _estimate_dependency_count_safe
+
+    target_file = tmp_path / "actual_reqs.txt"
+    target_file.write_text("package-1==1.0\npackage-2==1.0")
+
+    symlink_file = tmp_path / "requirements.txt"
+    try:
+        symlink_file.symlink_to(target_file)
+    except OSError:
+        import pytest
+
+        pytest.skip("Symlink creation is not supported on this platform/configuration.")
+
+    dep_count = _estimate_dependency_count_safe(tmp_path)
+    assert dep_count == 2
+
+
+class EnvCheckRule:
+    rule_id = "EnvCheck"
+
+    def evaluate(self, target):
+        import os
+
+        # 子プロセス側の os.environ を返す
+        val = os.environ.get("NVD_API_KEY", "NOT_FOUND")
+        from src.models import RiskRecord, Severity
+
+        return [
+            RiskRecord(
+                rule_id="EnvCheck",
+                category="code",
+                title="Env Check Alert",
+                severity=Severity.LOW,
+                file_path=target / "dummy.py",
+                line=1,
+                message=val,
+            )
+        ]
+
+
+def test_run_all_refreshes_worker_on_env_change(tmp_path, monkeypatch):
+    from src.rule_engine import _get_global_executor, run_all
+
+    monkeypatch.setenv("NVD_API_KEY", "FIRST_KEY")
+
+    # 初回の executor 生成
+    _get_global_executor()
+
+    rules = [EnvCheckRule()]
+    records, errors, count = run_all(tmp_path, rules)
+    assert len(records) == 1
+    assert records[0].message == "FIRST_KEY"
+
+    # 環境変数を変更
+    monkeypatch.setenv("NVD_API_KEY", "SECOND_KEY")
+
+    # run_all を再実行
+    records2, errors2, count2 = run_all(tmp_path, rules)
+    assert len(records2) == 1
+    assert records2[0].message == "SECOND_KEY"
