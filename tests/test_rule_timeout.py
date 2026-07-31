@@ -350,3 +350,61 @@ def test_estimate_dependency_count_safe_excludes_symlink(tmp_path):
     count = _estimate_dependency_count_safe(tmp_path)
     # 最低値は 5
     assert count == 5
+
+
+class TestInternalTimeoutErrorRule:
+    rule_id = "InternalTimeoutRule"
+
+    def evaluate(self, target):
+        raise TimeoutError("Simulated internal timeout error")
+
+
+class TestGetPidRule:
+    rule_id = "GetPidRule"
+
+    def evaluate(self, target):
+        import os
+        from src.models import RiskRecord
+
+        return [
+            RiskRecord(
+                rule_id="GetPidRule",
+                category="test",
+                title="test",
+                severity="Medium",
+                file_path=str(target),
+                line=1,
+                message=str(os.getpid()),
+            )
+        ]
+
+
+def test_run_all_b1_internal_timeout_error_propagation(tmp_path):
+    rules = [TestInternalTimeoutErrorRule()]
+    records, errors, executed_count = run_all(tmp_path, rules)
+    assert executed_count == 1
+    assert len(errors) == 1
+    assert errors[0][0] == "InternalTimeoutRule"
+    assert "TimeoutError: Simulated internal timeout error" in errors[0][1]
+
+
+def test_run_all_global_executor_caches_reused(tmp_path):
+    from src.rule_engine import _reset_global_executor
+
+    # テスト開始前に executor をリセットしてクリーンな状態にする
+    _reset_global_executor()
+
+    rules = [TestGetPidRule()]
+
+    # 1回目のスキャン
+    records1, errors1, count1 = run_all(tmp_path, rules)
+    assert len(records1) == 1
+    pid1 = records1[0].message
+
+    # 2回目のスキャン
+    records2, errors2, count2 = run_all(tmp_path, rules)
+    assert len(records2) == 1
+    pid2 = records2[0].message
+
+    # プロセスプールが再利用されているため、PIDは一致するはず
+    assert pid1 == pid2

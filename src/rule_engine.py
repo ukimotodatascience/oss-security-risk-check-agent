@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import concurrent.futures
 import copyreg
 import importlib
+import multiprocessing
 import inspect
 import logging
 import math
@@ -381,6 +383,39 @@ def load_all_rules(project_root: Path) -> List[Any]:
     return rules
 
 
+_global_executor: concurrent.futures.ProcessPoolExecutor | None = None
+_global_executor_lock = threading.Lock()
+
+
+def _get_global_executor() -> concurrent.futures.ProcessPoolExecutor:
+    global _global_executor
+    with _global_executor_lock:
+        if _global_executor is None:
+            mp_context = multiprocessing.get_context("spawn")
+            _global_executor = concurrent.futures.ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_worker_initializer,
+                mp_context=mp_context,
+            )
+        return _global_executor
+
+
+def _reset_global_executor() -> None:
+    global _global_executor
+    with _global_executor_lock:
+        if _global_executor is not None:
+            _cleanup_executor_processes(_global_executor)
+            _global_executor.shutdown(wait=False)
+            _global_executor = None
+
+
+@atexit.register
+def _cleanup_global_executor() -> None:
+    global _global_executor
+    if _global_executor is not None:
+        _global_executor.shutdown(wait=False)
+
+
 def _evaluate_rule_in_process(
     rule_bytes: bytes,
     target: Path,
@@ -436,69 +471,83 @@ def run_all(
     cache_dir = getattr(VulnLookupService._active_config, "cache_dir", None)
     cache_ttl = getattr(VulnLookupService._active_config, "cache_ttl", None)
 
-    import multiprocessing
+    # グローバルな ProcessPoolExecutor シングルトンを使用する
+    executor = _get_global_executor()
 
-    mp_context = multiprocessing.get_context("spawn")
+    for index, rule in enumerate(sorted_rules, start=1):
+        rule_id = getattr(rule, "rule_id", type(rule).__name__)
+        if progress_callback is not None:
+            progress_callback(index, total, rule_id)
 
-    # 実行中のルールを強制終了できるように ProcessPoolExecutor を使用
-    executor = concurrent.futures.ProcessPoolExecutor(
-        max_workers=1,
-        initializer=_worker_initializer,
-        mp_context=mp_context,
-    )
-    try:
-        for index, rule in enumerate(sorted_rules, start=1):
-            rule_id = getattr(rule, "rule_id", type(rule).__name__)
-            if progress_callback is not None:
-                progress_callback(index, total, rule_id)
+        executed_count += 1
 
-            executed_count += 1
-
-            # 適用するタイムアウト値を決定する
-            if timeout_sec is not None:
-                current_timeout = timeout_sec
-            else:
-                if rule_id == "B-1":
-                    # B-1ルールのみ、親プロセスでのフリーズを防ぎつつ安全に推定された件数に基づいて動的タイムアウトを設定する
-                    dep_count = _estimate_dependency_count_safe(target)
-                    try:
-                        api_timeout = float(
-                            os.environ.get("VULN_API_TIMEOUT_SEC", "10.0")
-                        )
-                    except ValueError:
-                        api_timeout = 10.0
-                    try:
-                        max_retries = int(os.environ.get("VULN_MAX_RETRIES", "3"))
-                    except ValueError:
-                        max_retries = 3
-
-                    # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
-                    attempts = 1 + max(0, max_retries)
-                    # 3つのプロバイダ (NVD, OSV, GHSA) を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
-                    sec_per_dep = max(100.0, 3.0 * attempts * api_timeout * 1.5)
-
-                    current_timeout = max(300.0, float(dep_count * sec_per_dep))
-                    logger.info(
-                        f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
+        # 適用するタイムアウト値を決定する
+        if timeout_sec is not None:
+            current_timeout = timeout_sec
+        else:
+            if rule_id == "B-1":
+                # 件数推定処理も子プロセスへ隔離し、同期的なファイルシステムハング（NFS等）を防止する。
+                # 推定処理は 5.0秒でタイムアウトさせ、ハングや例外時は最大件数 300件 に安全にフォールバックする。
+                try:
+                    future_count = executor.submit(
+                        _estimate_dependency_count_safe, target
                     )
-                else:
-                    # B-1以外のルールは一律 300秒
-                    current_timeout = 300.0
+                    dep_count = future_count.result(timeout=5.0)
+                except (concurrent.futures.TimeoutError, TimeoutError) as e:
+                    dep_count = 300
+                    logger.warning(
+                        f"B-1の依存件数推定が 5.0 秒以内に完了しなかったか、エラーが発生したため、安全のために最大件数の 300 件としてフォールバックします: {e}"
+                    )
+                    # タイムアウトした場合は executor がブロックされている可能性があるため再生成する
+                    if not future_count.done():
+                        _reset_global_executor()
+                        executor = _get_global_executor()
+                except Exception as e:
+                    dep_count = 300
+                    logger.warning(
+                        f"B-1の依存件数推定中に例外が発生したため、最大件数の 300 件としてフォールバックします: {e}"
+                    )
+                    _reset_global_executor()
+                    executor = _get_global_executor()
 
-            # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
-            try:
-                rule_bytes = pickle.dumps(rule)
-                future = executor.submit(
-                    _evaluate_rule_in_process,
-                    rule_bytes,
-                    target,
-                    cache_dir,
-                    cache_ttl,
+                try:
+                    api_timeout = float(os.environ.get("VULN_API_TIMEOUT_SEC", "10.0"))
+                except ValueError:
+                    api_timeout = 10.0
+                try:
+                    max_retries = int(os.environ.get("VULN_MAX_RETRIES", "3"))
+                except ValueError:
+                    max_retries = 3
+
+                # 1プロバイダに対する最大試行回数 (初回1回 + 再試行回数)
+                attempts = 1 + max(0, max_retries)
+                # 3つのプロバイダ (NVD, OSV, GHSA) を考慮し、安全係数 1.5 倍をかける。最低 100秒/件 を確保
+                sec_per_dep = max(100.0, 3.0 * attempts * api_timeout * 1.5)
+
+                current_timeout = max(300.0, float(dep_count * sec_per_dep))
+                logger.info(
+                    f"B-1ルールのための推定依存件数: {dep_count}件。実行タイムアウトとして {current_timeout}秒 を適用します。"
                 )
-                found = future.result(timeout=current_timeout)
-                if found:
-                    records.extend(found)
-            except concurrent.futures.TimeoutError:
+            else:
+                # B-1以外のルールは一律 300秒
+                current_timeout = 300.0
+
+        # executor.submit 自体および結果待ちを try ブロックで包み、壊れたプールの再生成を安全に行う
+        try:
+            rule_bytes = pickle.dumps(rule)
+            future = executor.submit(
+                _evaluate_rule_in_process,
+                rule_bytes,
+                target,
+                cache_dir,
+                cache_ttl,
+            )
+            found = future.result(timeout=current_timeout)
+            if found:
+                records.extend(found)
+        except (concurrent.futures.TimeoutError, TimeoutError) as e:
+            # タスク内で発生した TimeoutError 例外の伝播か、待機期限切れ（ハングタイムアウト）かを done() で区別する
+            if not future.done():
                 msg = f"ルール {rule_id} の実行がタイムアウト（{current_timeout}秒）しました。"
                 logger.error(msg)
                 errors.append(
@@ -507,40 +556,32 @@ def run_all(
                         f"TimeoutError: Rule execution timed out after {current_timeout} seconds.",
                     )
                 )
-
-                # ハングした子プロセスおよびそのすべての子孫プロセスを強制終了する
-                _cleanup_executor_processes(executor)
-
-                executor.shutdown(wait=False)
-                executor = concurrent.futures.ProcessPoolExecutor(
-                    max_workers=1,
-                    initializer=_worker_initializer,
-                    mp_context=mp_context,
+                # ハングした子プロセスを確実に kill し、プールをリセット再起動する
+                _reset_global_executor()
+                executor = _get_global_executor()
+            else:
+                # タスク内部で発生した例外が伝播してきた場合
+                tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                logger.exception(
+                    f"ルール {rule_id} の実行中にエラー（TimeoutError）が発生しました。"
                 )
-            except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
-                logger.error(
-                    f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"
-                )
-                errors.append(
-                    (
-                        rule_id,
-                        "BrokenProcessPool: Subprocess terminated unexpectedly.",
-                    )
-                )
-                # 壊れたプールから起動された子孫プロセスも含めて安全に回収する
-                _cleanup_executor_processes(executor)
-                executor.shutdown(wait=False)
-                executor = concurrent.futures.ProcessPoolExecutor(
-                    max_workers=1,
-                    initializer=_worker_initializer,
-                    mp_context=mp_context,
-                )
-            except Exception:
-                tb = traceback.format_exc()
-                logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
                 errors.append((rule_id, tb))
-    finally:
-        _cleanup_executor_processes(executor)
-        executor.shutdown(wait=False)
+        except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
+            logger.error(
+                f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。"
+            )
+            errors.append(
+                (
+                    rule_id,
+                    "BrokenProcessPool: Subprocess terminated unexpectedly.",
+                )
+            )
+            # 壊れたプールから起動された子孫プロセスも含めて安全に回収し、再生成する
+            _reset_global_executor()
+            executor = _get_global_executor()
+        except Exception as e:
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            logger.exception(f"ルール {rule_id} の実行中にエラーが発生しました。")
+            errors.append((rule_id, tb))
 
     return records, errors, executed_count
