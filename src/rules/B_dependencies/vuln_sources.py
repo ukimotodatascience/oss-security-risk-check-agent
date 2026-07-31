@@ -56,17 +56,24 @@ class VulnLookupService:
             cls._active_config.cache_dir = old_dir
             cls._active_config.cache_ttl = old_ttl
 
-    def __init__(self) -> None:
+    @property
+    def _provider_order(self) -> List[str]:
         order_raw = os.environ.get("VULN_PROVIDER_ORDER", "osv,github,nvd")
-        self._provider_order = [
-            x.strip().lower() for x in order_raw.split(",") if x.strip()
-        ]
-        self._timeout_sec = int(os.environ.get("VULN_API_TIMEOUT_SEC", "10") or "10")
-        self._max_retries = int(os.environ.get("VULN_MAX_RETRIES", "2") or "2")
-        self._enable_fallback = (
-            os.environ.get("VULN_ENABLE_FALLBACK", "true").strip().lower() == "true"
-        )
+        return [x.strip().lower() for x in order_raw.split(",") if x.strip()]
 
+    @property
+    def _timeout_sec(self) -> int:
+        return int(os.environ.get("VULN_API_TIMEOUT_SEC", "10") or "10")
+
+    @property
+    def _max_retries(self) -> int:
+        return int(os.environ.get("VULN_MAX_RETRIES", "2") or "2")
+
+    @property
+    def _enable_fallback(self) -> bool:
+        return os.environ.get("VULN_ENABLE_FALLBACK", "true").strip().lower() == "true"
+
+    def __init__(self) -> None:
         cache_dir_raw = (
             os.environ.get("VULN_CACHE_DIR", "").strip().strip('"').strip("'")
         )
