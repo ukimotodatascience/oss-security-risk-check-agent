@@ -199,6 +199,11 @@ def _estimate_dependency_count_safe(target: Path) -> int:
             except Exception:
                 pass
 
+        # 候補ファイル数が 20 件を超えている（走査しきれなかった）場合、
+        # 依存関係が走査漏れになっている可能性が高いため、安全に最大件数 300 を返す
+        if len(candidates) > 20:
+            return 300
+
         for filepath in candidates:
             if files_scanned >= 20:
                 break

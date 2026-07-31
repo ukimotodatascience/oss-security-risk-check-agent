@@ -688,3 +688,17 @@ def test_run_all_refreshes_worker_on_env_change(tmp_path, monkeypatch):
     records2, errors2, count2 = run_all(tmp_path, rules)
     assert len(records2) == 1
     assert records2[0].message == "SECOND_KEY"
+
+
+def test_estimate_dependency_count_safe_too_many_candidates_returns_max(tmp_path):
+    from src.rule_engine import _estimate_dependency_count_safe
+
+    # 25個のダミー requirements.txt を作成して候補数が20件を超えるようにする
+    for i in range(25):
+        d = tmp_path / f"subdir-{i}"
+        d.mkdir()
+        req = d / "requirements.txt"
+        req.write_text("package-1==1.0")
+
+    dep_count = _estimate_dependency_count_safe(tmp_path)
+    assert dep_count == 300
