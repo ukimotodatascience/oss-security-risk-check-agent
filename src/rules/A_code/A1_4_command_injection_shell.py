@@ -46,7 +46,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            indent = len(line) - len(line.lstrip())
+            stmt_start_idx = line.find(stripped)
+            if stmt_start_idx == -1:
+                stmt_start_idx = len(line) - len(line.lstrip())
 
             self._track_shell_taint_from_text(stripped, tainted_names)
             self._track_shell_case_allowlist_from_text(stripped, tainted_names)
@@ -65,7 +67,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell eval",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
                 continue
 
@@ -80,7 +82,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell -c execution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
                 continue
 
@@ -95,7 +97,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches backtick command substitution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
 
             m = re.search("\\$\\([^)]*\\$[^)]*\\)", stripped)
@@ -109,7 +111,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches $() command substitution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
                 continue
 
@@ -127,7 +129,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell source execution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
                 continue
 
@@ -144,7 +146,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches xargs/find shell -c execution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
                 continue
 
@@ -158,7 +160,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input controls command name execution",
                 )
-                rec._column = indent
+                rec._column = stmt_start_idx
                 records.append(rec)
                 continue
 
@@ -173,7 +175,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell here-string execution",
                 )
-                rec._column = indent + m.start()
+                rec._column = stmt_start_idx + m.start()
                 records.append(rec)
         return dedupe_records(records)
 

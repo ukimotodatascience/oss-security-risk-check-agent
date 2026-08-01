@@ -92,7 +92,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
             call_text = text
-            start_point = getattr(node, "start_point", (0, 0))
+            sink_node = None
+            if callee_node is not None:
+                if getattr(callee_node, "type", "") == "member_expression":
+                    sink_node = ts_child_by_field_name(callee_node, "property")
+                if sink_node is None:
+                    sink_node = callee_node
+
+            if sink_node is not None:
+                start_point = getattr(sink_node, "start_point", (0, 0))
+            else:
+                start_point = getattr(node, "start_point", (0, 0))
+
             line = start_point[0] + 1
             col = start_point[1]
             has_external = self._js_has_external_input(call_text, tainted_names)
@@ -183,10 +194,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if buffer:
             statements.append((start_line, buffer))
         for i, stripped in statements:
-            indent = 0
-            if 1 <= i <= len(lines):
-                line_str = lines[i - 1]
-                indent = len(line_str) - len(line_str.lstrip())
+            line_str = lines[i - 1] if 1 <= i <= len(lines) else ""
+            stmt_start_idx = line_str.find(stripped)
+            if stmt_start_idx == -1:
+                stmt_start_idx = len(line_str) - len(line_str.lstrip())
 
             self._register_child_process_imports(stripped, child_process_sinks)
             m = re.search(
@@ -216,7 +227,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=i,
                         message="External input reaches child_process file execution",
                     )
-                    rec._column = indent + m.start()
+                    matched_str = m.group(0).rstrip(" (")
+                    dot_idx = matched_str.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    rec._column = stmt_start_idx + m.start() + offset
                     records.append(rec)
                 continue
 
@@ -232,12 +246,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=i,
                         message="External input reaches shell command execution helper",
                     )
-                    rec._column = indent + m.start()
+                    matched_str = m.group(0).rstrip(" (")
+                    dot_idx = matched_str.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    rec._column = stmt_start_idx + m.start() + offset
                     records.append(rec)
                 continue
 
             exec_names = child_process_sinks or {"exec", "execSync"}
             exec_match = None
+            exec_name_matched = ""
             for name in exec_names:
                 m_exec = re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
                 if m_exec:
@@ -247,6 +265,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         or "." not in name
                     ):
                         exec_match = m_exec
+                        exec_name_matched = name
                         break
             if exec_match:
                 if self._js_has_external_input(stripped, tainted_names):
@@ -259,12 +278,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=i,
                         message="External input reaches child_process command execution",
                     )
-                    rec._column = indent + exec_match.start()
+                    dot_idx = exec_name_matched.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    rec._column = stmt_start_idx + exec_match.start() + offset
                     records.append(rec)
                 continue
 
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             spawn_match = None
+            spawn_name_matched = ""
             for name in spawn_names:
                 m_spawn = re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
                 if m_spawn:
@@ -274,6 +296,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         or "." not in name
                     ):
                         spawn_match = m_spawn
+                        spawn_name_matched = name
                         break
             if spawn_match:
                 if not self._js_has_external_input(stripped, tainted_names):
@@ -292,7 +315,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     if has_shell_true
                     else "External input reaches child_process spawn",
                 )
-                rec._column = indent + spawn_match.start()
+                dot_idx = spawn_name_matched.rfind(".")
+                offset = dot_idx + 1 if dot_idx != -1 else 0
+                rec._column = stmt_start_idx + spawn_match.start() + offset
                 records.append(rec)
         return dedupe_records(records)
 

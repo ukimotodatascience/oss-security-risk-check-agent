@@ -148,7 +148,7 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
                     close_regex_rec = None
                     for idx_reg, reg_rec in enumerate(regex_list):
                         reg_col = getattr(reg_rec, "_column", None)
-                        if reg_col is not None and abs(ts_col - reg_col) <= 15:
+                        if reg_col is not None and abs(ts_col - reg_col) <= 2:
                             close_regex_rec = reg_rec
                             matched_regex_indices.add(idx_reg)
                             break
