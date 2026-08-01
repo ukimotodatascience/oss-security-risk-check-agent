@@ -85,37 +85,8 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 is_v3 = False
 
         if is_v3:
-            # 許可されたメトリクスキーの検証 (未知のキーは拒否)
-            v3_allowed_keys = {
-                "CVSS",
-                "AV",
-                "AC",
-                "PR",
-                "UI",
-                "S",
-                "C",
-                "I",
-                "A",
-                "E",
-                "RL",
-                "RC",
-                "CR",
-                "IR",
-                "AR",
-                "MAV",
-                "MAC",
-                "MPR",
-                "MUI",
-                "MS",
-                "MC",
-                "MI",
-                "MA",
-            }
-            if not all(k in v3_allowed_keys for k in metrics):
-                return None
-
-            # CVSS v3.x 必須キーと有効値の厳密な検証
-            v3_required = {
+            v3_allowed = {
+                "CVSS": {"3.0", "3.1"},
                 "AV": {"N", "A", "L", "P"},
                 "AC": {"L", "H"},
                 "PR": {"N", "L", "H"},
@@ -124,10 +95,28 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 "C": {"N", "L", "H"},
                 "I": {"N", "L", "H"},
                 "A": {"N", "L", "H"},
+                "E": {"X", "U", "POC", "F", "H", "ND"},
+                "RL": {"X", "O", "T", "W", "U", "ND"},
+                "RC": {"X", "U", "R", "C", "ND"},
+                "CR": {"X", "L", "M", "H", "ND"},
+                "IR": {"X", "L", "M", "H", "ND"},
+                "AR": {"X", "L", "M", "H", "ND"},
+                "MAV": {"X", "N", "A", "L", "P", "ND"},
+                "MAC": {"X", "L", "H", "ND"},
+                "MPR": {"X", "N", "L", "H", "ND"},
+                "MUI": {"X", "N", "R", "ND"},
+                "MS": {"X", "U", "C", "ND"},
+                "MC": {"X", "N", "L", "H", "ND"},
+                "MI": {"X", "N", "L", "H", "ND"},
+                "MA": {"X", "N", "L", "H", "ND"},
             }
-            for k, allowed_vals in v3_required.items():
-                if k not in metrics or metrics[k] not in allowed_vals:
+            for k, val in metrics.items():
+                if k not in v3_allowed or val not in v3_allowed[k]:
                     return None
+
+            v3_required = {"AV", "AC", "PR", "UI", "S", "C", "I", "A"}
+            if not all(k in metrics for k in v3_required):
+                return None
 
             av = metrics["AV"]
             ac = metrics["AC"]
@@ -188,38 +177,29 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             return min(ceil_score, 10.0)
 
         else:
-            # 許可されたメトリクスキーの検証 (未知のキーは拒否)
-            v2_allowed_keys = {
-                "AV",
-                "AC",
-                "AU",
-                "C",
-                "I",
-                "A",
-                "E",
-                "RL",
-                "RC",
-                "CDP",
-                "TD",
-                "CR",
-                "IR",
-                "AR",
-            }
-            if not all(k in v2_allowed_keys for k in metrics):
-                return None
-
-            # CVSS v2.0 必須キーと有効値の厳密な検証
-            v2_required = {
+            v2_allowed = {
                 "AV": {"N", "A", "L"},
                 "AC": {"L", "M", "H"},
                 "AU": {"N", "S", "M"},
                 "C": {"N", "P", "C"},
                 "I": {"N", "P", "C"},
                 "A": {"N", "P", "C"},
+                "E": {"X", "U", "POC", "F", "H", "ND"},
+                "RL": {"X", "OF", "TF", "W", "U", "ND"},
+                "RC": {"X", "UC", "UR", "C", "ND"},
+                "CDP": {"X", "N", "L", "LM", "MH", "H", "ND"},
+                "TD": {"X", "N", "L", "M", "H", "ND"},
+                "CR": {"X", "L", "M", "H", "ND"},
+                "IR": {"X", "L", "M", "H", "ND"},
+                "AR": {"X", "L", "M", "H", "ND"},
             }
-            for k, allowed_vals in v2_required.items():
-                if k not in metrics or metrics[k] not in allowed_vals:
+            for k, val in metrics.items():
+                if k not in v2_allowed or val not in v2_allowed[k]:
                     return None
+
+            v2_required = {"AV", "AC", "AU", "C", "I", "A"}
+            if not all(k in metrics for k in v2_required):
+                return None
 
             av = metrics["AV"]
             ac = metrics["AC"]

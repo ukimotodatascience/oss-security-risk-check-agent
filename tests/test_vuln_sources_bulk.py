@@ -281,6 +281,12 @@ def test_parse_cvss_vector():
         is None
     )
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/UNKNOWN:val") is None
+    # 許容されるが値が無効な Temporal / Environmental メトリクスを持つ不正ベクトル
+    assert (
+        parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:GARBAGE")
+        is None
+    )
+    assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:GARBAGE") is None
     # 許容される Temporal / Environmental メトリクスを含むが正規なベクトル
     assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H") == 9.8
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:H") == 7.5
