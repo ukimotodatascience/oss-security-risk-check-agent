@@ -85,6 +85,35 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 is_v3 = False
 
         if is_v3:
+            # 許可されたメトリクスキーの検証 (未知のキーは拒否)
+            v3_allowed_keys = {
+                "CVSS",
+                "AV",
+                "AC",
+                "PR",
+                "UI",
+                "S",
+                "C",
+                "I",
+                "A",
+                "E",
+                "RL",
+                "RC",
+                "CR",
+                "IR",
+                "AR",
+                "MAV",
+                "MAC",
+                "MPR",
+                "MUI",
+                "MS",
+                "MC",
+                "MI",
+                "MA",
+            }
+            if not all(k in v3_allowed_keys for k in metrics):
+                return None
+
             # CVSS v3.x 必須キーと有効値の厳密な検証
             v3_required = {
                 "AV": {"N", "A", "L", "P"},
@@ -159,6 +188,26 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             return min(ceil_score, 10.0)
 
         else:
+            # 許可されたメトリクスキーの検証 (未知のキーは拒否)
+            v2_allowed_keys = {
+                "AV",
+                "AC",
+                "AU",
+                "C",
+                "I",
+                "A",
+                "E",
+                "RL",
+                "RC",
+                "CDP",
+                "TD",
+                "CR",
+                "IR",
+                "AR",
+            }
+            if not all(k in v2_allowed_keys for k in metrics):
+                return None
+
             # CVSS v2.0 必須キーと有効値の厳密な検証
             v2_required = {
                 "AV": {"N", "A", "L"},

@@ -122,3 +122,27 @@ def test_run_all_callback_exception_handling(tmp_path):
     assert len(records) == 1
     assert records[0].rule_id == "M-1"
     assert executed_count == 1
+
+
+def test_run_all_parallelism_respects_max_workers(monkeypatch, tmp_path):
+    # RULE_MAX_WORKERS に 3 を設定
+    monkeypatch.setenv("RULE_MAX_WORKERS", "3")
+
+    # ThreadPoolExecutor の初期化を監視
+    from concurrent.futures import ThreadPoolExecutor
+
+    captured_max_workers = []
+
+    original_init = ThreadPoolExecutor.__init__
+
+    def mock_init(self, max_workers=None, *args, **kwargs):
+        captured_max_workers.append(max_workers)
+        original_init(self, max_workers, *args, **kwargs)
+
+    monkeypatch.setattr(ThreadPoolExecutor, "__init__", mock_init)
+
+    rules = [FastRule(), FastRule(), FastRule(), FastRule()]
+    run_all(tmp_path, rules)
+
+    # ThreadPoolExecutor が最大 3 スレッドで初期化されていること
+    assert 3 in captured_max_workers

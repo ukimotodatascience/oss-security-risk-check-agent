@@ -767,7 +767,13 @@ def run_all(
                         f"進捗コールバックの実行中に例外が発生しました (rule_id: {rule_id})。"
                     )
 
-        thread_executor = concurrent.futures.ThreadPoolExecutor()
+        env_max = os.environ.get("RULE_MAX_WORKERS", "").strip()
+        try:
+            max_workers = int(env_max) if env_max else 8
+        except ValueError:
+            max_workers = 8
+        max_workers = max(1, min(max_workers, len(sorted_rules)))
+        thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         futures = []
         future_to_rule_id = {}
         try:
