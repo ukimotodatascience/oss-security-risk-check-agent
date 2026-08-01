@@ -220,6 +220,12 @@ def test_parse_cvss_vector():
     score_v2 = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P")
     assert score_v2 == 7.5
 
-    # 3. 不正な入力や無効なベクトルの場合は None
+    # 3. CVSS v4.0 ベクトル（現在未対応）の場合は None
+    score_v4 = parse_cvss_vector(
+        "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+    )
+    assert score_v4 is None
+
+    # 4. 不正な入力や無効なベクトルの場合は None
     assert parse_cvss_vector("") is None
     assert parse_cvss_vector("INVALID_VECTOR") is None

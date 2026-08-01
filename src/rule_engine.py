@@ -427,6 +427,8 @@ def _get_global_executor() -> concurrent.futures.ProcessPoolExecutor:
         raise RuntimeError("Scan interrupted")
     global _global_executor
     with _executor_pool_lock:
+        if _interrupted_event.is_set():
+            raise RuntimeError("Scan interrupted")
         available = None
         for executor in _executor_pool:
             if executor not in _busy_executors:

@@ -54,10 +54,15 @@ def parse_cvss_vector(vector_str: str) -> float | None:
         is_v3 = False
         if "CVSS" in metrics:
             version = metrics["CVSS"]
-            if version.startswith("3.") or version.startswith("4."):
+            if version.startswith("4."):
+                # CVSS v4 は現在未対応のため、安全に None としてフォールバック
+                return None
+            if version.startswith("3."):
                 is_v3 = True
         elif "S" in metrics or "UI" in metrics or "PR" in metrics:
-            is_v3 = True
+            # v4 用のメトリクスキー (VC, VI, VA など) が含まれていない場合のみ v3 と判定
+            if not any(k in metrics for k in ["VC", "VI", "VA", "SC", "SI", "SA"]):
+                is_v3 = True
 
         if is_v3:
             # CVSS v3.x ベーススコア計算
