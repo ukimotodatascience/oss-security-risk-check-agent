@@ -253,6 +253,9 @@ def test_parse_cvss_vector():
     # 5. 不完全・無効なベクトルの場合は None
     assert parse_cvss_vector("") is None
     assert parse_cvss_vector("INVALID_VECTOR") is None
+    # 未対応の CVSS バージョン (3.2 や 5.0 など)
+    assert parse_cvss_vector("CVSS:3.2/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
+    assert parse_cvss_vector("CVSS:5.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
     # 必須キー欠如の v3.x
     assert parse_cvss_vector("CVSS:3.1/C:H/I:H/A:H") is None
     assert parse_cvss_vector("CVSS:3.1/garbage/7.5") is None

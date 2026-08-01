@@ -52,21 +52,30 @@ def parse_cvss_vector(vector_str: str) -> float | None:
         if not any(k in metrics for k in valid_keys):
             return None
 
-        # CVSS v3 バージョン判定
+        # CVSS バージョン判定
         is_v3 = False
         cvss_version = "3.1"  # デフォルトは v3.1
         if "CVSS" in metrics:
             version = metrics["CVSS"]
-            if version.startswith("4."):
-                # CVSS v4 は現在未対応のため、安全に None としてフォールバック
-                return None
-            if version.startswith("3."):
+            if version in ("3.0", "3.1"):
                 is_v3 = True
                 cvss_version = version
-        elif "S" in metrics or "UI" in metrics or "PR" in metrics:
-            # v4 用のメトリクスキー (VC, VI, VA など) が含まれていない場合のみ v3 と判定
-            if not any(k in metrics for k in ["VC", "VI", "VA", "SC", "SI", "SA"]):
-                is_v3 = True
+            elif version == "2.0":
+                is_v3 = False
+            else:
+                # 未対応または無効なバージョン (3.2, 4.0, 5.0 など) はすべて拒否
+                return None
+        else:
+            # 接頭辞がない場合、メトリクスキーの有無でバージョンを推測する
+            if "S" in metrics or "UI" in metrics or "PR" in metrics:
+                if not any(k in metrics for k in ["VC", "VI", "VA", "SC", "SI", "SA"]):
+                    is_v3 = True
+                    cvss_version = "3.1"
+                else:
+                    # v4 固有キーがある場合は未対応バージョンとして拒否
+                    return None
+            else:
+                is_v3 = False
 
         if is_v3:
             # CVSS v3.x 必須キーと有効値の厳密な検証
@@ -426,9 +435,7 @@ class VulnLookupService:
             return final_results
 
         # 2. Single Flight ロックの取得と重複解決
-        flights_to_release: List[
-            tuple[tuple[str, str], tuple[str, str, str, str, bool], Flight]
-        ] = []
+        flights_to_release: List[dict] = []
         actual_missing: List[tuple[str, str]] = []
 
         try:
@@ -449,8 +456,16 @@ class VulnLookupService:
                         self._inflight_locks[key].ref_count += 1
                     flight = self._inflight_locks[key]
 
+                item = {
+                    "dep": (name, version),
+                    "key": key,
+                    "flight": flight,
+                    "locked": False,
+                }
+                flights_to_release.append(item)
+
                 flight.lock.acquire()
-                flights_to_release.append(((name, version), key, flight))
+                item["locked"] = True
 
                 if flight.has_result:
                     results[(name.lower(), version)] = flight.result
@@ -574,7 +589,10 @@ class VulnLookupService:
                                     break
 
             # 結果を結合してキャッシュに格納
-            for dep, key, flight in flights_to_release:
+            for item in flights_to_release:
+                dep = item["dep"]
+                key = item["key"]
+                flight = item["flight"]
                 dep_name, dep_version = dep
                 all_hits: List[VulnHit] = []
                 seen_ids = set()
@@ -618,14 +636,16 @@ class VulnLookupService:
         finally:
             # 正常・異常に関わらず、二重解放を避けるために pop しながら安全にロック解放・減算を行う
             while flights_to_release:
-                (dep_name, dep_version), key, flight = flights_to_release.pop()
-                if not flight.has_result:
-                    flight.result = results.get((dep_name.lower(), dep_version), [])
-                    flight.has_result = True
-                try:
-                    flight.lock.release()
-                except RuntimeError:
-                    pass
+                item = flights_to_release.pop()
+                key = item["key"]
+                flight = item["flight"]
+                locked = item["locked"]
+
+                if locked:
+                    try:
+                        flight.lock.release()
+                    except RuntimeError:
+                        pass
                 self._decrement_flight(key)
 
         final_results = {}
