@@ -181,6 +181,12 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
                         {"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
                     ],
                 },
+                {
+                    "id": "OSV-2024-2",
+                    "summary": "OSV summary v2",
+                    "references": [{"url": "https://osv.dev/vuln/OSV-2024-2"}],
+                    "severity": [{"score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
+                },
                 {"id": "OSV-NOSCORE", "severity": [{"score": "bad"}]},
             ]
         }
@@ -195,8 +201,9 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
         "package": {"name": "demo", "ecosystem": "PyPI"},
         "version": "1.2.3",
     }
-    assert [hit.vuln_id for hit in hits] == ["OSV-2024-1", "OSV-NOSCORE"]
+    assert [hit.vuln_id for hit in hits] == ["OSV-2024-1", "OSV-2024-2", "OSV-NOSCORE"]
     assert hits[0].severity_score == 9.1
+    assert hits[1].severity_score == 7.4
     assert hits[0].references == ["https://osv.dev/vuln/OSV-2024-1"]
 
 

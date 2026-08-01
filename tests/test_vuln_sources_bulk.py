@@ -32,7 +32,13 @@ def test_query_osv_batch_success(monkeypatch):
                             }
                         ]
                     },
-                    {},  # 脆弱性なし
+                    {
+                        "vulns": [
+                            {
+                                "id": "GHSA-2",
+                            }
+                        ]
+                    },
                 ]
             }
         if "https://api.osv.dev/v1/vulns/GHSA-1" in url:
@@ -41,6 +47,13 @@ def test_query_osv_batch_success(monkeypatch):
                 "summary": "OSV-1",
                 "references": [{"url": "ref1"}],
                 "severity": [{"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            }
+        if "https://api.osv.dev/v1/vulns/GHSA-2" in url:
+            return {
+                "id": "GHSA-2",
+                "summary": "OSV-2",
+                "references": [{"url": "ref2"}],
+                "severity": [{"score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
             }
         return None
 
@@ -51,7 +64,8 @@ def test_query_osv_batch_success(monkeypatch):
     assert len(res) == 2
     assert res[0][0].vuln_id == "GHSA-1"
     assert res[0][0].severity_score == 9.8
-    assert res[1] == []
+    assert res[1][0].vuln_id == "GHSA-2"
+    assert res[1][0].severity_score == 7.4
     assert captured_payload["payload"] == {
         "queries": [
             {"package": {"name": "pkg1", "ecosystem": "PyPI"}, "version": "1.0.0"},

@@ -573,7 +573,7 @@ class VulnLookupService:
                                     failed_deps[dep].update(needed)
                                     break
 
-            # 結果を結合してキャッシュに格納、および Single Flight ロックの解放
+            # 結果を結合してキャッシュに格納
             for dep, key, flight in flights_to_release:
                 dep_name, dep_version = dep
                 all_hits: List[VulnHit] = []
@@ -601,11 +601,9 @@ class VulnLookupService:
 
                 results[(dep_name.lower(), dep_version)] = all_hits
 
-                # Flight ロックを解放し結果を反映
+                # 結果を反映 (ロック解放は finally で行う)
                 flight.result = all_hits
                 flight.has_result = True
-                flight.lock.release()
-                self._decrement_flight(key)
 
                 # キャッシュ登録
                 if not has_failure:
@@ -617,14 +615,18 @@ class VulnLookupService:
                     logger.info(
                         f"Skipped caching vulnerability query result for {dep_name}:{dep_version} due to provider failure."
                     )
-        except BaseException as e:
-            for dep, key, flight in flights_to_release:
+        finally:
+            # 正常・異常に関わらず、二重解放を避けるために pop しながら安全にロック解放・減算を行う
+            while flights_to_release:
+                (dep_name, dep_version), key, flight = flights_to_release.pop()
+                if not flight.has_result:
+                    flight.result = results.get((dep_name.lower(), dep_version), [])
+                    flight.has_result = True
                 try:
                     flight.lock.release()
                 except RuntimeError:
                     pass
                 self._decrement_flight(key)
-            raise e
 
         final_results = {}
         for dep in dependencies:
@@ -762,16 +764,9 @@ class VulnLookupService:
                             break
                         raw = sev.get("score")
                         if isinstance(raw, str):
-                            if "CVSS:" in raw:
-                                score = parse_cvss_vector(raw)
-                                if score is not None:
-                                    break
-                            else:
-                                try:
-                                    score = float(raw)
-                                    break
-                                except ValueError:
-                                    pass
+                            score = parse_cvss_vector(raw)
+                            if score is not None:
+                                break
                     if sev_err:
                         had_invalid = True
                         continue
@@ -1053,16 +1048,9 @@ class VulnLookupService:
                         break
                     raw = sev.get("score")
                     if isinstance(raw, str):
-                        if "CVSS:" in raw:
-                            score = parse_cvss_vector(raw)
-                            if score is not None:
-                                break
-                        else:
-                            try:
-                                score = float(raw)
-                                break
-                            except ValueError:
-                                pass
+                        score = parse_cvss_vector(raw)
+                        if score is not None:
+                            break
                 if sev_err:
                     self._local_state.had_invalid = True
                     continue

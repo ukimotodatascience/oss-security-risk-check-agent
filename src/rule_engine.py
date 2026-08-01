@@ -684,10 +684,12 @@ def _evaluate_rule_thread(
                 )
             )
             error_tb = tb
+            need_discard = True
     except Exception as e:
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         thread_logs.append((logging.ERROR, f"スレッド実行で例外が発生しました。\n{tb}"))
         error_tb = tb
+        need_discard = True
     finally:
         if need_discard:
             _discard_executor(executor)
