@@ -215,7 +215,14 @@ def test_parse_cvss_vector():
     score_5_0 = parse_cvss_vector("CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:N/A:L")
     assert score_5_0 == 5.0
 
-    # 2. CVSS v2.0 ベクトルの計算検証
+    # 2. Scope Changed における v3.1 と v3.0 の切り替え検証
+    # 例: CVSS:3.1/AV:P/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H -> Base Score v3.1 は 7.0、v3.0 は 6.9
+    score_v31 = parse_cvss_vector("CVSS:3.1/AV:P/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H")
+    assert score_v31 == 7.0
+    score_v30 = parse_cvss_vector("CVSS:3.0/AV:P/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H")
+    assert score_v30 == 6.9
+
+    # 3. CVSS v2.0 ベクトルの計算検証
     # 例: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.5
     score_v2 = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P")
     assert score_v2 == 7.5

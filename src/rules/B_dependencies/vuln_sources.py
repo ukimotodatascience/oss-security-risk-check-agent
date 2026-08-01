@@ -52,6 +52,7 @@ def parse_cvss_vector(vector_str: str) -> float | None:
 
         # CVSS v3 バージョン判定
         is_v3 = False
+        cvss_version = "3.1"  # デフォルトは v3.1
         if "CVSS" in metrics:
             version = metrics["CVSS"]
             if version.startswith("4."):
@@ -59,6 +60,7 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 return None
             if version.startswith("3."):
                 is_v3 = True
+                cvss_version = version
         elif "S" in metrics or "UI" in metrics or "PR" in metrics:
             # v4 用のメトリクスキー (VC, VI, VA など) が含まれていない場合のみ v3 と判定
             if not any(k in metrics for k in ["VC", "VI", "VA", "SC", "SI", "SA"]):
@@ -99,9 +101,14 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             if s == "U":
                 impact = 6.42 * iss
             else:
-                impact = 7.52 * (iss - 0.029) - 3.25 * math.pow(
-                    max(0.0, iss - 0.02), 15
-                )
+                if cvss_version == "3.0":
+                    impact = 7.52 * (iss - 0.029) - 3.25 * math.pow(
+                        max(0.0, iss - 0.02), 15
+                    )
+                else:
+                    impact = 7.52 * (iss - 0.029) - 3.25 * math.pow(
+                        max(0.0, iss * 0.9731 - 0.02), 13
+                    )
 
             expl = 8.22 * av_val * ac_val * pr_val * ui_val
 
