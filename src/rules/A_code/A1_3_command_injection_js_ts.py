@@ -158,7 +158,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             file_path, target, src
         )
         if tree_sitter_records is not None:
-            return dedupe_records(tree_sitter_records)
+            records.extend(tree_sitter_records)
+        ts_success = tree_sitter_records is not None
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
@@ -195,18 +196,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if self._js_has_external_input(rhs, tainted_names):
                     tainted_names.add(var_name)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", stripped):
-                if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.MEDIUM,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process file execution",
+                if not ts_success:
+                    if self._js_has_external_input(stripped, tainted_names):
+                        records.append(
+                            RiskRecord(
+                                rule_id=self.rule_id,
+                                category=self.category,
+                                title=self.title,
+                                severity=Severity.MEDIUM,
+                                file_path=rel_path,
+                                line=i,
+                                message="External input reaches child_process file execution",
+                            )
                         )
-                    )
                 continue
             if self._is_known_third_party_shell_sink(stripped):
                 if self._js_has_external_input(stripped, tainted_names):
@@ -232,18 +234,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     or "." not in name
                 )
             ):
-                if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process command execution",
+                if not ts_success:
+                    if self._js_has_external_input(stripped, tainted_names):
+                        records.append(
+                            RiskRecord(
+                                rule_id=self.rule_id,
+                                category=self.category,
+                                title=self.title,
+                                severity=Severity.HIGH,
+                                file_path=rel_path,
+                                line=i,
+                                message="External input reaches child_process command execution",
+                            )
                         )
-                    )
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if any(
@@ -255,24 +258,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     or "." not in name
                 )
             ):
-                if not self._js_has_external_input(stripped, tainted_names):
-                    continue
-                has_shell_true = self._js_call_enables_shell(
-                    stripped, shell_true_option_names
-                )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches child_process spawn with shell=true"
-                        if has_shell_true
-                        else "External input reaches child_process spawn",
+                if not ts_success:
+                    if not self._js_has_external_input(stripped, tainted_names):
+                        continue
+                    has_shell_true = self._js_call_enables_shell(
+                        stripped, shell_true_option_names
                     )
-                )
+                    records.append(
+                        RiskRecord(
+                            rule_id=self.rule_id,
+                            category=self.category,
+                            title=self.title,
+                            severity=Severity.HIGH
+                            if has_shell_true
+                            else Severity.MEDIUM,
+                            file_path=rel_path,
+                            line=i,
+                            message="External input reaches child_process spawn with shell=true"
+                            if has_shell_true
+                            else "External input reaches child_process spawn",
+                        )
+                    )
         return dedupe_records(records)
 
     @staticmethod
