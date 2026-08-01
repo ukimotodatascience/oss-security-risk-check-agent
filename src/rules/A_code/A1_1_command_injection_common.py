@@ -55,6 +55,14 @@ def tree_sitter_language_candidates(suffix: str) -> List[str]:
 
 
 def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
+    _SEVERITY_ORDER = {
+        Severity.CRITICAL: 5,
+        Severity.HIGH: 4,
+        Severity.MEDIUM: 3,
+        Severity.LOW: 2,
+        Severity.INFO: 1,
+    }
+
     # 1. 同一解析元内での完全重複レコードの排除
     raw_records = []
     seen_raw = set()
@@ -102,16 +110,40 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     ts_records = [r for r in raw_records if getattr(r, "_from_ts", False)]
     regex_records = [r for r in raw_records if not getattr(r, "_from_ts", False)]
 
-    ts_keys = set()
+    ts_groups = {}
     for r in ts_records:
         sink_type = get_sink_type_key(r.message or "")
-        ts_keys.add((r.file_path, r.line, r.rule_id, sink_type))
+        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        ts_groups.setdefault(g_key, []).append(r)
 
-    filtered_regex = []
+    regex_groups = {}
     for r in regex_records:
         sink_type = get_sink_type_key(r.message or "")
-        key = (r.file_path, r.line, r.rule_id, sink_type)
-        if key not in ts_keys:
-            filtered_regex.append(r)
+        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        regex_groups.setdefault(g_key, []).append(r)
 
-    return ts_records + filtered_regex
+    all_keys = set(ts_groups.keys()) | set(regex_groups.keys())
+
+    unique: List[RiskRecord] = []
+    for g_key in all_keys:
+        ts_list = ts_groups.get(g_key, [])
+        regex_list = regex_groups.get(g_key, [])
+
+        if ts_list and regex_list:
+            max_ts_rec = max(ts_list, key=lambda x: _SEVERITY_ORDER.get(x.severity, 0))
+            max_regex_rec = max(
+                regex_list, key=lambda x: _SEVERITY_ORDER.get(x.severity, 0)
+            )
+
+            if _SEVERITY_ORDER.get(max_regex_rec.severity, 0) > _SEVERITY_ORDER.get(
+                max_ts_rec.severity, 0
+            ):
+                max_ts_rec.severity = max_regex_rec.severity
+                max_ts_rec.message = max_regex_rec.message
+            unique.extend(ts_list)
+        elif ts_list:
+            unique.extend(ts_list)
+        elif regex_list:
+            unique.extend(regex_list)
+
+    return unique
