@@ -408,6 +408,7 @@ _executor_pool: List[concurrent.futures.ProcessPoolExecutor] = []
 _executor_pool_lock = threading.Lock()
 _busy_executors: set[concurrent.futures.ProcessPoolExecutor] = set()
 _global_executor: Any = None
+_interrupted_event = threading.Event()
 
 
 def _get_logging_config() -> Tuple[str, Path | None]:
@@ -422,6 +423,8 @@ def _get_logging_config() -> Tuple[str, Path | None]:
 
 
 def _get_global_executor() -> concurrent.futures.ProcessPoolExecutor:
+    if _interrupted_event.is_set():
+        raise RuntimeError("Scan interrupted")
     global _global_executor
     with _executor_pool_lock:
         available = None
@@ -539,6 +542,8 @@ def _evaluate_rule_thread(
     executed_count = 1
     thread_logs: List[Tuple[int, str]] = []
 
+    if _interrupted_event.is_set():
+        raise RuntimeError("Scan interrupted")
     executor = _get_global_executor()
     need_discard = False
 
@@ -632,6 +637,8 @@ def _evaluate_rule_thread(
                 current_timeout = 300.0
 
         # 2. ルール評価の実行
+        if _interrupted_event.is_set():
+            raise RuntimeError("Scan interrupted")
         try:
             future = executor.submit(
                 _evaluate_rule_in_process,
@@ -755,6 +762,7 @@ def run_all(
         futures = []
         future_to_rule_id = {}
         try:
+            _interrupted_event.clear()
             if progress_callback is not None and sorted_rules:
                 first_rule_id = getattr(
                     sorted_rules[0], "rule_id", type(sorted_rules[0]).__name__
@@ -819,6 +827,7 @@ def run_all(
                 if r_id in records_by_rule:
                     records.extend(records_by_rule[r_id])
         except BaseException as e:
+            _interrupted_event.set()
             for f in futures:
                 f.cancel()
             _reset_global_executor()
