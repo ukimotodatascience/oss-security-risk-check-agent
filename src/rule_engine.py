@@ -752,6 +752,7 @@ def run_all(
                 progress_callback(completed_count, total, rule_id)
 
         thread_executor = concurrent.futures.ThreadPoolExecutor()
+        futures = []
         try:
             if progress_callback is not None and sorted_rules:
                 first_rule_id = getattr(
@@ -759,7 +760,6 @@ def run_all(
                 )
                 progress_callback(0, total, first_rule_id)
 
-            futures = []
             for index, rule in enumerate(sorted_rules, start=1):
                 rule_id = getattr(rule, "rule_id", type(rule).__name__)
 
@@ -812,9 +812,12 @@ def run_all(
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
                 if r_id in records_by_rule:
                     records.extend(records_by_rule[r_id])
-        except BaseException:
+        except BaseException as e:
+            for f in futures:
+                f.cancel()
             _reset_global_executor()
-            raise
+            thread_executor.shutdown(wait=True)
+            raise e
         finally:
             thread_executor.shutdown(wait=False)
 

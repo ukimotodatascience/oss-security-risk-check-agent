@@ -39,7 +39,7 @@ class VulnLookupService:
     ] = {}
     _inflight_locks: Dict[tuple[str, str, str, str, bool], Flight] = {}
     _inflight_locks_lock = threading.Lock()
-    _osv_detail_cache: Dict[str, dict] = {}
+    _osv_detail_cache: Dict[str, tuple[float, dict]] = {}
     _osv_detail_cache_lock = threading.Lock()
     _file_cache_write_counter = 0
     _file_cache_write_lock = threading.Lock()
@@ -454,14 +454,18 @@ class VulnLookupService:
     def _get_osv_vulnerability_detail(self, vuln_id: str) -> dict | None:
         with self._osv_detail_cache_lock:
             if vuln_id in self._osv_detail_cache:
-                return self._osv_detail_cache[vuln_id]
+                ts, data = self._osv_detail_cache[vuln_id]
+                if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
+                    return data
+                else:
+                    self._osv_detail_cache.pop(vuln_id, None)
 
         url = f"https://api.osv.dev/v1/vulns/{vuln_id}"
         logger.debug(f"Fetching OSV detail for {vuln_id}")
         data = self._request_json(url, method="GET")
         if data and isinstance(data, dict):
             with self._osv_detail_cache_lock:
-                self._osv_detail_cache[vuln_id] = data
+                self._osv_detail_cache[vuln_id] = (time.time(), data)
             return data
         return None
 

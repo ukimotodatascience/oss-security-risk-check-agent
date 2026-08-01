@@ -159,3 +159,39 @@ def test_requery_success_removes_from_failed_deps(monkeypatch):
 
     # 最終的な結果が正しく得られていること（failed_deps から除外されたため採用される）
     assert res[("pkg1", "1.0.0")][0].vuln_id == "CVE-RETRY-SUCCESS"
+
+
+def test_osv_detail_cache_ttl(tmp_path, monkeypatch):
+    service = VulnLookupService()
+
+    call_count = 0
+
+    def fake_request(url, method="GET", headers=None, payload=None):
+        nonlocal call_count
+        call_count += 1
+        return {
+            "id": "GHSA-DETAIL-TTL",
+            "summary": f"OSV-TTL-COUNT-{call_count}",
+        }
+
+    monkeypatch.setattr(service, "_request_json", fake_request)
+
+    with service.use_config(tmp_path, 2):
+        # 初回：APIを呼び出してキャッシュに登録
+        d1 = service._get_osv_vulnerability_detail("GHSA-DETAIL-TTL")
+        assert d1 is not None
+        assert d1.get("summary") == "OSV-TTL-COUNT-1"
+
+        # 2回目（即時）：キャッシュがヒットし、API呼び出しは発生しない
+        d2 = service._get_osv_vulnerability_detail("GHSA-DETAIL-TTL")
+        assert d2.get("summary") == "OSV-TTL-COUNT-1"
+        assert call_count == 1
+
+        # 時間を経過させる（3秒）
+        real_time = time.time()
+        monkeypatch.setattr(time, "time", lambda: real_time + 3.0)
+
+        # 3回目（期限切れ後）：再度APIが呼び出される
+        d3 = service._get_osv_vulnerability_detail("GHSA-DETAIL-TTL")
+        assert d3.get("summary") == "OSV-TTL-COUNT-2"
+        assert call_count == 2
