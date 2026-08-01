@@ -266,3 +266,32 @@ def test_parse_cvss_vector():
     # 必須キー欠如の v2.0
     assert parse_cvss_vector("C:P/I:P/A:P") is None
     assert parse_cvss_vector("AV:N/AC:L/7.5") is None
+
+
+def test_osv_detail_cache_bypass_when_ttl_zero(monkeypatch):
+    service = VulnLookupService()
+    # キャッシュTTLを0に設定
+    service._default_cache_ttl = 0
+
+    query_count = 0
+
+    def fake_request(url, method="GET", headers=None, payload=None):
+        nonlocal query_count
+        query_count += 1
+        return {
+            "id": "GHSA-TEST-1",
+            "summary": f"Summary {query_count}",
+        }
+
+    monkeypatch.setattr(service, "_request_json", fake_request)
+
+    # 1回目の呼び出し
+    detail1 = service._get_osv_vulnerability_detail("GHSA-TEST-1")
+    assert detail1["summary"] == "Summary 1"
+    assert query_count == 1
+
+    # 2回目の呼び出し (TTL=0 のためキャッシュを迂回して再度 API を呼び出す必要がある)
+    detail2 = service._get_osv_vulnerability_detail("GHSA-TEST-1")
+    assert detail2["summary"] == "Summary 2"
+    assert query_count == 2
+    assert "GHSA-TEST-1" not in service._osv_detail_cache

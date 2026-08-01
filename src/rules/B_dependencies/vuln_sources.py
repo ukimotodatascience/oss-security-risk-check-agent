@@ -654,20 +654,22 @@ class VulnLookupService:
         return final_results
 
     def _get_osv_vulnerability_detail(self, vuln_id: str) -> dict | None:
-        with self._osv_detail_cache_lock:
-            if vuln_id in self._osv_detail_cache:
-                ts, data = self._osv_detail_cache[vuln_id]
-                if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
-                    return data
-                else:
-                    self._osv_detail_cache.pop(vuln_id, None)
+        if self._cache_ttl > 0:
+            with self._osv_detail_cache_lock:
+                if vuln_id in self._osv_detail_cache:
+                    ts, data = self._osv_detail_cache[vuln_id]
+                    if time.time() - ts <= self._cache_ttl:
+                        return data
+                    else:
+                        self._osv_detail_cache.pop(vuln_id, None)
 
         url = f"https://api.osv.dev/v1/vulns/{vuln_id}"
         logger.debug(f"Fetching OSV detail for {vuln_id}")
         data = self._request_json(url, method="GET")
         if data and isinstance(data, dict):
-            with self._osv_detail_cache_lock:
-                self._osv_detail_cache[vuln_id] = (time.time(), data)
+            if self._cache_ttl > 0:
+                with self._osv_detail_cache_lock:
+                    self._osv_detail_cache[vuln_id] = (time.time(), data)
             return data
         return None
 
