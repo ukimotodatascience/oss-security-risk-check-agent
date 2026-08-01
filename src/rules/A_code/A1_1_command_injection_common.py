@@ -77,6 +77,10 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
             return "eval"
         if "-c execution" in msg_lower:
             return "dash_c"
+        if "backtick" in msg_lower:
+            return "backtick_substitution"
+        if "$()" in msg_lower:
+            return "dollar_paren_substitution"
         if "command substitution" in msg_lower:
             return "substitution"
         if "source execution" in msg_lower:
