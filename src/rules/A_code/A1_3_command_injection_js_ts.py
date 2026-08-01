@@ -247,6 +247,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in file_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    start_paren_idx = stripped.find("(", m.start())
+                    if start_paren_idx == -1:
+                        start_paren_idx = m.end() - 1
+                    call_args_text = self._get_argument_list_text(
+                        stripped, start_paren_idx
+                    )
+                    call_text = stripped[
+                        m.start() : start_paren_idx + len(call_args_text)
+                    ]
+                    if not self._js_has_external_input(call_text, tainted_names):
+                        continue
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -267,6 +278,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             third_party_matches = self._find_all_known_third_party_shell_sinks(stripped)
             for m, name in third_party_matches:
                 if name == "exec" and "exec" in child_process_sinks:
+                    continue
+                start_paren_idx = stripped.find("(", m.start())
+                if start_paren_idx == -1:
+                    start_paren_idx = m.end() - 1
+                call_args_text = self._get_argument_list_text(stripped, start_paren_idx)
+                call_text = stripped[m.start() : start_paren_idx + len(call_args_text)]
+                if not self._js_has_external_input(call_text, tainted_names):
                     continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -297,6 +315,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in exec_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    start_paren_idx = stripped.find("(", m.start())
+                    if start_paren_idx == -1:
+                        start_paren_idx = m.end() - 1
+                    call_args_text = self._get_argument_list_text(
+                        stripped, start_paren_idx
+                    )
+                    call_text = stripped[
+                        m.start() : start_paren_idx + len(call_args_text)
+                    ]
+                    if not self._js_has_external_input(call_text, tainted_names):
+                        continue
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -331,6 +360,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     call_args_text = self._get_argument_list_text(
                         stripped, start_paren_idx
                     )
+                    call_text = stripped[
+                        m.start() : start_paren_idx + len(call_args_text)
+                    ]
+                    if not self._js_has_external_input(call_text, tainted_names):
+                        continue
                     has_shell_true = self._js_call_enables_shell(
                         call_args_text, shell_true_option_names
                     )
