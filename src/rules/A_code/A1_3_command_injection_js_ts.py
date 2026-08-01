@@ -246,7 +246,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     }
                 )
 
-            for name in file_names:
+            for name in sorted(file_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
@@ -315,7 +315,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     }
                 )
 
-            for name in exec_names:
+            for name in sorted(exec_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
@@ -355,7 +355,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     }
                 )
 
-            for name in spawn_names:
+            for name in sorted(spawn_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
