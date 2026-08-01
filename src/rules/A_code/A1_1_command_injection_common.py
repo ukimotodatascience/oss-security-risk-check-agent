@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Iterable, List, Optional
 
 from src.models import RiskRecord, Severity
 
@@ -55,17 +55,34 @@ def tree_sitter_language_candidates(suffix: str) -> List[str]:
 
 
 def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
-    seen: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
-    unique: List[RiskRecord] = []
+    _SEVERITY_ORDER = {
+        Severity.CRITICAL: 5,
+        Severity.HIGH: 4,
+        Severity.MEDIUM: 3,
+        Severity.LOW: 2,
+        Severity.INFO: 1,
+    }
+    merged = {}
     for record in records:
-        key = (
-            record.file_path,
-            record.line,
-            record.message or "",
-            record.severity,
-        )
+        key = (record.file_path, record.line, record.rule_id)
+        if key not in merged:
+            merged[key] = record
+        else:
+            existing = merged[key]
+            p_existing = _SEVERITY_ORDER.get(existing.severity, 0)
+            p_new = _SEVERITY_ORDER.get(record.severity, 0)
+            if p_new > p_existing:
+                merged[key] = record
+            elif p_new == p_existing:
+                if len(record.message or "") > len(existing.message or ""):
+                    merged[key] = record
+
+    unique: List[RiskRecord] = []
+    seen = set()
+    for r in records:
+        key = (r.file_path, r.line, r.rule_id)
         if key in seen:
             continue
         seen.add(key)
-        unique.append(record)
+        unique.append(merged[key])
     return unique
