@@ -145,6 +145,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         else "External input reaches child_process spawn",
                     )
                 )
+        for r in records:
+            r._from_ts = True
         return records
 
     def _evaluate_js_ts_file(self, file_path: Path, target: Path) -> List[RiskRecord]:

@@ -92,12 +92,18 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         return msg_lower
 
     merged = {}
-    counts = {}
+    counts_ts = {}
+    counts_regex = {}
     for record in records:
         sink_type = get_sink_type_key(record.message or "")
         counter_key = (record.file_path, record.line, sink_type)
-        idx = counts.get(counter_key, 0)
-        counts[counter_key] = idx + 1
+        is_ts = getattr(record, "_from_ts", False)
+        if is_ts:
+            idx = counts_ts.get(counter_key, 0)
+            counts_ts[counter_key] = idx + 1
+        else:
+            idx = counts_regex.get(counter_key, 0)
+            counts_regex[counter_key] = idx + 1
 
         key = (record.file_path, record.line, record.rule_id, sink_type, idx)
         if key not in merged:
@@ -114,12 +120,18 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
 
     unique: List[RiskRecord] = []
     seen = set()
-    counts_for_unique = {}
+    counts_ts_u = {}
+    counts_regex_u = {}
     for r in records:
         sink_type = get_sink_type_key(r.message or "")
         counter_key = (r.file_path, r.line, sink_type)
-        idx = counts_for_unique.get(counter_key, 0)
-        counts_for_unique[counter_key] = idx + 1
+        is_ts = getattr(r, "_from_ts", False)
+        if is_ts:
+            idx = counts_ts_u.get(counter_key, 0)
+            counts_ts_u[counter_key] = idx + 1
+        else:
+            idx = counts_regex_u.get(counter_key, 0)
+            counts_regex_u[counter_key] = idx + 1
 
         key = (r.file_path, r.line, r.rule_id, sink_type, idx)
         if key in seen:

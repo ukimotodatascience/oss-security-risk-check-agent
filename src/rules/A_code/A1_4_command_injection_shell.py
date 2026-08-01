@@ -255,6 +255,8 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         message="External input reaches $() command substitution",
                     )
                 )
+        for r in records:
+            r._from_ts = True
         return records
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
