@@ -392,8 +392,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _get_argument_list_text(text: str, start_paren_idx: int) -> str:
         paren_count = 0
+        in_string = None
+        escaped = False
         for idx in range(start_paren_idx, len(text)):
             char = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
             if char == "(":
                 paren_count += 1
             elif char == ")":

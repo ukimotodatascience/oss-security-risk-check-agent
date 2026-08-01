@@ -75,6 +75,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 2. sh, bash, zsh, ksh -c
             for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped):
+                prefix = stripped[: m.start()]
+                if re.search("\\b(?:xargs|find)\\b", prefix):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
