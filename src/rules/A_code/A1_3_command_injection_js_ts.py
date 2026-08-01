@@ -323,8 +323,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in spawn_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    start_paren_idx = stripped.find("(", m.start())
+                    if start_paren_idx == -1:
+                        start_paren_idx = m.end() - 1
+                    call_args_text = self._get_argument_list_text(
+                        stripped, start_paren_idx
+                    )
                     has_shell_true = self._js_call_enables_shell(
-                        stripped, shell_true_option_names
+                        call_args_text, shell_true_option_names
                     )
                     rec = RiskRecord(
                         rule_id=self.rule_id,
@@ -380,6 +386,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for m in re.finditer(pattern, text):
                 sinks.append((m, name))
         return sinks
+
+    @staticmethod
+    def _get_argument_list_text(text: str, start_paren_idx: int) -> str:
+        paren_count = 0
+        for idx in range(start_paren_idx, len(text)):
+            char = text[idx]
+            if char == "(":
+                paren_count += 1
+            elif char == ")":
+                paren_count -= 1
+                if paren_count == 0:
+                    return text[start_paren_idx : idx + 1]
+        return text[start_paren_idx:]
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
