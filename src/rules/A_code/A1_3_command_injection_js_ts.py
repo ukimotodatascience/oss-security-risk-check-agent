@@ -92,7 +92,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
             call_text = text
-            line = getattr(node, "start_point", (0, 0))[0] + 1
+            start_point = getattr(node, "start_point", (0, 0))
+            line = start_point[0] + 1
+            col = start_point[1]
             has_external = self._js_has_external_input(call_text, tainted_names)
             if not has_external:
                 continue
@@ -105,46 +107,46 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not is_known_sink:
                 continue
             if callee_tail in {"exec", "execSync"}:
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=line,
-                        message="External input reaches child_process command execution",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=line,
+                    message="External input reaches child_process command execution",
                 )
+                rec._column = col
+                records.append(rec)
                 continue
             if callee_tail in {"execFile", "execFileSync", "fork"}:
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=line,
-                        message="External input reaches child_process file execution",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.MEDIUM,
+                    file_path=rel_path,
+                    line=line,
+                    message="External input reaches child_process file execution",
                 )
+                rec._column = col
+                records.append(rec)
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
                 has_shell_true = "shell: true" in call_text or "shell:true" in call_text
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=line,
-                        message="External input reaches child_process spawn with shell=true"
-                        if has_shell_true
-                        else "External input reaches child_process spawn",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
+                    file_path=rel_path,
+                    line=line,
+                    message="External input reaches child_process spawn with shell=true"
+                    if has_shell_true
+                    else "External input reaches child_process spawn",
                 )
+                rec._column = col
+                records.append(rec)
         for r in records:
             r._from_ts = True
         return records
@@ -181,6 +183,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if buffer:
             statements.append((start_line, buffer))
         for i, stripped in statements:
+            indent = 0
+            if 1 <= i <= len(lines):
+                line_str = lines[i - 1]
+                indent = len(line_str) - len(line_str.lstrip())
+
             self._register_child_process_imports(stripped, child_process_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
@@ -196,85 +203,97 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     shell_true_option_names.add(var_name)
                 if self._js_has_external_input(rhs, tainted_names):
                     tainted_names.add(var_name)
-            if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", stripped):
+
+            m = re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", stripped)
+            if m:
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.MEDIUM,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process file execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.MEDIUM,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process file execution",
                     )
+                    rec._column = indent + m.start()
+                    records.append(rec)
                 continue
-            if self._is_known_third_party_shell_sink(stripped):
+
+            m = self._find_known_third_party_shell_sink(stripped)
+            if m:
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches shell command execution helper",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches shell command execution helper",
                     )
+                    rec._column = indent + m.start()
+                    records.append(rec)
                 continue
+
             exec_names = child_process_sinks or {"exec", "execSync"}
-            if any(
-                (
-                    re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
-                    for name in exec_names
-                    if name.split(".")[-1] in {"exec", "execSync"}
-                    or name in {"exec", "execSync"}
-                    or "." not in name
-                )
-            ):
+            exec_match = None
+            for name in exec_names:
+                m_exec = re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
+                if m_exec:
+                    if (
+                        name.split(".")[-1] in {"exec", "execSync"}
+                        or name in {"exec", "execSync"}
+                        or "." not in name
+                    ):
+                        exec_match = m_exec
+                        break
+            if exec_match:
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process command execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process command execution",
                     )
+                    rec._column = indent + exec_match.start()
+                    records.append(rec)
                 continue
+
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
-            if any(
-                (
-                    re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
-                    for name in spawn_names
-                    if name.split(".")[-1] in {"spawn", "spawnSync"}
-                    or name in {"spawn", "spawnSync"}
-                    or "." not in name
-                )
-            ):
+            spawn_match = None
+            for name in spawn_names:
+                m_spawn = re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
+                if m_spawn:
+                    if (
+                        name.split(".")[-1] in {"spawn", "spawnSync"}
+                        or name in {"spawn", "spawnSync"}
+                        or "." not in name
+                    ):
+                        spawn_match = m_spawn
+                        break
+            if spawn_match:
                 if not self._js_has_external_input(stripped, tainted_names):
                     continue
                 has_shell_true = self._js_call_enables_shell(
                     stripped, shell_true_option_names
                 )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches child_process spawn with shell=true"
-                        if has_shell_true
-                        else "External input reaches child_process spawn",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches child_process spawn with shell=true"
+                    if has_shell_true
+                    else "External input reaches child_process spawn",
                 )
+                rec._column = indent + spawn_match.start()
+                records.append(rec)
         return dedupe_records(records)
 
     @staticmethod
@@ -297,6 +316,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             re.search(r"\b(?:shelljs\.)?exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
         )
+
+    @staticmethod
+    def _find_known_third_party_shell_sink(text: str):
+        m1 = re.search(r"\b(?:shelljs\.)?exec\s*\(", text)
+        if m1:
+            return m1
+        m2 = re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
+        if m2:
+            return m2
+        return None
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []

@@ -46,118 +46,135 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+            indent = len(line) - len(line.lstrip())
+
             self._track_shell_taint_from_text(stripped, tainted_names)
             self._track_shell_case_allowlist_from_text(stripped, tainted_names)
             has_external = self._shell_expands_external_input(stripped, tainted_names)
             if not has_external:
                 continue
-            if re.search("\\beval\\b", stripped):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches shell eval",
-                    )
+
+            m = re.search("\\beval\\b", stripped)
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches shell eval",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
                 continue
-            if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches shell -c execution",
-                    )
+
+            m = re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped)
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches shell -c execution",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
                 continue
-            if re.search("`[^`]*\\$[^`]*`", stripped):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches backtick command substitution",
-                    )
+
+            m = re.search("`[^`]*\\$[^`]*`", stripped)
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches backtick command substitution",
                 )
-            if re.search("\\$\\([^)]*\\$[^)]*\\)", stripped):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches $() command substitution",
-                    )
+                rec._column = indent + m.start()
+                records.append(rec)
+
+            m = re.search("\\$\\([^)]*\\$[^)]*\\)", stripped)
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches $() command substitution",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
                 continue
-            if re.search("\\b(?:source|\\.)\\s+[^#;]*\\$", stripped) or re.search(
+
+            m = re.search("\\b(?:source|\\.)\\s+[^#;]*\\$", stripped) or re.search(
                 "\\b(?:source|\\.)\\s+[^#;]*(?:\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?|\\$[0-9@*])",
                 stripped,
-            ):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches shell source execution",
-                    )
+            )
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches shell source execution",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
                 continue
-            if re.search(
+
+            m = re.search(
                 "\\b(?:xargs|find)\\b.*\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped
-            ):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches xargs/find shell -c execution",
-                    )
+            )
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches xargs/find shell -c execution",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
                 continue
+
             if self._line_starts_with_tainted_command(stripped, tainted_names):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input controls command name execution",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input controls command name execution",
                 )
+                rec._column = indent
+                records.append(rec)
                 continue
-            if re.search("\\b(?:sh|bash|zsh|ksh)\\s+<<<\\s*", stripped):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches shell here-string execution",
-                    )
+
+            m = re.search("\\b(?:sh|bash|zsh|ksh)\\s+<<<\\s*", stripped)
+            if m:
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches shell here-string execution",
                 )
+                rec._column = indent + m.start()
+                records.append(rec)
         return dedupe_records(records)
 
     @staticmethod
@@ -210,36 +227,38 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             text = ts_node_text(src_bytes, node).strip()
             if not text or text.startswith("#"):
                 continue
-            line = getattr(node, "start_point", (0, 0))[0] + 1
+            start_point = getattr(node, "start_point", (0, 0))
+            line = start_point[0] + 1
+            col = start_point[1]
             self._track_shell_taint_from_text(text, tainted_names)
             self._track_shell_case_allowlist_from_text(text, tainted_names)
             if not self._shell_expands_external_input(text, tainted_names):
                 continue
             if re.search("\\beval\\b", text):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=line,
-                        message="External input reaches shell eval",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=line,
+                    message="External input reaches shell eval",
                 )
+                rec._column = col
+                records.append(rec)
                 continue
             if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", text):
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=line,
-                        message="External input reaches shell -c execution",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=line,
+                    message="External input reaches shell -c execution",
                 )
+                rec._column = col
+                records.append(rec)
                 continue
             is_cmd_sub = getattr(node, "type", "") == "command_substitution"
             if is_cmd_sub or re.search("\\$\\([^)]*\\$[^)]*\\)", text):
@@ -252,17 +271,17 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     if is_backtick
                     else "External input reaches $() command substitution"
                 )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH,
-                        file_path=rel_path,
-                        line=line,
-                        message=msg,
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH,
+                    file_path=rel_path,
+                    line=line,
+                    message=msg,
                 )
+                rec._column = col
+                records.append(rec)
         for r in records:
             r._from_ts = True
         return records

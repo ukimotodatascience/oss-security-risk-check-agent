@@ -137,18 +137,33 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         regex_list = regex_groups.get(g_key, [])
 
         if ts_list and regex_list:
-            max_ts_rec = max(ts_list, key=lambda x: _SEVERITY_ORDER.get(x.severity, 0))
-            max_regex_rec = max(
-                regex_list, key=lambda x: _SEVERITY_ORDER.get(x.severity, 0)
-            )
+            matched_regex_indices = set()
+            for ts_rec in ts_list:
+                ts_col = getattr(ts_rec, "_column", None)
+                if ts_col is None:
+                    close_regex_rec = regex_list[0] if regex_list else None
+                    if close_regex_rec:
+                        matched_regex_indices.add(0)
+                else:
+                    close_regex_rec = None
+                    for idx_reg, reg_rec in enumerate(regex_list):
+                        reg_col = getattr(reg_rec, "_column", None)
+                        if reg_col is not None and abs(ts_col - reg_col) <= 15:
+                            close_regex_rec = reg_rec
+                            matched_regex_indices.add(idx_reg)
+                            break
 
-            if _SEVERITY_ORDER.get(max_regex_rec.severity, 0) > _SEVERITY_ORDER.get(
-                max_ts_rec.severity, 0
-            ):
-                for ts_rec in ts_list:
-                    ts_rec.severity = max_regex_rec.severity
-                    ts_rec.message = max_regex_rec.message
+                if close_regex_rec:
+                    if _SEVERITY_ORDER.get(
+                        close_regex_rec.severity, 0
+                    ) > _SEVERITY_ORDER.get(ts_rec.severity, 0):
+                        ts_rec.severity = close_regex_rec.severity
+                        ts_rec.message = close_regex_rec.message
+
             unique.extend(ts_list)
+            for idx_reg, reg_rec in enumerate(regex_list):
+                if idx_reg not in matched_regex_indices:
+                    unique.append(reg_rec)
         elif ts_list:
             unique.extend(ts_list)
         elif regex_list:
