@@ -59,6 +59,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 1. eval
             for m in re.finditer("\\beval\\b", stripped):
+                call_text = self._get_shell_statement_context(stripped, m.start())
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -78,6 +81,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 prefix = stripped[: m.start()]
                 if re.search("\\b(?:xargs|find)\\b", prefix):
                     continue
+                call_text = self._get_shell_statement_context(stripped, m.start())
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -94,6 +100,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 3. backtick command substitution
             for m in re.finditer("`[^`]*\\$[^`]*`", stripped):
+                call_text = m.group(0)
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -110,6 +119,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 4. $() command substitution
             for m in re.finditer("\\$\\([^)]*\\$[^)]*\\)", stripped):
+                call_text = m.group(0)
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -131,6 +143,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             ]
             for pattern in source_patterns:
                 for m in re.finditer(pattern, stripped):
+                    call_text = self._get_shell_statement_context(stripped, m.start())
+                    if not self._shell_expands_external_input(call_text, tainted_names):
+                        continue
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -149,6 +164,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             for m in re.finditer(
                 "\\b(?:xargs|find)\\b.*\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped
             ):
+                call_text = self._get_shell_statement_context(stripped, m.start())
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -313,6 +331,29 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         for r in records:
             r._from_ts = True
         return records
+
+    @staticmethod
+    def _get_shell_statement_context(text: str, start_idx: int) -> str:
+        in_string = None
+        escaped = False
+        for idx in range(start_idx, len(text)):
+            char = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char in {";", "|", "&"}:
+                return text[start_idx:idx]
+        return text[start_idx:]
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []

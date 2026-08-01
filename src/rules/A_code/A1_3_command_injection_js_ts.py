@@ -113,10 +113,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee_tail = callee.split(".")[-1]
             is_known_sink = (
-                callee in child_process_sinks or callee_tail in child_process_sinks
+                callee in child_process_sinks
+                or callee_tail in child_process_sinks
+                or callee_tail in self._CHILD_PROCESS_NAMES
             )
-            if not is_known_sink and (not child_process_sinks):
-                is_known_sink = callee_tail in self._CHILD_PROCESS_NAMES
             if not is_known_sink:
                 continue
             byte_offset = (
@@ -236,14 +236,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
 
             # 1. execFile, execFileSync, fork
+            file_names = {"execFile", "execFileSync", "fork"}
             if child_process_sinks:
-                file_names = {
-                    alias
-                    for alias, orig in child_process_sinks.items()
-                    if orig in {"execFile", "execFileSync", "fork"}
-                }
-            else:
-                file_names = {"execFile", "execFileSync", "fork"}
+                file_names.update(
+                    {
+                        alias
+                        for alias, orig in child_process_sinks.items()
+                        if orig in {"execFile", "execFileSync", "fork"}
+                    }
+                )
 
             for name in file_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
@@ -304,14 +305,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 records.append(rec)
 
             # 3. exec, execSync
+            exec_names = {"exec", "execSync"}
             if child_process_sinks:
-                exec_names = {
-                    alias
-                    for alias, orig in child_process_sinks.items()
-                    if orig in {"exec", "execSync"}
-                }
-            else:
-                exec_names = {"exec", "execSync"}
+                exec_names.update(
+                    {
+                        alias
+                        for alias, orig in child_process_sinks.items()
+                        if orig in {"exec", "execSync"}
+                    }
+                )
 
             for name in exec_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
@@ -343,14 +345,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     records.append(rec)
 
             # 4. spawn, spawnSync
+            spawn_names = {"spawn", "spawnSync"}
             if child_process_sinks:
-                spawn_names = {
-                    alias
-                    for alias, orig in child_process_sinks.items()
-                    if orig in {"spawn", "spawnSync"}
-                }
-            else:
-                spawn_names = {"spawn", "spawnSync"}
+                spawn_names.update(
+                    {
+                        alias
+                        for alias, orig in child_process_sinks.items()
+                        if orig in {"spawn", "spawnSync"}
+                    }
+                )
 
             for name in spawn_names:
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
