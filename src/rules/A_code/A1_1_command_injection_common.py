@@ -63,6 +63,22 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         Severity.INFO: 1,
     }
 
+    # 1. 同一解析元内での完全重複レコードの排除
+    raw_records = []
+    seen_raw = set()
+    for r in records:
+        key = (
+            r.file_path,
+            r.line,
+            r.message or "",
+            r.severity,
+            getattr(r, "_from_ts", False),
+        )
+        if key in seen_raw:
+            continue
+        seen_raw.add(key)
+        raw_records.append(r)
+
     def get_sink_type_key(message: str) -> str:
         msg_lower = message.lower()
         if "spawn" in msg_lower:
@@ -94,7 +110,7 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     merged = {}
     counts_ts = {}
     counts_regex = {}
-    for record in records:
+    for record in raw_records:
         sink_type = get_sink_type_key(record.message or "")
         counter_key = (record.file_path, record.line, sink_type)
         is_ts = getattr(record, "_from_ts", False)
@@ -122,7 +138,7 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     seen = set()
     counts_ts_u = {}
     counts_regex_u = {}
-    for r in records:
+    for r in raw_records:
         sink_type = get_sink_type_key(r.message or "")
         counter_key = (r.file_path, r.line, sink_type)
         is_ts = getattr(r, "_from_ts", False)
