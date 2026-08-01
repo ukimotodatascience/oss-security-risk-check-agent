@@ -182,13 +182,14 @@ class VulnLookupService:
     ) -> Dict[tuple[str, str], List[VulnHit]]:
         providers_str = ",".join(self._provider_order)
 
-        # 0. 重複排除
+        # 0. 重複排除 (パッケージ名を正規化して比較判定)
         unique_dependencies = []
         seen_deps = set()
-        for dep in dependencies:
-            if dep not in seen_deps:
-                seen_deps.add(dep)
-                unique_dependencies.append(dep)
+        for name, version in dependencies:
+            norm_key = (name.lower(), version)
+            if norm_key not in seen_deps:
+                seen_deps.add(norm_key)
+                unique_dependencies.append((name, version))
 
         # 1. キャッシュチェック
         results: Dict[tuple[str, str], List[VulnHit]] = {}
@@ -220,7 +221,7 @@ class VulnLookupService:
                 ts, cached_hits = val
                 if self._cache_ttl <= 0 or time.time() - ts <= self._cache_ttl:
                     logger.debug(f"Memory cache hit for {key}")
-                    results[(name, version)] = cached_hits
+                    results[(name.lower(), version)] = cached_hits
                     continue
                 else:
                     logger.debug(f"Memory cache expired for {key}")
@@ -234,7 +235,7 @@ class VulnLookupService:
                     logger.debug(f"File cache hit for {key}")
                     self._process_cache[key] = (file_ts, file_hits)
                     self._enforce_process_cache_limit()
-                    results[(name, version)] = file_hits
+                    results[(name.lower(), version)] = file_hits
                     continue
 
             missing.append((name, version))
@@ -242,7 +243,7 @@ class VulnLookupService:
         if not missing:
             final_results = {}
             for dep in dependencies:
-                final_results[dep] = results.get(dep, [])
+                final_results[dep] = results.get((dep[0].lower(), dep[1]), [])
             return final_results
 
         # 2. Single Flight ロックの取得と重複解決
@@ -268,7 +269,7 @@ class VulnLookupService:
 
             flight.lock.acquire()
             if flight.has_result:
-                results[(name, version)] = flight.result
+                results[(name.lower(), version)] = flight.result
                 flight.lock.release()
                 self._decrement_flight(key)
             else:
@@ -371,6 +372,7 @@ class VulnLookupService:
                         _, hits_dict, failed, local_had_invalid = future.result()
                         for p, hits in hits_dict.items():
                             temp_hits[dep][p] = hits
+                            failed_deps[dep].discard(p)
                         failed_deps[dep].update(failed)
                         if local_had_invalid:
                             had_invalid_deps[dep] = True
@@ -407,7 +409,7 @@ class VulnLookupService:
             if had_invalid_deps[dep]:
                 has_failure = True
 
-            results[dep] = all_hits
+            results[(dep_name.lower(), dep_version)] = all_hits
 
             # Flight ロックを解放し結果を反映
             flight.result = all_hits
@@ -428,7 +430,7 @@ class VulnLookupService:
 
         final_results = {}
         for dep in dependencies:
-            final_results[dep] = results.get(dep, [])
+            final_results[dep] = results.get((dep[0].lower(), dep[1]), [])
         return final_results
 
     def _get_osv_vulnerability_detail(self, vuln_id: str) -> dict | None:
@@ -515,7 +517,10 @@ class VulnLookupService:
                     continue
 
                 detail = self._get_osv_vulnerability_detail(vuln_id)
-                v_source = detail if detail is not None else v
+                if detail is None:
+                    had_invalid = True
+                    break
+                v_source = detail
 
                 summary = v_source.get("summary")
                 if summary is not None and not isinstance(summary, str):
