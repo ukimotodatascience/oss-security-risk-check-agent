@@ -11,6 +11,7 @@ from src.rules.A_code.A1_1_command_injection_common import (
     get_tree_sitter_parser,
     iter_ts_nodes,
     ts_node_text,
+    line_col_to_offset,
 )
 from src.rules.A_code.A1_4_1_command_injection_shell_sources import ShellSourceMixin
 
@@ -56,8 +57,8 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if not has_external:
                 continue
 
-            m = re.search("\\beval\\b", stripped)
-            if m:
+            # 1. eval
+            for m in re.finditer("\\beval\\b", stripped):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -67,12 +68,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell eval",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
-                continue
 
-            m = re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped)
-            if m:
+            # 2. sh, bash, zsh, ksh -c
+            for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -82,12 +84,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell -c execution",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
-                continue
 
-            m = re.search("`[^`]*\\$[^`]*`", stripped)
-            if m:
+            # 3. backtick command substitution
+            for m in re.finditer("`[^`]*\\$[^`]*`", stripped):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -97,11 +100,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches backtick command substitution",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
 
-            m = re.search("\\$\\([^)]*\\$[^)]*\\)", stripped)
-            if m:
+            # 4. $() command substitution
+            for m in re.finditer("\\$\\([^)]*\\$[^)]*\\)", stripped):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -111,32 +116,36 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches $() command substitution",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
-                continue
 
-            m = re.search("\\b(?:source|\\.)\\s+[^#;]*\\$", stripped) or re.search(
+            # 5. source
+            source_patterns = [
+                "\\b(?:source|\\.)\\s+[^#;]*\\$",
                 "\\b(?:source|\\.)\\s+[^#;]*(?:\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?|\\$[0-9@*])",
-                stripped,
-            )
-            if m:
-                rec = RiskRecord(
-                    rule_id=self.rule_id,
-                    category=self.category,
-                    title=self.title,
-                    severity=Severity.HIGH,
-                    file_path=rel_path,
-                    line=i,
-                    message="External input reaches shell source execution",
-                )
-                rec._column = stmt_start_idx + m.start()
-                records.append(rec)
-                continue
+            ]
+            for pattern in source_patterns:
+                for m in re.finditer(pattern, stripped):
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches shell source execution",
+                    )
+                    col = stmt_start_idx + m.start()
+                    rec._column = col
+                    rec._char_offset = line_col_to_offset(src, i, col)
+                    records.append(rec)
 
-            m = re.search(
+            # 6. xargs/find -c
+            for m in re.finditer(
                 "\\b(?:xargs|find)\\b.*\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped
-            )
-            if m:
+            ):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -146,10 +155,12 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches xargs/find shell -c execution",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
-                continue
 
+            # 7. controls command name
             if self._line_starts_with_tainted_command(stripped, tainted_names):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -160,12 +171,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input controls command name execution",
                 )
-                rec._column = stmt_start_idx
+                col = stmt_start_idx
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
-                continue
 
-            m = re.search("\\b(?:sh|bash|zsh|ksh)\\s+<<<\\s*", stripped)
-            if m:
+            # 8. here-string
+            for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+<<<\\s*", stripped):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -175,7 +187,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches shell here-string execution",
                 )
-                rec._column = stmt_start_idx + m.start()
+                col = stmt_start_idx + m.start()
+                rec._column = col
+                rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
         return dedupe_records(records)
 
@@ -247,6 +261,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message="External input reaches shell eval",
                 )
                 rec._column = col
+                rec._char_offset = line_col_to_offset(src, line, col)
                 records.append(rec)
                 continue
             if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", text):
@@ -260,6 +275,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message="External input reaches shell -c execution",
                 )
                 rec._column = col
+                rec._char_offset = line_col_to_offset(src, line, col)
                 records.append(rec)
                 continue
             is_cmd_sub = getattr(node, "type", "") == "command_substitution"
@@ -283,6 +299,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message=msg,
                 )
                 rec._column = col
+                rec._char_offset = line_col_to_offset(src, line, col)
                 records.append(rec)
         for r in records:
             r._from_ts = True

@@ -54,6 +54,15 @@ def tree_sitter_language_candidates(suffix: str) -> List[str]:
     return ["javascript"]
 
 
+def line_col_to_offset(src: str, line_1indexed: int, col_0indexed: int) -> int:
+    lines = src.splitlines(keepends=True)
+    offset = 0
+    for i in range(line_1indexed - 1):
+        if i < len(lines):
+            offset += len(lines[i])
+    return offset + col_0indexed
+
+
 def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     _SEVERITY_ORDER = {
         Severity.CRITICAL: 5,
@@ -113,20 +122,20 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     ts_groups = {}
     for r in ts_records:
         sink_type = get_sink_type_key(r.message or "")
-        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        g_key = (r.file_path, r.rule_id, sink_type)
         ts_groups.setdefault(g_key, []).append(r)
 
     regex_groups = {}
     for r in regex_records:
         sink_type = get_sink_type_key(r.message or "")
-        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        g_key = (r.file_path, r.rule_id, sink_type)
         regex_groups.setdefault(g_key, []).append(r)
 
     all_keys_ordered = []
     seen_keys = set()
     for r in raw_records:
         sink_type = get_sink_type_key(r.message or "")
-        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        g_key = (r.file_path, r.rule_id, sink_type)
         if g_key not in seen_keys:
             seen_keys.add(g_key)
             all_keys_ordered.append(g_key)
@@ -139,16 +148,16 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         if ts_list and regex_list:
             matched_regex_indices = set()
             for ts_rec in ts_list:
-                ts_col = getattr(ts_rec, "_column", None)
-                if ts_col is None:
+                ts_offset = getattr(ts_rec, "_char_offset", None)
+                if ts_offset is None:
                     close_regex_rec = regex_list[0] if regex_list else None
                     if close_regex_rec:
                         matched_regex_indices.add(0)
                 else:
                     close_regex_rec = None
                     for idx_reg, reg_rec in enumerate(regex_list):
-                        reg_col = getattr(reg_rec, "_column", None)
-                        if reg_col is not None and abs(ts_col - reg_col) <= 2:
+                        reg_offset = getattr(reg_rec, "_char_offset", None)
+                        if reg_offset is not None and abs(ts_offset - reg_offset) <= 2:
                             close_regex_rec = reg_rec
                             matched_regex_indices.add(idx_reg)
                             break
