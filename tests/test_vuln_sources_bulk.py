@@ -222,17 +222,24 @@ def test_parse_cvss_vector():
     score_v30 = parse_cvss_vector("CVSS:3.0/AV:P/AC:H/PR:L/UI:R/S:C/C:H/I:H/A:H")
     assert score_v30 == 6.9
 
-    # 3. CVSS v2.0 ベクトルの計算検証
-    # 例: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.5
+    # 3. CVSS v2.0 ベクトルの計算・四捨五入検証
+    # 例1: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.4
     score_v2 = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P")
-    assert score_v2 == 7.5
+    assert score_v2 == 7.4
+    # 例2 (四捨五入の検証): AV:N/AC:L/Au:M/C:N/I:P/A:P -> Base Score 4.7 (切り上げだと 4.8 になるもの)
+    score_v2_round = parse_cvss_vector("AV:N/AC:L/Au:M/C:N/I:P/A:P")
+    assert score_v2_round == 4.7
 
-    # 3. CVSS v4.0 ベクトル（現在未対応）の場合は None
+    # 4. CVSS v4.0 ベクトル（現在未対応）の場合は None
     score_v4 = parse_cvss_vector(
         "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
     )
     assert score_v4 is None
 
-    # 4. 不正な入力や無効なベクトルの場合は None
+    # 5. 不完全・無効なベクトルの場合は None
     assert parse_cvss_vector("") is None
     assert parse_cvss_vector("INVALID_VECTOR") is None
+    # 必須キー欠如の v3.x
+    assert parse_cvss_vector("CVSS:3.1/C:H/I:H/A:H") is None
+    # 必須キー欠如の v2.0
+    assert parse_cvss_vector("C:P/I:P/A:P") is None

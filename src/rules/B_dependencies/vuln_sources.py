@@ -67,15 +67,29 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 is_v3 = True
 
         if is_v3:
-            # CVSS v3.x ベーススコア計算
-            av = metrics.get("AV", "N")
-            ac = metrics.get("AC", "L")
-            pr = metrics.get("PR", "N")
-            ui = metrics.get("UI", "N")
-            s = metrics.get("S", "U")
-            c = metrics.get("C", "N")
-            i = metrics.get("I", "N")
-            a = metrics.get("A", "N")
+            # CVSS v3.x 必須キーと有効値の厳密な検証
+            v3_required = {
+                "AV": {"N", "A", "L", "P"},
+                "AC": {"L", "H"},
+                "PR": {"N", "L", "H"},
+                "UI": {"N", "R"},
+                "S": {"U", "C"},
+                "C": {"N", "L", "H"},
+                "I": {"N", "L", "H"},
+                "A": {"N", "L", "H"},
+            }
+            for k, allowed_vals in v3_required.items():
+                if k not in metrics or metrics[k] not in allowed_vals:
+                    return None
+
+            av = metrics["AV"]
+            ac = metrics["AC"]
+            pr = metrics["PR"]
+            ui = metrics["UI"]
+            s = metrics["S"]
+            c = metrics["C"]
+            i = metrics["I"]
+            a = metrics["A"]
 
             av_map = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
             ac_map = {"L": 0.77, "H": 0.44}
@@ -127,13 +141,25 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             return min(ceil_score, 10.0)
 
         else:
-            # CVSS v2.0 ベーススコア計算
-            av = metrics.get("AV", "N")
-            ac = metrics.get("AC", "L")
-            au = metrics.get("AU", "N")
-            c = metrics.get("C", "N")
-            i = metrics.get("I", "N")
-            a = metrics.get("A", "N")
+            # CVSS v2.0 必須キーと有効値の厳密な検証
+            v2_required = {
+                "AV": {"N", "A", "L"},
+                "AC": {"L", "M", "H"},
+                "AU": {"N", "S", "M"},
+                "C": {"N", "P", "C"},
+                "I": {"N", "P", "C"},
+                "A": {"N", "P", "C"},
+            }
+            for k, allowed_vals in v2_required.items():
+                if k not in metrics or metrics[k] not in allowed_vals:
+                    return None
+
+            av = metrics["AV"]
+            ac = metrics["AC"]
+            au = metrics["AU"]
+            c = metrics["C"]
+            i = metrics["I"]
+            a = metrics["A"]
 
             av_map = {"N": 1.0, "A": 0.646, "L": 0.395}
             ac_map = {"L": 0.71, "M": 0.61, "H": 0.35}
@@ -159,9 +185,9 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             raw_score = ((0.6 * impact) + (0.4 * expl) - 1.5) * f_impact
             if raw_score <= 0:
                 return 0.0
-            int_val = round(raw_score * 100000)
-            ceil_score = math.ceil(int_val / 10000.0) / 10.0
-            return min(ceil_score, 10.0)
+            # v2 は四捨五入
+            rounded_score = math.floor(raw_score * 10 + 0.5) / 10.0
+            return min(rounded_score, 10.0)
 
     except Exception:
         return None
