@@ -744,12 +744,13 @@ def run_all(
         completed_count = 0
         callback_lock = threading.Lock()
 
-        def _run_callback() -> None:
+        def _run_callback(rule_id: str) -> None:
             nonlocal completed_count
             if progress_callback is None:
                 return
             with callback_lock:
                 completed_count += 1
+                progress_callback(completed_count, total, rule_id)
 
         thread_executor = concurrent.futures.ThreadPoolExecutor()
         try:
@@ -757,7 +758,7 @@ def run_all(
             for index, rule in enumerate(sorted_rules, start=1):
                 rule_id = getattr(rule, "rule_id", type(rule).__name__)
                 if progress_callback is not None:
-                    progress_callback(index, total, rule_id)
+                    progress_callback(0, total, rule_id)
 
                 try:
                     rule_bytes = pickle.dumps(rule)
@@ -778,7 +779,7 @@ def run_all(
                     )
                     errors.append((rule_id, tb))
                     executed_count += 1
-                    _run_callback()
+                    _run_callback(rule_id)
 
             records_by_rule: dict[str, List[RiskRecord]] = {}
             for future in concurrent.futures.as_completed(futures):
@@ -795,7 +796,7 @@ def run_all(
                         records_by_rule[rule_id] = found_records
                     if error_tb:
                         errors.append((rule_id, error_tb))
-                    _run_callback()
+                    _run_callback(rule_id)
                 except Exception as e:
                     tb = "".join(
                         traceback.format_exception(type(e), e, e.__traceback__)

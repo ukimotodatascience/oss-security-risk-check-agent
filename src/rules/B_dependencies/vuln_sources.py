@@ -39,6 +39,8 @@ class VulnLookupService:
     ] = {}
     _inflight_locks: Dict[tuple[str, str, str, str, bool], Flight] = {}
     _inflight_locks_lock = threading.Lock()
+    _osv_detail_cache: Dict[str, dict] = {}
+    _osv_detail_cache_lock = threading.Lock()
     _file_cache_write_counter = 0
     _file_cache_write_lock = threading.Lock()
     _active_config = threading.local()
@@ -180,6 +182,14 @@ class VulnLookupService:
     ) -> Dict[tuple[str, str], List[VulnHit]]:
         providers_str = ",".join(self._provider_order)
 
+        # 0. 重複排除
+        unique_dependencies = []
+        seen_deps = set()
+        for dep in dependencies:
+            if dep not in seen_deps:
+                seen_deps.add(dep)
+                unique_dependencies.append(dep)
+
         # 1. キャッシュチェック
         results: Dict[tuple[str, str], List[VulnHit]] = {}
         missing: List[tuple[str, str]] = []
@@ -195,7 +205,7 @@ class VulnLookupService:
         except Exception:
             pass
 
-        for name, version in dependencies:
+        for name, version in unique_dependencies:
             key = (
                 ecosystem.lower(),
                 name.lower(),
@@ -230,7 +240,10 @@ class VulnLookupService:
             missing.append((name, version))
 
         if not missing:
-            return results
+            final_results = {}
+            for dep in dependencies:
+                final_results[dep] = results.get(dep, [])
+            return final_results
 
         # 2. Single Flight ロックの取得と重複解決
         flights_to_release: List[
@@ -329,19 +342,22 @@ class VulnLookupService:
             osv_hits = temp_hits[dep].get("osv", [])
 
             if osv_hits and not self._enable_fallback:
-                continue
-
-            # モックされている場合、または OSV Batch で失敗していた場合は、osv も個別クエリ対象にする
-            if "osv" in providers and (is_mocked or "osv" in failed_deps[dep]):
-                needed_providers.append("osv")
-
-            for provider in providers:
-                if provider == "osv":
-                    continue
-                needed_providers.append(provider)
+                osv_idx = (
+                    providers.index("osv") if "osv" in providers else len(providers)
+                )
+                prior_providers = providers[:osv_idx]
+                for provider in prior_providers:
+                    needed_providers.append(provider)
+            else:
+                if "osv" in providers and (is_mocked or "osv" in failed_deps[dep]):
+                    needed_providers.append("osv")
+                for provider in providers:
+                    if provider == "osv":
+                        continue
+                    needed_providers.append(provider)
 
             if needed_providers:
-                tasks.append((dep, needed_providers))
+                tasks.append((dep, list(dict.fromkeys(needed_providers))))
 
         if tasks:
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -410,7 +426,24 @@ class VulnLookupService:
                     f"Skipped caching vulnerability query result for {dep_name}:{dep_version} due to provider failure."
                 )
 
-        return results
+        final_results = {}
+        for dep in dependencies:
+            final_results[dep] = results.get(dep, [])
+        return final_results
+
+    def _get_osv_vulnerability_detail(self, vuln_id: str) -> dict | None:
+        with self._osv_detail_cache_lock:
+            if vuln_id in self._osv_detail_cache:
+                return self._osv_detail_cache[vuln_id]
+
+        url = f"https://api.osv.dev/v1/vulns/{vuln_id}"
+        logger.debug(f"Fetching OSV detail for {vuln_id}")
+        data = self._request_json(url, method="GET")
+        if data and isinstance(data, dict):
+            with self._osv_detail_cache_lock:
+                self._osv_detail_cache[vuln_id] = data
+            return data
+        return None
 
     def _query_osv_batch(
         self, ecosystem: str, packages: List[tuple[str, str]]
@@ -481,13 +514,16 @@ class VulnLookupService:
                     had_invalid = True
                     continue
 
-                summary = v.get("summary")
+                detail = self._get_osv_vulnerability_detail(vuln_id)
+                v_source = detail if detail is not None else v
+
+                summary = v_source.get("summary")
                 if summary is not None and not isinstance(summary, str):
                     had_invalid = True
                     continue
 
                 refs = []
-                references_raw = v.get("references")
+                references_raw = v_source.get("references")
                 if references_raw is not None:
                     if not isinstance(references_raw, list):
                         had_invalid = True
@@ -507,7 +543,7 @@ class VulnLookupService:
                         continue
 
                 score = None
-                severity_raw = v.get("severity")
+                severity_raw = v_source.get("severity")
                 if severity_raw is not None:
                     if not isinstance(severity_raw, list):
                         had_invalid = True

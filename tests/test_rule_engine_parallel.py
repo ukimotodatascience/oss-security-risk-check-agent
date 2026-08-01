@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-import pytest
 from src.models import Severity, RiskRecord
 from src.rule_engine import run_all
 

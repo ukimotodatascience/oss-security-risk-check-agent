@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
 import time
 import pytest
 
-from src.rules.B_dependencies import vuln_sources as vuln_module
 from src.rules.B_dependencies.vuln_sources import VulnLookupService, VulnHit
 
 
@@ -83,4 +81,6 @@ def test_bulk_lookup_hits_and_misses(monkeypatch):
     assert len(res) == 2
     assert res[("pkg1", "1.0.0")][0].vuln_id == "CVE-CACHE"
     assert res[("pkg2", "2.0.0")][0].vuln_id == "CVE-NEW"
-    assert captured_packages == [("pkg2", "2.0.0")]  # キャッシュミスした pkg2 のみ問い合わせられる
+    assert captured_packages == [
+        ("pkg2", "2.0.0")
+    ]  # キャッシュミスした pkg2 のみ問い合わせられる
