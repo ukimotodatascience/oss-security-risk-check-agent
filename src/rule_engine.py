@@ -754,11 +754,15 @@ def run_all(
 
         thread_executor = concurrent.futures.ThreadPoolExecutor()
         try:
+            if progress_callback is not None and sorted_rules:
+                first_rule_id = getattr(
+                    sorted_rules[0], "rule_id", type(sorted_rules[0]).__name__
+                )
+                progress_callback(0, total, first_rule_id)
+
             futures = []
             for index, rule in enumerate(sorted_rules, start=1):
                 rule_id = getattr(rule, "rule_id", type(rule).__name__)
-                if progress_callback is not None:
-                    progress_callback(0, total, rule_id)
 
                 try:
                     rule_bytes = pickle.dumps(rule)

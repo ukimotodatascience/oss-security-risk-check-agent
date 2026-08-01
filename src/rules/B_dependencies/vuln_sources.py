@@ -277,156 +277,172 @@ class VulnLookupService:
                 actual_missing.append((name, version))
 
         if not actual_missing:
-            return results
+            final_results = {}
+            for dep in dependencies:
+                final_results[dep] = results.get((dep[0].lower(), dep[1]), [])
+            return final_results
 
-        # 3. キャッシュミス分の照会
-        providers = self._provider_order or ["osv"]
+        try:
+            # 3. キャッシュミス分の照会
+            providers = self._provider_order or ["osv"]
 
-        # 各依存関係ごとの一時結果バッファ
-        temp_hits: Dict[tuple[str, str], Dict[str, List[VulnHit]]] = {
-            dep: {} for dep in actual_missing
-        }
-        # 各依存関係ごとのクエリ失敗フラグ
-        failed_deps: Dict[tuple[str, str], set[str]] = {
-            dep: set() for dep in actual_missing
-        }
-        # schema invalid フラグ
-        had_invalid_deps: Dict[tuple[str, str], bool] = {
-            dep: False for dep in actual_missing
-        }
+            # 各依存関係ごとの一時結果バッファ
+            temp_hits: Dict[tuple[str, str], Dict[str, List[VulnHit]]] = {
+                dep: {} for dep in actual_missing
+            }
+            # 各依存関係ごとのクエリ失敗フラグ
+            failed_deps: Dict[tuple[str, str], set[str]] = {
+                dep: set() for dep in actual_missing
+            }
+            # schema invalid フラグ
+            had_invalid_deps: Dict[tuple[str, str], bool] = {
+                dep: False for dep in actual_missing
+            }
 
-        # OSV がプロバイダに含まれており、かつモックされていない場合
-        if "osv" in providers and not is_mocked:
-            # 1000件ずつバッチ分割
-            batch_size = 1000
-            for i in range(0, len(actual_missing), batch_size):
-                chunk = actual_missing[i : i + batch_size]
-                batch_res = self._query_osv_batch(ecosystem, chunk)
-                if batch_res is None:
-                    # 全て失敗扱い
-                    for dep in chunk:
-                        failed_deps[dep].add("osv")
-                else:
-                    for dep, hits in zip(chunk, batch_res):
-                        if hits is None:
+            # OSV がプロバイダに含まれており、かつモックされていない場合
+            if "osv" in providers and not is_mocked:
+                # 1000件ずつバッチ分割
+                batch_size = 1000
+                for i in range(0, len(actual_missing), batch_size):
+                    chunk = actual_missing[i : i + batch_size]
+                    batch_res = self._query_osv_batch(ecosystem, chunk)
+                    if batch_res is None:
+                        # 全て失敗扱い
+                        for dep in chunk:
                             failed_deps[dep].add("osv")
-                        else:
-                            temp_hits[dep]["osv"] = hits
+                    else:
+                        for dep, hits in zip(chunk, batch_res):
+                            if hits is None:
+                                failed_deps[dep].add("osv")
+                            else:
+                                temp_hits[dep]["osv"] = hits
 
-        # 残りのプロバイダ（github, nvd）や、OSV で結果が得られず fallback が必要な場合など
-        import concurrent.futures
+            # 残りのプロバイダ（github, nvd）や、OSV で結果が得られず fallback が必要な場合など
+            import concurrent.futures
 
-        def _query_single_dep_providers(
-            dep: tuple[str, str], remaining_providers: List[str]
-        ) -> tuple[tuple[str, str], Dict[str, List[VulnHit]], set[str], bool]:
-            dep_name, dep_version = dep
-            hits_dict = {}
-            failed = set()
-            local_had_invalid = False
+            def _query_single_dep_providers(
+                dep: tuple[str, str], remaining_providers: List[str]
+            ) -> tuple[tuple[str, str], Dict[str, List[VulnHit]], set[str], bool]:
+                dep_name, dep_version = dep
+                hits_dict = {}
+                failed = set()
+                local_had_invalid = False
 
-            for provider in remaining_providers:
-                self._local_state.had_invalid = False
-                hits = self._query_provider(provider, ecosystem, dep_name, dep_version)
-                if hits is None:
-                    failed.add(provider)
-                    continue
-                if getattr(self._local_state, "had_invalid", False):
-                    local_had_invalid = True
-                hits_dict[provider] = hits
-                if hits and not self._enable_fallback:
-                    break
-            return dep, hits_dict, failed, local_had_invalid
+                for provider in remaining_providers:
+                    self._local_state.had_invalid = False
+                    hits = self._query_provider(
+                        provider, ecosystem, dep_name, dep_version
+                    )
+                    if hits is None:
+                        failed.add(provider)
+                        continue
+                    if getattr(self._local_state, "had_invalid", False):
+                        local_had_invalid = True
+                    hits_dict[provider] = hits
+                    if hits and not self._enable_fallback:
+                        break
+                return dep, hits_dict, failed, local_had_invalid
 
-        tasks = []
-        for dep in actual_missing:
-            needed_providers = []
-            osv_hits = temp_hits[dep].get("osv", [])
+            tasks = []
+            for dep in actual_missing:
+                needed_providers = []
+                osv_hits = temp_hits[dep].get("osv", [])
 
-            if osv_hits and not self._enable_fallback:
-                osv_idx = (
-                    providers.index("osv") if "osv" in providers else len(providers)
-                )
-                prior_providers = providers[:osv_idx]
-                for provider in prior_providers:
-                    needed_providers.append(provider)
-            else:
-                if "osv" in providers and (is_mocked or "osv" in failed_deps[dep]):
-                    needed_providers.append("osv")
                 for provider in providers:
                     if provider == "osv":
+                        if not osv_hits and (is_mocked or "osv" in failed_deps[dep]):
+                            needed_providers.append(provider)
+                    else:
+                        if self._enable_fallback or not osv_hits:
+                            needed_providers.append(provider)
+                        else:
+                            osv_idx = (
+                                providers.index("osv")
+                                if "osv" in providers
+                                else len(providers)
+                            )
+                            prov_idx = providers.index(provider)
+                            if prov_idx < osv_idx:
+                                needed_providers.append(provider)
+
+                if needed_providers:
+                    tasks.append((dep, list(dict.fromkeys(needed_providers))))
+
+            if tasks:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    future_to_task = {
+                        executor.submit(_query_single_dep_providers, dep, needed): dep
+                        for dep, needed in tasks
+                    }
+                    for future in concurrent.futures.as_completed(future_to_task):
+                        dep = future_to_task[future]
+                        try:
+                            _, hits_dict, failed, local_had_invalid = future.result()
+                            for p, hits in hits_dict.items():
+                                temp_hits[dep][p] = hits
+                                failed_deps[dep].discard(p)
+                            failed_deps[dep].update(failed)
+                            if local_had_invalid:
+                                had_invalid_deps[dep] = True
+                        except Exception as e:
+                            logger.error(f"Error querying providers for {dep}: {e}")
+                            for _, needed in tasks:
+                                if _ == dep:
+                                    failed_deps[dep].update(needed)
+                                    break
+
+            # 結果を結合してキャッシュに格納、および Single Flight ロックの解放
+            for dep, key, flight in flights_to_release:
+                dep_name, dep_version = dep
+                all_hits: List[VulnHit] = []
+                seen_ids = set()
+
+                has_failure = False
+                for provider in providers:
+                    if provider in failed_deps[dep]:
+                        has_failure = True
                         continue
-                    needed_providers.append(provider)
+                    hits = temp_hits[dep].get(provider)
+                    if hits is None:
+                        continue
+                    for hit in hits:
+                        if hit.vuln_id in seen_ids:
+                            continue
+                        seen_ids.add(hit.vuln_id)
+                        all_hits.append(hit)
 
-            if needed_providers:
-                tasks.append((dep, list(dict.fromkeys(needed_providers))))
+                    if hits and not self._enable_fallback:
+                        break
 
-        if tasks:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_to_task = {
-                    executor.submit(_query_single_dep_providers, dep, needed): dep
-                    for dep, needed in tasks
-                }
-                for future in concurrent.futures.as_completed(future_to_task):
-                    dep = future_to_task[future]
-                    try:
-                        _, hits_dict, failed, local_had_invalid = future.result()
-                        for p, hits in hits_dict.items():
-                            temp_hits[dep][p] = hits
-                            failed_deps[dep].discard(p)
-                        failed_deps[dep].update(failed)
-                        if local_had_invalid:
-                            had_invalid_deps[dep] = True
-                    except Exception as e:
-                        logger.error(f"Error querying providers for {dep}: {e}")
-                        for _, needed in tasks:
-                            if _ == dep:
-                                failed_deps[dep].update(needed)
-                                break
-
-        # 結果を結合してキャッシュに格納、および Single Flight ロックの解放
-        for dep, key, flight in flights_to_release:
-            dep_name, dep_version = dep
-            all_hits: List[VulnHit] = []
-            seen_ids = set()
-
-            has_failure = False
-            for provider in providers:
-                if provider in failed_deps[dep]:
+                if had_invalid_deps[dep]:
                     has_failure = True
-                    continue
-                hits = temp_hits[dep].get(provider)
-                if hits is None:
-                    continue
-                for hit in hits:
-                    if hit.vuln_id in seen_ids:
-                        continue
-                    seen_ids.add(hit.vuln_id)
-                    all_hits.append(hit)
 
-                if hits and not self._enable_fallback:
-                    break
+                results[(dep_name.lower(), dep_version)] = all_hits
 
-            if had_invalid_deps[dep]:
-                has_failure = True
+                # Flight ロックを解放し結果を反映
+                flight.result = all_hits
+                flight.has_result = True
+                flight.lock.release()
+                self._decrement_flight(key)
 
-            results[(dep_name.lower(), dep_version)] = all_hits
-
-            # Flight ロックを解放し結果を反映
-            flight.result = all_hits
-            flight.has_result = True
-            flight.lock.release()
-            self._decrement_flight(key)
-
-            # キャッシュ登録
-            if not has_failure:
-                self._process_cache[key] = (time.time(), all_hits)
-                self._enforce_process_cache_limit()
-                if self._cache_ttl > 0:
-                    self._write_file_cache(key, all_hits)
-            else:
-                logger.info(
-                    f"Skipped caching vulnerability query result for {dep_name}:{dep_version} due to provider failure."
-                )
+                # キャッシュ登録
+                if not has_failure:
+                    self._process_cache[key] = (time.time(), all_hits)
+                    self._enforce_process_cache_limit()
+                    if self._cache_ttl > 0:
+                        self._write_file_cache(key, all_hits)
+                else:
+                    logger.info(
+                        f"Skipped caching vulnerability query result for {dep_name}:{dep_version} due to provider failure."
+                    )
+        except BaseException as e:
+            for dep, key, flight in flights_to_release:
+                try:
+                    flight.lock.release()
+                except RuntimeError:
+                    pass
+                self._decrement_flight(key)
+            raise e
 
         final_results = {}
         for dep in dependencies:
