@@ -241,9 +241,17 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     )
                 )
                 continue
-            if getattr(node, "type", "") == "command_substitution" or re.search(
-                "\\$\\([^)]*\\$[^)]*\\)", text
-            ):
+            is_cmd_sub = getattr(node, "type", "") == "command_substitution"
+            if is_cmd_sub or re.search("\\$\\([^)]*\\$[^)]*\\)", text):
+                is_backtick = False
+                if is_cmd_sub:
+                    if text.startswith("`") or text.endswith("`"):
+                        is_backtick = True
+                msg = (
+                    "External input reaches backtick command substitution"
+                    if is_backtick
+                    else "External input reaches $() command substitution"
+                )
                 records.append(
                     RiskRecord(
                         rule_id=self.rule_id,
@@ -252,7 +260,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         severity=Severity.HIGH,
                         file_path=rel_path,
                         line=line,
-                        message="External input reaches $() command substitution",
+                        message=msg,
                     )
                 )
         for r in records:

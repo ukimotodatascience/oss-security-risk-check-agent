@@ -86,7 +86,7 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         if "file execution" in msg_lower:
             return "file_execution"
         if "command execution helper" in msg_lower:
-            return "helper"
+            return "command_execution"
         if "command execution" in msg_lower:
             return "command_execution"
         if "eval" in msg_lower:
