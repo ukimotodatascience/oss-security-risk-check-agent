@@ -55,14 +55,6 @@ def tree_sitter_language_candidates(suffix: str) -> List[str]:
 
 
 def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
-    _SEVERITY_ORDER = {
-        Severity.CRITICAL: 5,
-        Severity.HIGH: 4,
-        Severity.MEDIUM: 3,
-        Severity.LOW: 2,
-        Severity.INFO: 1,
-    }
-
     # 1. 同一解析元内での完全重複レコードの排除
     raw_records = []
     seen_raw = set()
@@ -107,51 +99,19 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
             return "command_name"
         return msg_lower
 
-    merged = {}
-    counts_ts = {}
-    counts_regex = {}
-    for record in raw_records:
-        sink_type = get_sink_type_key(record.message or "")
-        counter_key = (record.file_path, record.line, sink_type)
-        is_ts = getattr(record, "_from_ts", False)
-        if is_ts:
-            idx = counts_ts.get(counter_key, 0)
-            counts_ts[counter_key] = idx + 1
-        else:
-            idx = counts_regex.get(counter_key, 0)
-            counts_regex[counter_key] = idx + 1
+    ts_records = [r for r in raw_records if getattr(r, "_from_ts", False)]
+    regex_records = [r for r in raw_records if not getattr(r, "_from_ts", False)]
 
-        key = (record.file_path, record.line, record.rule_id, sink_type, idx)
-        if key not in merged:
-            merged[key] = record
-        else:
-            existing = merged[key]
-            p_existing = _SEVERITY_ORDER.get(existing.severity, 0)
-            p_new = _SEVERITY_ORDER.get(record.severity, 0)
-            if p_new > p_existing:
-                merged[key] = record
-            elif p_new == p_existing:
-                if len(record.message or "") > len(existing.message or ""):
-                    merged[key] = record
-
-    unique: List[RiskRecord] = []
-    seen = set()
-    counts_ts_u = {}
-    counts_regex_u = {}
-    for r in raw_records:
+    ts_keys = set()
+    for r in ts_records:
         sink_type = get_sink_type_key(r.message or "")
-        counter_key = (r.file_path, r.line, sink_type)
-        is_ts = getattr(r, "_from_ts", False)
-        if is_ts:
-            idx = counts_ts_u.get(counter_key, 0)
-            counts_ts_u[counter_key] = idx + 1
-        else:
-            idx = counts_regex_u.get(counter_key, 0)
-            counts_regex_u[counter_key] = idx + 1
+        ts_keys.add((r.file_path, r.line, r.rule_id, sink_type))
 
-        key = (r.file_path, r.line, r.rule_id, sink_type, idx)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(merged[key])
-    return unique
+    filtered_regex = []
+    for r in regex_records:
+        sink_type = get_sink_type_key(r.message or "")
+        key = (r.file_path, r.line, r.rule_id, sink_type)
+        if key not in ts_keys:
+            filtered_regex.append(r)
+
+    return ts_records + filtered_regex
