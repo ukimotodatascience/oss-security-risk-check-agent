@@ -138,8 +138,9 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
             if _SEVERITY_ORDER.get(max_regex_rec.severity, 0) > _SEVERITY_ORDER.get(
                 max_ts_rec.severity, 0
             ):
-                max_ts_rec.severity = max_regex_rec.severity
-                max_ts_rec.message = max_regex_rec.message
+                for ts_rec in ts_list:
+                    ts_rec.severity = max_regex_rec.severity
+                    ts_rec.message = max_regex_rec.message
             unique.extend(ts_list)
         elif ts_list:
             unique.extend(ts_list)
