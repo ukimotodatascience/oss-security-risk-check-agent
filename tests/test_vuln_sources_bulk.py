@@ -296,6 +296,10 @@ def test_parse_cvss_vector():
     assert (
         parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:ND") is None
     )
+    # CVSS v2.0 の ND (Not Defined) は有効であること
+    assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:ND") == 7.5
+    # v2 では v3 用の X (Not Defined) は無効として拒否されること
+    assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:X") is None
     # 許容される Temporal / Environmental メトリクスを含むが正規なベクトル
     assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H") == 9.8
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:H") == 7.5

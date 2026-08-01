@@ -184,14 +184,14 @@ def parse_cvss_vector(vector_str: str) -> float | None:
                 "C": {"N", "P", "C"},
                 "I": {"N", "P", "C"},
                 "A": {"N", "P", "C"},
-                "E": {"X", "U", "POC", "F", "H", "ND"},
-                "RL": {"X", "OF", "TF", "W", "U", "ND"},
-                "RC": {"X", "UC", "UR", "C", "ND"},
-                "CDP": {"X", "N", "L", "LM", "MH", "H", "ND"},
-                "TD": {"X", "N", "L", "M", "H", "ND"},
-                "CR": {"X", "L", "M", "H", "ND"},
-                "IR": {"X", "L", "M", "H", "ND"},
-                "AR": {"X", "L", "M", "H", "ND"},
+                "E": {"ND", "U", "POC", "F", "H"},
+                "RL": {"ND", "OF", "TF", "W", "U"},
+                "RC": {"ND", "UC", "UR", "C"},
+                "CDP": {"ND", "N", "L", "LM", "MH", "H"},
+                "TD": {"ND", "N", "L", "M", "H"},
+                "CR": {"ND", "L", "M", "H"},
+                "IR": {"ND", "L", "M", "H"},
+                "AR": {"ND", "L", "M", "H"},
             }
             for k, val in metrics.items():
                 if k not in v2_allowed or val not in v2_allowed[k]:
