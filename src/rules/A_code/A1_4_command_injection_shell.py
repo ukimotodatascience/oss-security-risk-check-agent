@@ -250,6 +250,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             self._track_shell_case_allowlist_from_text(text, tainted_names)
             if not self._shell_expands_external_input(text, tainted_names):
                 continue
+            byte_offset = getattr(node, "start_byte", 0)
             if re.search("\\beval\\b", text):
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -261,7 +262,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message="External input reaches shell eval",
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
                 continue
             if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", text):
@@ -275,7 +278,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message="External input reaches shell -c execution",
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
                 continue
             is_cmd_sub = getattr(node, "type", "") == "command_substitution"
@@ -299,7 +304,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     message=msg,
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
         for r in records:
             r._from_ts = True

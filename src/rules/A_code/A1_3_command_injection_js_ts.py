@@ -119,6 +119,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 is_known_sink = callee_tail in self._CHILD_PROCESS_NAMES
             if not is_known_sink:
                 continue
+            byte_offset = (
+                getattr(sink_node, "start_byte", 0)
+                if sink_node
+                else getattr(node, "start_byte", 0)
+            )
             if callee_tail in {"exec", "execSync"}:
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -130,7 +135,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     message="External input reaches child_process command execution",
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
                 continue
             if callee_tail in {"execFile", "execFileSync", "fork"}:
@@ -144,7 +151,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     message="External input reaches child_process file execution",
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
@@ -161,7 +170,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else "External input reaches child_process spawn",
                 )
                 rec._column = col
-                rec._char_offset = line_col_to_offset(src, line, col)
+                rec._char_offset = len(
+                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
+                )
                 records.append(rec)
         for r in records:
             r._from_ts = True
