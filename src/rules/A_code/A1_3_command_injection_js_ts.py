@@ -113,10 +113,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee_tail = callee.split(".")[-1]
             is_known_sink = (
-                callee in child_process_sinks
-                or callee_tail in child_process_sinks
-                or callee_tail in self._CHILD_PROCESS_NAMES
+                callee in child_process_sinks or callee_tail in child_process_sinks
             )
+            if not is_known_sink:
+                if callee_tail in self._CHILD_PROCESS_NAMES:
+                    if not child_process_sinks:
+                        is_known_sink = True
+                    else:
+                        if "." in callee:
+                            obj_name = callee.split(".")[0]
+                            if obj_name in {"child_process", "cp"}:
+                                is_known_sink = True
             if not is_known_sink:
                 continue
             byte_offset = (
