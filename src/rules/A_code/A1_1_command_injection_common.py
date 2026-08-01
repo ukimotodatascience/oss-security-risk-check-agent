@@ -122,10 +122,17 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         g_key = (r.file_path, r.line, r.rule_id, sink_type)
         regex_groups.setdefault(g_key, []).append(r)
 
-    all_keys = set(ts_groups.keys()) | set(regex_groups.keys())
+    all_keys_ordered = []
+    seen_keys = set()
+    for r in raw_records:
+        sink_type = get_sink_type_key(r.message or "")
+        g_key = (r.file_path, r.line, r.rule_id, sink_type)
+        if g_key not in seen_keys:
+            seen_keys.add(g_key)
+            all_keys_ordered.append(g_key)
 
     unique: List[RiskRecord] = []
-    for g_key in all_keys:
+    for g_key in all_keys_ordered:
         ts_list = ts_groups.get(g_key, [])
         regex_list = regex_groups.get(g_key, [])
 
