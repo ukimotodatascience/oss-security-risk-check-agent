@@ -39,7 +39,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             file_path, target, src
         )
         if tree_sitter_records is not None:
-            records.extend(tree_sitter_records)
+            return dedupe_records(tree_sitter_records)
         tainted_names: Set[str] = set()
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
