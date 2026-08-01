@@ -753,6 +753,7 @@ def run_all(
 
         thread_executor = concurrent.futures.ThreadPoolExecutor()
         futures = []
+        future_to_rule_id = {}
         try:
             if progress_callback is not None and sorted_rules:
                 first_rule_id = getattr(
@@ -765,17 +766,17 @@ def run_all(
 
                 try:
                     rule_bytes = pickle.dumps(rule)
-                    futures.append(
-                        thread_executor.submit(
-                            _evaluate_rule_thread,
-                            rule_id,
-                            rule_bytes,
-                            target,
-                            cache_dir,
-                            cache_ttl,
-                            timeout_sec,
-                        )
+                    f = thread_executor.submit(
+                        _evaluate_rule_thread,
+                        rule_id,
+                        rule_bytes,
+                        target,
+                        cache_dir,
+                        cache_ttl,
+                        timeout_sec,
                     )
+                    futures.append(f)
+                    future_to_rule_id[f] = rule_id
                 except Exception as e:
                     tb = "".join(
                         traceback.format_exception(type(e), e, e.__traceback__)
@@ -786,8 +787,9 @@ def run_all(
 
             records_by_rule: dict[str, List[RiskRecord]] = {}
             for future in concurrent.futures.as_completed(futures):
+                rule_id = future_to_rule_id.get(future, "unknown")
                 try:
-                    rule_id, found_records, error_tb, count, thread_logs = (
+                    rule_id_from_res, found_records, error_tb, count, thread_logs = (
                         future.result()
                     )
                     # ログメッセージをメインスレッド側で実際に出力
@@ -796,16 +798,20 @@ def run_all(
 
                     executed_count += count
                     if found_records:
-                        records_by_rule[rule_id] = found_records
+                        records_by_rule[rule_id_from_res] = found_records
                     if error_tb:
-                        errors.append((rule_id, error_tb))
-                    _run_callback(rule_id)
+                        errors.append((rule_id_from_res, error_tb))
+                    _run_callback(rule_id_from_res)
                 except Exception as e:
                     tb = "".join(
                         traceback.format_exception(type(e), e, e.__traceback__)
                     )
-                    logger.exception("スレッド実行中に未予期のエラーが発生しました。")
-                    errors.append(("unknown", tb))
+                    logger.exception(
+                        f"ルール {rule_id} のスレッド実行中に未予期のエラーが発生しました。"
+                    )
+                    errors.append((rule_id, tb))
+                    executed_count += 1
+                    _run_callback(rule_id)
 
             # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合
             for rule in sorted_rules:

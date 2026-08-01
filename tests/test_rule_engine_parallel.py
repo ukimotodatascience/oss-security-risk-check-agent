@@ -63,3 +63,43 @@ def test_run_all_parallel_and_individual_timeout(monkeypatch, tmp_path):
     assert "TimeoutError" in errors[0][1]
 
     assert executed_count == 2
+
+
+class CrashThreadRule:
+    rule_id = "M-CRASH"
+    category = "mock"
+    title = "Crash Thread Rule"
+    severity = Severity.LOW
+
+    def evaluate(self, target: Path) -> list[RiskRecord]:
+        return []
+
+
+def test_run_all_thread_crash_reports_rule_id(monkeypatch, tmp_path):
+    # スレッド起動中のエラーを模擬するため、_evaluate_rule_thread の呼び出し時に例外を投げるようにモックする
+    from src import rule_engine
+
+    def fake_evaluate_rule_thread(*args, **kwargs):
+        raise RuntimeError("Simulated thread bootstrap crash")
+
+    monkeypatch.setattr(rule_engine, "_evaluate_rule_thread", fake_evaluate_rule_thread)
+
+    rules = [CrashThreadRule()]
+    callback_calls = []
+
+    def progress_callback(index, total, rule_id):
+        callback_calls.append((index, total, rule_id))
+
+    records, errors, executed_count = run_all(
+        tmp_path, rules, progress_callback=progress_callback
+    )
+
+    # 1. 失敗したエラーレコードの rule_id が "M-CRASH" になっていること（"unknown" ではない）
+    assert len(errors) == 1
+    assert errors[0][0] == "M-CRASH"
+    assert "Simulated thread bootstrap crash" in errors[0][1]
+
+    # 2. 進捗コールバック（完了通知）が正しく呼ばれていること
+    # 完了通知 (1, 1, "M-CRASH")
+    assert (1, 1, "M-CRASH") in callback_calls
+    assert executed_count == 1
