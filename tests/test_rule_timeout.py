@@ -541,9 +541,21 @@ def test_run_all_cancellation_worker_cleanup(tmp_path):
         pass
 
     # 中断によって _global_executor がリセット（None）されているはず
-    from src.rule_engine import _global_executor as final_executor
+    from src.rule_engine import (
+        _global_executor as final_executor,
+        _interrupted_event,
+        _get_global_executor,
+    )
+    import pytest
 
     assert final_executor is None
+    assert _interrupted_event.is_set()
+
+    with pytest.raises(RuntimeError, match="Scan interrupted"):
+        _get_global_executor()
+
+    # 後続テストのためにフラグをクリアしておく
+    _interrupted_event.clear()
 
 
 class BadPickleRule:

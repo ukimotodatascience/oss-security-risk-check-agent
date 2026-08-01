@@ -177,7 +177,15 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
                     "id": "OSV-2024-1",
                     "summary": "OSV summary",
                     "references": [{"url": "https://osv.dev/vuln/OSV-2024-1"}],
-                    "severity": [{"score": "CVSS:3.1/AV:N/AC:L/9.1"}],
+                    "severity": [
+                        {"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
+                    ],
+                },
+                {
+                    "id": "OSV-2024-2",
+                    "summary": "OSV summary v2",
+                    "references": [{"url": "https://osv.dev/vuln/OSV-2024-2"}],
+                    "severity": [{"score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
                 },
                 {"id": "OSV-NOSCORE", "severity": [{"score": "bad"}]},
             ]
@@ -193,8 +201,9 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
         "package": {"name": "demo", "ecosystem": "PyPI"},
         "version": "1.2.3",
     }
-    assert [hit.vuln_id for hit in hits] == ["OSV-2024-1", "OSV-NOSCORE"]
+    assert [hit.vuln_id for hit in hits] == ["OSV-2024-1", "OSV-2024-2", "OSV-NOSCORE"]
     assert hits[0].severity_score == 9.1
+    assert hits[1].severity_score == 7.5
     assert hits[0].references == ["https://osv.dev/vuln/OSV-2024-1"]
 
 
@@ -862,7 +871,7 @@ def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
     assert hits is not None
     assert len(hits) == 1
     assert hits[0].vuln_id == "OSV-2024-VEC"
-    assert hits[0].severity_score is None
+    assert hits[0].severity_score == 9.8
     assert getattr(service._local_state, "had_invalid", False) is False
 
 
