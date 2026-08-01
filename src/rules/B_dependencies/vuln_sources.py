@@ -191,7 +191,7 @@ def parse_cvss_vector(vector_str: str) -> float | None:
             if impact == 0.0:
                 f_impact = 0.0
             else:
-                f_impact = 1.17
+                f_impact = 1.176
 
             raw_score = ((0.6 * impact) + (0.4 * expl) - 1.5) * f_impact
             if raw_score <= 0:

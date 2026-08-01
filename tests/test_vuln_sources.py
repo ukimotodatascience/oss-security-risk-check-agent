@@ -203,7 +203,7 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
     }
     assert [hit.vuln_id for hit in hits] == ["OSV-2024-1", "OSV-2024-2", "OSV-NOSCORE"]
     assert hits[0].severity_score == 9.1
-    assert hits[1].severity_score == 7.4
+    assert hits[1].severity_score == 7.5
     assert hits[0].references == ["https://osv.dev/vuln/OSV-2024-1"]
 
 

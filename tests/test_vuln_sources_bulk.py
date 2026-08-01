@@ -65,7 +65,7 @@ def test_query_osv_batch_success(monkeypatch):
     assert res[0][0].vuln_id == "GHSA-1"
     assert res[0][0].severity_score == 9.8
     assert res[1][0].vuln_id == "GHSA-2"
-    assert res[1][0].severity_score == 7.4
+    assert res[1][0].severity_score == 7.5
     assert captured_payload["payload"] == {
         "queries": [
             {"package": {"name": "pkg1", "ecosystem": "PyPI"}, "version": "1.0.0"},
@@ -237,12 +237,15 @@ def test_parse_cvss_vector():
     assert score_v30 == 6.9
 
     # 3. CVSS v2.0 ベクトルの計算・四捨五入検証
-    # 例1: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.4
+    # 例1: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.5
     score_v2 = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P")
-    assert score_v2 == 7.4
+    assert score_v2 == 7.5
     # 例2 (四捨五入の検証): AV:N/AC:L/Au:M/C:N/I:P/A:P -> Base Score 4.7 (切り上げだと 4.8 になるもの)
     score_v2_round = parse_cvss_vector("AV:N/AC:L/Au:M/C:N/I:P/A:P")
     assert score_v2_round == 4.7
+    # 例3 (1.176 係数の検証): AV:N/AC:L/Au:N/C:P/I:P/A:C -> Base Score 9.0 (1.17 係数だと 8.9 になるもの)
+    score_v2_coef = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:C")
+    assert score_v2_coef == 9.0
 
     # 4. CVSS v4.0 ベクトル（現在未対応）の場合は None
     score_v4 = parse_cvss_vector(
