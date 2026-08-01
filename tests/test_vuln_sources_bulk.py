@@ -195,3 +195,31 @@ def test_osv_detail_cache_ttl(tmp_path, monkeypatch):
         d3 = service._get_osv_vulnerability_detail("GHSA-DETAIL-TTL")
         assert d3.get("summary") == "OSV-TTL-COUNT-2"
         assert call_count == 2
+
+
+def test_parse_cvss_vector():
+    from src.rules.B_dependencies.vuln_sources import parse_cvss_vector
+
+    # 1. CVSS v3.1 / 3.0 ベクトルの計算検証
+    # 例1: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H -> Base Score 10.0
+    score_log4shell = parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H")
+    assert score_log4shell == 10.0
+
+    # 例2: Scope Unchanged
+    # CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H -> Base Score 9.8
+    score_9_8 = parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+    assert score_9_8 == 9.8
+
+    # 例3: Scope Unchanged, Medium
+    # CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:N/A:L -> Base Score 5.0
+    score_5_0 = parse_cvss_vector("CVSS:3.1/AV:L/AC:H/PR:L/UI:R/S:U/C:H/I:N/A:L")
+    assert score_5_0 == 5.0
+
+    # 2. CVSS v2.0 ベクトルの計算検証
+    # 例: AV:N/AC:L/Au:N/C:P/I:P/A:P -> Base Score 7.5
+    score_v2 = parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P")
+    assert score_v2 == 7.5
+
+    # 3. 不正な入力や無効なベクトルの場合は None
+    assert parse_cvss_vector("") is None
+    assert parse_cvss_vector("INVALID_VECTOR") is None

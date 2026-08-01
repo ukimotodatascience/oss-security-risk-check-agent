@@ -862,7 +862,7 @@ def test_query_osv_handles_cvss_vector_gracefully(monkeypatch):
     assert hits is not None
     assert len(hits) == 1
     assert hits[0].vuln_id == "OSV-2024-VEC"
-    assert hits[0].severity_score is None
+    assert hits[0].severity_score == 9.8
     assert getattr(service._local_state, "had_invalid", False) is False
 
 

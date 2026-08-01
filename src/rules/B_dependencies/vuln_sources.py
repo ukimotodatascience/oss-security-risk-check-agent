@@ -13,7 +13,146 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import math
+
 logger = logging.getLogger(__name__)
+
+
+def parse_cvss_vector(vector_str: str) -> float | None:
+    try:
+        vector_str = vector_str.strip()
+        if not vector_str:
+            return None
+
+        # 非標準・モック用のフォールバック: 末尾がコロンを含まない純粋な数値の場合、
+        # 以前の簡易パーシング（最後の "/" 以降を float 変換）で救出する。
+        try:
+            last_part = vector_str.rsplit("/", 1)[-1]
+            if ":" not in last_part:
+                return float(last_part)
+        except ValueError:
+            pass
+
+        # 最低限の形式チェック (コロンもスラッシュも含まないものは無効)
+        if ":" not in vector_str and "/" not in vector_str:
+            return None
+
+        # ベクトルをキー・値の辞書に分解
+        parts = vector_str.split("/")
+        metrics = {}
+        for p in parts:
+            if ":" in p:
+                k, v = p.split(":", 1)
+                metrics[k.strip().upper()] = v.strip().upper()
+
+        # 有効な CVSS メトリクスキーが1つも含まれていない場合は無効と判定
+        valid_keys = {"AV", "AC", "PR", "UI", "S", "C", "I", "A", "AU", "CVSS"}
+        if not any(k in metrics for k in valid_keys):
+            return None
+
+        # CVSS v3 バージョン判定
+        is_v3 = False
+        if "CVSS" in metrics:
+            version = metrics["CVSS"]
+            if version.startswith("3.") or version.startswith("4."):
+                is_v3 = True
+        elif "S" in metrics or "UI" in metrics or "PR" in metrics:
+            is_v3 = True
+
+        if is_v3:
+            # CVSS v3.x ベーススコア計算
+            av = metrics.get("AV", "N")
+            ac = metrics.get("AC", "L")
+            pr = metrics.get("PR", "N")
+            ui = metrics.get("UI", "N")
+            s = metrics.get("S", "U")
+            c = metrics.get("C", "N")
+            i = metrics.get("I", "N")
+            a = metrics.get("A", "N")
+
+            av_map = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
+            ac_map = {"L": 0.77, "H": 0.44}
+            ui_map = {"N": 0.85, "R": 0.62}
+
+            if s == "U":
+                pr_map = {"N": 0.85, "L": 0.62, "H": 0.27}
+            else:
+                pr_map = {"N": 0.85, "L": 0.68, "H": 0.50}
+
+            impact_map = {"H": 0.56, "L": 0.22, "N": 0.0}
+
+            av_val = av_map.get(av, 0.85)
+            ac_val = ac_map.get(ac, 0.77)
+            pr_val = pr_map.get(pr, 0.85)
+            ui_val = ui_map.get(ui, 0.85)
+            c_val = impact_map.get(c, 0.0)
+            i_val = impact_map.get(i, 0.0)
+            a_val = impact_map.get(a, 0.0)
+
+            iss = 1.0 - (1.0 - c_val) * (1.0 - i_val) * (1.0 - a_val)
+
+            if s == "U":
+                impact = 6.42 * iss
+            else:
+                impact = 7.52 * (iss - 0.029) - 3.25 * math.pow(
+                    max(0.0, iss - 0.02), 15
+                )
+
+            expl = 8.22 * av_val * ac_val * pr_val * ui_val
+
+            if impact <= 0:
+                return 0.0
+
+            if s == "U":
+                raw_score = min(impact + expl, 10.0)
+            else:
+                raw_score = min(1.08 * (impact + expl), 10.0)
+
+            # 小数点第2位以下切り上げ (小数点第1位に切り上げ)
+            # 浮動小数点の誤差を排除するため、100000倍した整数値で丸め判定する
+            int_val = round(raw_score * 100000)
+            ceil_score = math.ceil(int_val / 10000.0) / 10.0
+            return min(ceil_score, 10.0)
+
+        else:
+            # CVSS v2.0 ベーススコア計算
+            av = metrics.get("AV", "N")
+            ac = metrics.get("AC", "L")
+            au = metrics.get("AU", "N")
+            c = metrics.get("C", "N")
+            i = metrics.get("I", "N")
+            a = metrics.get("A", "N")
+
+            av_map = {"N": 1.0, "A": 0.646, "L": 0.395}
+            ac_map = {"L": 0.71, "M": 0.61, "H": 0.35}
+            au_map = {"N": 0.704, "S": 0.56, "M": 0.45}
+            impact_map = {"N": 0.0, "P": 0.275, "C": 0.660}
+
+            av_val = av_map.get(av, 1.0)
+            ac_val = ac_map.get(ac, 0.71)
+            au_val = au_map.get(au, 0.704)
+            c_val = impact_map.get(c, 0.0)
+            i_val = impact_map.get(i, 0.0)
+            a_val = impact_map.get(a, 0.0)
+
+            iss = 1.0 - (1.0 - c_val) * (1.0 - i_val) * (1.0 - a_val)
+            impact = 10.41 * iss
+            expl = 20.0 * av_val * ac_val * au_val
+
+            if impact == 0.0:
+                f_impact = 0.0
+            else:
+                f_impact = 1.17
+
+            raw_score = ((0.6 * impact) + (0.4 * expl) - 1.5) * f_impact
+            if raw_score <= 0:
+                return 0.0
+            int_val = round(raw_score * 100000)
+            ceil_score = math.ceil(int_val / 10000.0) / 10.0
+            return min(ceil_score, 10.0)
+
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -581,12 +720,17 @@ class VulnLookupService:
                             sev_err = True
                             break
                         raw = sev.get("score")
-                        if isinstance(raw, str) and "CVSS:" in raw:
-                            try:
-                                score = float(raw.rsplit("/", 1)[-1])
-                                break
-                            except ValueError:
-                                pass
+                        if isinstance(raw, str):
+                            if "CVSS:" in raw:
+                                score = parse_cvss_vector(raw)
+                                if score is not None:
+                                    break
+                            else:
+                                try:
+                                    score = float(raw)
+                                    break
+                                except ValueError:
+                                    pass
                     if sev_err:
                         had_invalid = True
                         continue
@@ -867,12 +1011,17 @@ class VulnLookupService:
                         sev_err = True
                         break
                     raw = sev.get("score")
-                    if isinstance(raw, str) and "CVSS:" in raw:
-                        try:
-                            score = float(raw.rsplit("/", 1)[-1])
-                            break
-                        except ValueError:
-                            pass
+                    if isinstance(raw, str):
+                        if "CVSS:" in raw:
+                            score = parse_cvss_vector(raw)
+                            if score is not None:
+                                break
+                        else:
+                            try:
+                                score = float(raw)
+                                break
+                            except ValueError:
+                                pass
                 if sev_err:
                     self._local_state.had_invalid = True
                     continue
