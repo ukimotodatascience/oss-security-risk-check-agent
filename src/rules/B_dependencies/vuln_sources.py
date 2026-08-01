@@ -178,6 +178,7 @@ def parse_cvss_vector(vector_str: str) -> float | None:
 
         else:
             v2_allowed = {
+                "CVSS": {"2.0"},
                 "AV": {"N", "A", "L"},
                 "AC": {"L", "M", "H"},
                 "AU": {"N", "S", "M"},
@@ -336,6 +337,7 @@ class VulnLookupService:
 
     MAX_PROCESS_CACHE_SIZE = 2000
     MAX_FILE_CACHE_SIZE = 5000
+    MAX_OSV_DETAIL_CACHE_SIZE = 2000
 
     def _decrement_flight(self, key: tuple[str, str, str, str, bool]) -> None:
         with self._inflight_locks_lock:
@@ -358,6 +360,20 @@ class VulnLookupService:
         while len(self._process_cache) > self.MAX_PROCESS_CACHE_SIZE:
             first_key = next(iter(self._process_cache))
             self._process_cache.pop(first_key, None)
+
+    def _enforce_osv_detail_cache_limit(self) -> None:
+        now = time.time()
+        expired_keys = []
+        for k, (ts, _) in list(self._osv_detail_cache.items()):
+            if self._cache_ttl > 0 and now - ts > self._cache_ttl:
+                expired_keys.append(k)
+
+        for k in expired_keys:
+            self._osv_detail_cache.pop(k, None)
+
+        while len(self._osv_detail_cache) > self.MAX_OSV_DETAIL_CACHE_SIZE:
+            first_key = next(iter(self._osv_detail_cache))
+            self._osv_detail_cache.pop(first_key, None)
 
     def _enforce_file_cache_limit(self, force: bool = False) -> None:
         try:
@@ -706,6 +722,7 @@ class VulnLookupService:
             if self._cache_ttl > 0:
                 with self._osv_detail_cache_lock:
                     self._osv_detail_cache[vuln_id] = (time.time(), data)
+                    self._enforce_osv_detail_cache_limit()
             return data
         return None
 

@@ -300,6 +300,8 @@ def test_parse_cvss_vector():
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:ND") == 7.5
     # v2 では v3 用の X (Not Defined) は無効として拒否されること
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:X") is None
+    # CVSS:2.0 プレフィックスを明示的に含む v2.0 ベクトルが正しくパースできること
+    assert parse_cvss_vector("CVSS:2.0/AV:N/AC:L/Au:N/C:P/I:P/A:P") == 7.5
     # 許容される Temporal / Environmental メトリクスを含むが正規なベクトル
     assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H") == 9.8
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:H") == 7.5
@@ -335,3 +337,33 @@ def test_osv_detail_cache_bypass_when_ttl_zero(monkeypatch):
     assert detail2["summary"] == "Summary 2"
     assert query_count == 2
     assert "GHSA-TEST-1" not in service._osv_detail_cache
+
+
+def test_osv_detail_cache_size_limit(monkeypatch):
+    service = VulnLookupService()
+    # キャッシュを有効化
+    service._default_cache_ttl = 3600
+    # 上限数を 3 に一時的に書き換え
+    monkeypatch.setattr(service, "MAX_OSV_DETAIL_CACHE_SIZE", 3)
+
+    # テスト前にキャッシュをクリア
+    service._osv_detail_cache.clear()
+
+    # 異なる ID で 3 つの詳細データを登録する
+    service._osv_detail_cache["GHSA-1"] = (time.time() - 10, {"id": "GHSA-1"})
+    service._osv_detail_cache["GHSA-2"] = (time.time() - 5, {"id": "GHSA-2"})
+    service._osv_detail_cache["GHSA-3"] = (time.time(), {"id": "GHSA-3"})
+
+    # 4件目を追加するために登録APIモックを設定して呼び出す
+    def fake_request(url, method="GET", headers=None, payload=None):
+        return {"id": "GHSA-4"}
+
+    monkeypatch.setattr(service, "_request_json", fake_request)
+
+    service._get_osv_vulnerability_detail("GHSA-4")
+
+    # キャッシュの最大件数が 3 件に制限されていること
+    assert len(service._osv_detail_cache) == 3
+    # 最も古い "GHSA-1" が LRU 削除されていて存在しないこと
+    assert "GHSA-1" not in service._osv_detail_cache
+    assert "GHSA-4" in service._osv_detail_cache
