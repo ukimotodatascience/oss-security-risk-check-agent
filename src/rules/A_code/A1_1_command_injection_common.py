@@ -62,9 +62,35 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         Severity.LOW: 2,
         Severity.INFO: 1,
     }
+
+    def get_sink_type_key(message: str) -> str:
+        msg_lower = message.lower()
+        if "spawn" in msg_lower:
+            return "spawn"
+        if "file execution" in msg_lower:
+            return "file_execution"
+        if "command execution helper" in msg_lower:
+            return "helper"
+        if "command execution" in msg_lower:
+            return "command_execution"
+        if "eval" in msg_lower:
+            return "eval"
+        if "-c execution" in msg_lower:
+            return "dash_c"
+        if "command substitution" in msg_lower:
+            return "substitution"
+        if "source execution" in msg_lower:
+            return "source"
+        if "here-string" in msg_lower:
+            return "here_string"
+        if "command name execution" in msg_lower:
+            return "command_name"
+        return msg_lower
+
     merged = {}
     for record in records:
-        key = (record.file_path, record.line, record.rule_id)
+        sink_type = get_sink_type_key(record.message or "")
+        key = (record.file_path, record.line, record.rule_id, sink_type)
         if key not in merged:
             merged[key] = record
         else:
@@ -80,7 +106,8 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
     unique: List[RiskRecord] = []
     seen = set()
     for r in records:
-        key = (r.file_path, r.line, r.rule_id)
+        sink_type = get_sink_type_key(r.message or "")
+        key = (r.file_path, r.line, r.rule_id, sink_type)
         if key in seen:
             continue
         seen.add(key)
