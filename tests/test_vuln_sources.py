@@ -177,7 +177,9 @@ def test_query_osv_maps_vulnerability_fields(monkeypatch):
                     "id": "OSV-2024-1",
                     "summary": "OSV summary",
                     "references": [{"url": "https://osv.dev/vuln/OSV-2024-1"}],
-                    "severity": [{"score": "CVSS:3.1/AV:N/AC:L/9.1"}],
+                    "severity": [
+                        {"score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
+                    ],
                 },
                 {"id": "OSV-NOSCORE", "severity": [{"score": "bad"}]},
             ]

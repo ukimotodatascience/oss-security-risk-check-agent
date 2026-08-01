@@ -24,17 +24,19 @@ def parse_cvss_vector(vector_str: str) -> float | None:
         if not vector_str:
             return None
 
-        # 非標準・モック用のフォールバック: 末尾がコロンを含まない純粋な数値の場合、
-        # 以前の簡易パーシング（最後の "/" 以降を float 変換）で救出する。
-        try:
-            last_part = vector_str.rsplit("/", 1)[-1]
-            if ":" not in last_part:
-                return float(last_part)
-        except ValueError:
-            pass
+        # 単なる数値文字列 (例: "9.8" や "7.5" など、スラッシュを含まないもの) の場合は
+        # 直接 float 変換して返し、余計な検証をスキップする。
+        if "/" not in vector_str:
+            try:
+                val = float(vector_str)
+                if 0.0 <= val <= 10.0:
+                    return val
+            except ValueError:
+                pass
+            return None
 
-        # 最低限の形式チェック (コロンもスラッシュも含まないものは無効)
-        if ":" not in vector_str and "/" not in vector_str:
+        # スラッシュを含む場合は CVSS ベクトルとみなす
+        if ":" not in vector_str:
             return None
 
         # ベクトルをキー・値の辞書に分解
@@ -429,39 +431,40 @@ class VulnLookupService:
         ] = []
         actual_missing: List[tuple[str, str]] = []
 
-        # デッドロック防止のため、決定論的にソートした順序でロックを取得する
-        sorted_missing = sorted(missing, key=lambda x: (x[0].lower(), x[1]))
-        for name, version in sorted_missing:
-            key = (
-                ecosystem.lower(),
-                name.lower(),
-                version,
-                providers_str,
-                self._enable_fallback,
-            )
-            with self._inflight_locks_lock:
-                if key not in self._inflight_locks:
-                    self._inflight_locks[key] = Flight()
-                else:
-                    self._inflight_locks[key].ref_count += 1
-                flight = self._inflight_locks[key]
-
-            flight.lock.acquire()
-            if flight.has_result:
-                results[(name.lower(), version)] = flight.result
-                flight.lock.release()
-                self._decrement_flight(key)
-            else:
-                flights_to_release.append(((name, version), key, flight))
-                actual_missing.append((name, version))
-
-        if not actual_missing:
-            final_results = {}
-            for dep in dependencies:
-                final_results[dep] = results.get((dep[0].lower(), dep[1]), [])
-            return final_results
-
         try:
+            # デッドロック防止のため、決定論的にソートした順序でロックを取得する
+            sorted_missing = sorted(missing, key=lambda x: (x[0].lower(), x[1]))
+            for name, version in sorted_missing:
+                key = (
+                    ecosystem.lower(),
+                    name.lower(),
+                    version,
+                    providers_str,
+                    self._enable_fallback,
+                )
+                with self._inflight_locks_lock:
+                    if key not in self._inflight_locks:
+                        self._inflight_locks[key] = Flight()
+                    else:
+                        self._inflight_locks[key].ref_count += 1
+                    flight = self._inflight_locks[key]
+
+                flight.lock.acquire()
+                flights_to_release.append(((name, version), key, flight))
+
+                if flight.has_result:
+                    results[(name.lower(), version)] = flight.result
+                    flights_to_release.pop()
+                    flight.lock.release()
+                    self._decrement_flight(key)
+                else:
+                    actual_missing.append((name, version))
+
+            if not actual_missing:
+                final_results = {}
+                for dep in dependencies:
+                    final_results[dep] = results.get((dep[0].lower(), dep[1]), [])
+                return final_results
             # 3. キャッシュミス分の照会
             providers = self._provider_order or ["osv"]
 
