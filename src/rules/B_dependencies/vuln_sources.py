@@ -45,7 +45,10 @@ def parse_cvss_vector(vector_str: str) -> float | None:
         for p in parts:
             if ":" in p:
                 k, v = p.split(":", 1)
-                metrics[k.strip().upper()] = v.strip().upper()
+                key_upper = k.strip().upper()
+                if key_upper in metrics:
+                    return None
+                metrics[key_upper] = v.strip().upper()
 
         # 有効な CVSS メトリクスキーが1つも含まれていない場合は無効と判定
         valid_keys = {"AV", "AC", "PR", "UI", "S", "C", "I", "A", "AU", "CVSS"}

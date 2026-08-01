@@ -263,6 +263,11 @@ def test_parse_cvss_vector():
     assert parse_cvss_vector("CVSS:3.1/C:H/I:H/A:H") is None
     assert parse_cvss_vector("CVSS:3.1/garbage/7.5") is None
     assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/9.8") is None
+    # 重複キーを持つ不正ベクトル
+    assert (
+        parse_cvss_vector("CVSS:3.1/AV:P/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
+    )
+    assert parse_cvss_vector("AV:N/AV:A/AC:L/Au:N/C:P/I:P/A:P") is None
     # 必須キー欠如の v2.0
     assert parse_cvss_vector("C:P/I:P/A:P") is None
     assert parse_cvss_vector("AV:N/AC:L/7.5") is None
