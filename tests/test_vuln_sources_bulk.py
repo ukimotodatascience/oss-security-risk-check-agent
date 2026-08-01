@@ -287,6 +287,15 @@ def test_parse_cvss_vector():
         is None
     )
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:GARBAGE") is None
+    # CVSS v3.x の E:P (Proof-of-Concept) は有効であること
+    assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:P") == 9.8
+    # v3 では v2 用の POC や ND は無効として拒否されること
+    assert (
+        parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:POC") is None
+    )
+    assert (
+        parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:ND") is None
+    )
     # 許容される Temporal / Environmental メトリクスを含むが正規なベクトル
     assert parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H") == 9.8
     assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/E:H") == 7.5
