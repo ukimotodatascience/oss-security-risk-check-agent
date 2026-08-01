@@ -43,12 +43,16 @@ def parse_cvss_vector(vector_str: str) -> float | None:
         parts = vector_str.split("/")
         metrics = {}
         for p in parts:
-            if ":" in p:
-                k, v = p.split(":", 1)
-                key_upper = k.strip().upper()
-                if key_upper in metrics:
-                    return None
-                metrics[key_upper] = v.strip().upper()
+            p_strip = p.strip()
+            if not p_strip:
+                return None
+            if ":" not in p_strip:
+                return None
+            k, v = p_strip.split(":", 1)
+            key_upper = k.strip().upper()
+            if key_upper in metrics:
+                return None
+            metrics[key_upper] = v.strip().upper()
 
         # 有効な CVSS メトリクスキーが1つも含まれていない場合は無効と判定
         valid_keys = {"AV", "AC", "PR", "UI", "S", "C", "I", "A", "AU", "CVSS"}
@@ -713,6 +717,42 @@ class VulnLookupService:
         if len(results_raw) != len(packages):
             return None
 
+        # 1. すべてのユニークな vuln_id を収集
+        all_vuln_ids = set()
+        for res in results_raw:
+            if isinstance(res, dict):
+                vulns = res.get("vulns")
+                if isinstance(vulns, list):
+                    for v in vulns:
+                        if isinstance(v, dict):
+                            vuln_id = v.get("id")
+                            if isinstance(vuln_id, str):
+                                all_vuln_ids.add(vuln_id)
+
+        # 2. ThreadPoolExecutor を使用して並行して詳細情報を取得
+        vuln_id_to_detail = {}
+        if all_vuln_ids:
+            import concurrent.futures
+
+            max_workers = min(len(all_vuln_ids), 10)
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers
+            ) as executor:
+                future_to_id = {
+                    executor.submit(self._get_osv_vulnerability_detail, vid): vid
+                    for vid in all_vuln_ids
+                }
+                for future in concurrent.futures.as_completed(future_to_id):
+                    vid = future_to_id[future]
+                    try:
+                        detail = future.result()
+                        vuln_id_to_detail[vid] = detail
+                    except Exception:
+                        logger.exception(
+                            f"Failed to fetch detail for vuln_id {vid} in parallel."
+                        )
+                        vuln_id_to_detail[vid] = None
+
         batch_hits: List[List[VulnHit] | None] = []
 
         for res in results_raw:
@@ -745,7 +785,7 @@ class VulnLookupService:
                     had_invalid = True
                     continue
 
-                detail = self._get_osv_vulnerability_detail(vuln_id)
+                detail = vuln_id_to_detail.get(vuln_id)
                 if detail is None:
                     had_invalid = True
                     break

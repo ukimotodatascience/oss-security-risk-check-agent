@@ -103,3 +103,22 @@ def test_run_all_thread_crash_reports_rule_id(monkeypatch, tmp_path):
     # 完了通知 (1, 1, "M-CRASH")
     assert (1, 1, "M-CRASH") in callback_calls
     assert executed_count == 1
+
+
+def test_run_all_callback_exception_handling(tmp_path):
+    # progress_callback が例外を送出しても、ルール全体が失敗と判定されず、
+    # 正常に結果が返されることを検証する。
+    rules = [FastRule()]
+
+    def bad_callback(index, total, rule_id):
+        raise ValueError("Bad callback exception")
+
+    records, errors, executed_count = run_all(
+        tmp_path, rules, progress_callback=bad_callback
+    )
+
+    # コールバックの例外によってルール自体がエラーとしてマークされないこと
+    assert len(errors) == 0
+    assert len(records) == 1
+    assert records[0].rule_id == "M-1"
+    assert executed_count == 1

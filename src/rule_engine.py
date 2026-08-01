@@ -760,7 +760,12 @@ def run_all(
                 return
             with callback_lock:
                 completed_count += 1
-                progress_callback(completed_count, total, rule_id)
+                try:
+                    progress_callback(completed_count, total, rule_id)
+                except Exception:
+                    logger.exception(
+                        f"進捗コールバックの実行中に例外が発生しました (rule_id: {rule_id})。"
+                    )
 
         thread_executor = concurrent.futures.ThreadPoolExecutor()
         futures = []
@@ -771,7 +776,12 @@ def run_all(
                 first_rule_id = getattr(
                     sorted_rules[0], "rule_id", type(sorted_rules[0]).__name__
                 )
-                progress_callback(0, total, first_rule_id)
+                try:
+                    progress_callback(0, total, first_rule_id)
+                except Exception:
+                    logger.exception(
+                        f"初期進捗コールバックの実行中に例外が発生しました (rule_id: {first_rule_id})。"
+                    )
 
             for index, rule in enumerate(sorted_rules, start=1):
                 rule_id = getattr(rule, "rule_id", type(rule).__name__)

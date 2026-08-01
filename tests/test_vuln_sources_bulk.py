@@ -259,6 +259,13 @@ def test_parse_cvss_vector():
     # 未対応の CVSS バージョン (3.2 や 5.0 など)
     assert parse_cvss_vector("CVSS:3.2/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
     assert parse_cvss_vector("CVSS:5.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
+    # コロン欠損・無効なセグメントを持つ不正ベクトル
+    assert (
+        parse_cvss_vector("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/garbage")
+        is None
+    )
+    assert parse_cvss_vector("AV:N/AC:L/Au:N/C:P/I:P/A:P/dummy") is None
+    assert parse_cvss_vector("CVSS:3.1/AV:N//AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H") is None
     # 必須キー欠如の v3.x
     assert parse_cvss_vector("CVSS:3.1/C:H/I:H/A:H") is None
     assert parse_cvss_vector("CVSS:3.1/garbage/7.5") is None
