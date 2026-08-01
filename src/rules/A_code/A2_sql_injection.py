@@ -136,12 +136,11 @@ class A2SqlInjectionRule:
         tainted: Set[str] = set()
         unsafe_sql_vars: Set[str] = set()
 
+        assign_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)]
         changed = True
         while changed:
             changed = False
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Assign):
-                    continue
+            for node in assign_nodes:
                 if self._is_external_expr(node.value, tainted, aliases):
                     for t in node.targets:
                         for name in self._iter_assigned_names(t):

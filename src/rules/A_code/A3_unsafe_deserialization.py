@@ -103,10 +103,15 @@ class A3UnsafeDeserializationRule:
 
     def _collect_tainted(self, tree: ast.AST, aliases: Dict[str, str]) -> Set[str]:
         tainted: Set[str] = set()
+        assign_nodes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+        ]
         changed = True
         while changed:
             changed = False
-            for node in ast.walk(tree):
+            for node in assign_nodes:
                 if isinstance(node, ast.Assign):
                     if self._is_external_expr(node.value, tainted, aliases):
                         for t in node.targets:
