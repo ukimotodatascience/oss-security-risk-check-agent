@@ -81,6 +81,8 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
             r.line,
             r.message or "",
             r.severity,
+            getattr(r, "_char_offset", None),
+            getattr(r, "_column", None),
             getattr(r, "_from_ts", False),
         )
         if key in seen_raw:

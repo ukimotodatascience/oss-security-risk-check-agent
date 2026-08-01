@@ -266,6 +266,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             # 2. サードパーティ
             third_party_matches = self._find_all_known_third_party_shell_sinks(stripped)
             for m, name in third_party_matches:
+                if name == "exec" and "exec" in child_process_sinks:
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,

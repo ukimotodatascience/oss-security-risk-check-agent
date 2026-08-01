@@ -284,11 +284,10 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 records.append(rec)
                 continue
             is_cmd_sub = getattr(node, "type", "") == "command_substitution"
-            if is_cmd_sub or re.search("\\$\\([^)]*\\$[^)]*\\)", text):
+            if is_cmd_sub:
                 is_backtick = False
-                if is_cmd_sub:
-                    if text.startswith("`") or text.endswith("`"):
-                        is_backtick = True
+                if text.startswith("`") or text.endswith("`"):
+                    is_backtick = True
                 msg = (
                     "External input reaches backtick command substitution"
                     if is_backtick
