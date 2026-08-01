@@ -632,15 +632,14 @@ def _evaluate_rule_thread(
                 current_timeout = 300.0
 
         # 2. ルール評価の実行
-        future = executor.submit(
-            _evaluate_rule_in_process,
-            rule_bytes,
-            target,
-            cache_dir,
-            cache_ttl,
-        )
-
         try:
+            future = executor.submit(
+                _evaluate_rule_in_process,
+                rule_bytes,
+                target,
+                cache_dir,
+                cache_ttl,
+            )
             success, found, tb = future.result(timeout=current_timeout)
             if success:
                 if found:
@@ -658,11 +657,11 @@ def _evaluate_rule_thread(
             thread_logs.append((logging.ERROR, msg))
             error_tb = f"TimeoutError: Rule execution timed out after {current_timeout} seconds."
             need_discard = True
-        except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError):
+        except (concurrent.futures.process.BrokenProcessPool, BrokenPipeError) as e:
             thread_logs.append(
                 (
                     logging.ERROR,
-                    f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。",
+                    f"ルール {rule_id} の実行プロセスがクラッシュ（BrokenProcessPool）しました。 {e}",
                 )
             )
             error_tb = "BrokenProcessPool: Subprocess terminated unexpectedly."

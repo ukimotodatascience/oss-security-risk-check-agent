@@ -252,7 +252,9 @@ class VulnLookupService:
         ] = []
         actual_missing: List[tuple[str, str]] = []
 
-        for name, version in missing:
+        # デッドロック防止のため、決定論的にソートした順序でロックを取得する
+        sorted_missing = sorted(missing, key=lambda x: (x[0].lower(), x[1]))
+        for name, version in sorted_missing:
             key = (
                 ecosystem.lower(),
                 name.lower(),
