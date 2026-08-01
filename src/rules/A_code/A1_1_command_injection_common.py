@@ -92,9 +92,14 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
         return msg_lower
 
     merged = {}
+    counts = {}
     for record in records:
         sink_type = get_sink_type_key(record.message or "")
-        key = (record.file_path, record.line, record.rule_id, sink_type)
+        counter_key = (record.file_path, record.line, sink_type)
+        idx = counts.get(counter_key, 0)
+        counts[counter_key] = idx + 1
+
+        key = (record.file_path, record.line, record.rule_id, sink_type, idx)
         if key not in merged:
             merged[key] = record
         else:
@@ -109,9 +114,14 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
 
     unique: List[RiskRecord] = []
     seen = set()
+    counts_for_unique = {}
     for r in records:
         sink_type = get_sink_type_key(r.message or "")
-        key = (r.file_path, r.line, r.rule_id, sink_type)
+        counter_key = (r.file_path, r.line, sink_type)
+        idx = counts_for_unique.get(counter_key, 0)
+        counts_for_unique[counter_key] = idx + 1
+
+        key = (r.file_path, r.line, r.rule_id, sink_type, idx)
         if key in seen:
             continue
         seen.add(key)
