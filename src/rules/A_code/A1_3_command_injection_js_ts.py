@@ -210,9 +210,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         curr_raw_offset = 0
         stmt_start_offset = 0
         for i, line in enumerate(lines, start=1):
-            stripped = line.strip()
+            comment_removed = self._remove_line_comments(line)
+            stripped = comment_removed.strip()
             raw_line = raw_lines[i - 1] if 1 <= i <= len(raw_lines) else ""
-            if not stripped or stripped.startswith("//"):
+            if not stripped:
                 curr_raw_offset += len(raw_line)
                 if buffer:
                     raw_buffer = f"{raw_buffer}{raw_line}"
@@ -593,6 +594,47 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return text[start_paren_idx:]
 
     @staticmethod
+    def _remove_line_comments(line: str) -> str:
+        in_string = None
+        in_block_comment = False
+        escaped = False
+        idx = 0
+        while idx < len(line):
+            char = line[idx]
+            if in_block_comment:
+                if char == "*" and idx + 1 < len(line) and line[idx + 1] == "/":
+                    in_block_comment = False
+                    idx += 2
+                else:
+                    idx += 1
+                continue
+            if escaped:
+                escaped = False
+                idx += 1
+                continue
+            if in_string:
+                if char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+                idx += 1
+                continue
+            if char == "/" and idx + 1 < len(line):
+                next_char = line[idx + 1]
+                if next_char == "*":
+                    in_block_comment = True
+                    idx += 2
+                    continue
+                elif next_char == "/":
+                    return line[:idx]
+            if char in {"'", '"', "`"}:
+                in_string = char
+                idx += 1
+                continue
+            idx += 1
+        return line
+
+    @staticmethod
     def _build_index_map(raw_stmt: str) -> List[int]:
         raw_lines = []
         curr = ""
@@ -609,8 +651,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         has_prev = False
 
         for line in raw_lines:
-            stripped_line = line.strip()
-            if not stripped_line or stripped_line.startswith("//"):
+            comment_removed = JsTsCommandInjectionDetector._remove_line_comments(line)
+            stripped_line = comment_removed.strip()
+            if not stripped_line:
                 raw_offset += len(line)
                 continue
 
