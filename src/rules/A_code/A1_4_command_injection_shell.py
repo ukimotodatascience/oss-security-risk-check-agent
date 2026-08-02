@@ -374,6 +374,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 in_string = char
                 continue
             if char in {";", "|", "&"}:
+                if char == "&":
+                    if idx > 0 and text[idx - 1] in {">", "<"}:
+                        continue
                 return text[start_idx:idx]
         return text[start_idx:]
 
@@ -398,6 +401,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 in_string = char
                 continue
             if char in {";", "|", "&"}:
+                if char == "&":
+                    if idx > 0 and text[idx - 1] in {">", "<"}:
+                        continue
                 last_delim_idx = idx
         return text[last_delim_idx + 1 : match_start]
 

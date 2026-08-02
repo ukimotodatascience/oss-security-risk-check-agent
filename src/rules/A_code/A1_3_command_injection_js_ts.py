@@ -530,6 +530,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_block_comment = False
         in_line_comment = False
         in_regex = False
+        in_regex_class = False
         escaped = False
         last_char = None
 
@@ -572,8 +573,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if in_regex:
                 if char == "\\":
                     escaped = True
-                elif char == "/":
-                    in_regex = False
+                elif in_regex_class:
+                    if char == "]":
+                        in_regex_class = False
+                else:
+                    if char == "[":
+                        in_regex_class = True
+                    elif char == "/":
+                        in_regex = False
                 if not char.isspace():
                     last_char = char
                 idx += 1
@@ -642,6 +649,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_string = None
         in_block_comment = False
         in_regex = False
+        in_regex_class = False
         escaped = False
         last_char = None
         idx = 0
@@ -670,8 +678,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if in_regex:
                 if char == "\\":
                     escaped = True
-                elif char == "/":
-                    in_regex = False
+                elif in_regex_class:
+                    if char == "]":
+                        in_regex_class = False
+                else:
+                    if char == "[":
+                        in_regex_class = True
+                    elif char == "/":
+                        in_regex = False
                 if not char.isspace():
                     last_char = char
                 idx += 1

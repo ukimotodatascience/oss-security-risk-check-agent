@@ -178,6 +178,14 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "app.js",
+            """
+            const { spawn } = require("child_process");
+            const target = req.query.target;
+            spawn("cat", [target.replace(/[/)]/g, "")], { shell: true });
+            """,
+        ),
+        (
             "run.sh",
             """
             #!/bin/sh
@@ -212,6 +220,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """
             #!/bin/sh
             bash <<< "$1"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            eval 2>&1 "$1"
             """,
         ),
     ],
