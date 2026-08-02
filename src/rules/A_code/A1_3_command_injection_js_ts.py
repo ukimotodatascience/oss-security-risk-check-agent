@@ -18,6 +18,15 @@ from src.rules.A_code.A1_3_1_command_injection_js_ts_sources import JsTsSourceMi
 from src.rules.A_code.A1_3_2_command_injection_js_ts_sinks import JsTsSinkMixin
 
 
+class CommentRemovalState:
+    def __init__(self) -> None:
+        self.in_string: Optional[str] = None
+        self.in_block_comment: bool = False
+        self.in_regex: bool = False
+        self.in_regex_class: bool = False
+        self.escaped: bool = False
+
+
 class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     rule_id = RULE_ID
     category = CATEGORY
@@ -209,8 +218,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         start_line = 1
         curr_raw_offset = 0
         stmt_start_offset = 0
+        state = CommentRemovalState()
         for i, line in enumerate(lines, start=1):
-            comment_removed = self._remove_line_comments(line)
+            comment_removed = self._remove_line_comments(line, state)
             stripped = comment_removed.strip()
             raw_line = raw_lines[i - 1] if 1 <= i <= len(raw_lines) else ""
             if not stripped:
@@ -664,70 +674,68 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return text[start_paren_idx:]
 
     @staticmethod
-    def _remove_line_comments(line: str) -> str:
-        in_string = None
-        in_block_comment = False
-        in_regex = False
-        in_regex_class = False
-        escaped = False
+    def _remove_line_comments(line: str, state: CommentRemovalState) -> str:
         idx = 0
+        result = []
         while idx < len(line):
             char = line[idx]
-            if in_block_comment:
+            if state.in_block_comment:
                 if char == "*" and idx + 1 < len(line) and line[idx + 1] == "/":
-                    in_block_comment = False
+                    state.in_block_comment = False
                     idx += 2
                 else:
                     idx += 1
                 continue
-            if escaped:
-                escaped = False
+            if state.escaped:
+                state.escaped = False
                 idx += 1
                 continue
-            if in_string:
+            if state.in_string:
                 if char == "\\":
-                    escaped = True
-                elif char == in_string:
-                    in_string = None
+                    state.escaped = True
+                elif char == state.in_string:
+                    state.in_string = None
+                result.append(char)
                 idx += 1
                 continue
-            if in_regex:
+            if state.in_regex:
                 if char == "\\":
-                    escaped = True
-                elif in_regex_class:
+                    state.escaped = True
+                elif state.in_regex_class:
                     if char == "]":
-                        in_regex_class = False
+                        state.in_regex_class = False
                 else:
                     if char == "[":
-                        in_regex_class = True
+                        state.in_regex_class = True
                     elif char == "/":
-                        in_regex = False
+                        state.in_regex = False
+                result.append(char)
                 idx += 1
                 continue
             if char == "/" and idx + 1 < len(line):
                 next_char = line[idx + 1]
                 if next_char == "*":
-                    in_block_comment = True
+                    state.in_block_comment = True
                     idx += 2
                     continue
                 elif next_char == "/":
-                    return line[:idx]
+                    break
                 else:
                     # 正規表現リテラルの開始判定
                     prev_token = ""
-                    p_idx = idx - 1
-                    while p_idx >= 0 and line[p_idx].isspace():
+                    p_idx = len(result) - 1
+                    while p_idx >= 0 and result[p_idx].isspace():
                         p_idx -= 1
                     if p_idx >= 0:
-                        if line[p_idx].isalnum() or line[p_idx] in {"_", "$"}:
+                        if result[p_idx].isalnum() or result[p_idx] in {"_", "$"}:
                             end_p = p_idx
                             while p_idx >= 0 and (
-                                line[p_idx].isalnum() or line[p_idx] in {"_", "$"}
+                                result[p_idx].isalnum() or result[p_idx] in {"_", "$"}
                             ):
                                 p_idx -= 1
-                            prev_token = line[p_idx + 1 : end_p + 1]
+                            prev_token = "".join(result[p_idx + 1 : end_p + 1])
                         else:
-                            prev_token = line[p_idx]
+                            prev_token = result[p_idx]
 
                     regex_start_chars = {
                         "(",
@@ -762,15 +770,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         or prev_token in regex_start_chars
                         or prev_token in regex_start_keywords
                     ):
-                        in_regex = True
+                        state.in_regex = True
+                        result.append(char)
                         idx += 1
                         continue
             if char in {"'", '"', "`"}:
-                in_string = char
+                state.in_string = char
+                result.append(char)
                 idx += 1
                 continue
+            result.append(char)
             idx += 1
-        return line
+        return "".join(result)
 
     @staticmethod
     def _build_index_map(raw_stmt: str) -> List[int]:
@@ -788,8 +799,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         raw_offset = 0
         has_prev = False
 
+        state = CommentRemovalState()
         for line in raw_lines:
-            comment_removed = JsTsCommandInjectionDetector._remove_line_comments(line)
+            comment_removed = JsTsCommandInjectionDetector._remove_line_comments(
+                line, state
+            )
             stripped_line = comment_removed.strip()
             if not stripped_line:
                 raw_offset += len(line)
