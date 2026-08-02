@@ -63,6 +63,20 @@ class JsTsSinkMixin:
                     else:
                         sinks.add(name)
 
+        ns_import_match = re.search(
+            r"import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s*from\s*['\"](?:node:)?child_process['\"]",
+            text,
+        )
+        if ns_import_match:
+            ns_name = ns_import_match.group(1)
+            if is_dict:
+                sinks[ns_name] = "child_process"
+                for name in self._CHILD_PROCESS_NAMES:
+                    sinks[f"{ns_name}.{name}"] = name
+            else:
+                sinks.add(ns_name)
+                sinks.update(f"{ns_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
         module_match = re.search(
             r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
             text,
