@@ -163,7 +163,8 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 6. xargs/find -c
             for m in re.finditer(
-                "\\b(?:xargs|find)\\b.*\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped
+                "\\b(?:xargs|find)\\b[^;&|\\n]*\\b(?:sh|bash|zsh|ksh)\\s+-c\\b",
+                stripped,
             ):
                 call_text = self._get_shell_statement_context(stripped, m.start())
                 if not self._shell_expands_external_input(call_text, tainted_names):

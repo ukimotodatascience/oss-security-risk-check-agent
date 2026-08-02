@@ -558,7 +558,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
         for line in raw_lines:
             stripped_line = line.strip()
-            if not stripped_line:
+            if not stripped_line or stripped_line.startswith("//"):
                 raw_offset += len(line)
                 continue
 
