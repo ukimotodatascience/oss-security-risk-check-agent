@@ -529,7 +529,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_string = None
         in_block_comment = False
         in_line_comment = False
+        in_regex = False
         escaped = False
+        last_char = None
 
         idx = start_paren_idx
         while idx < len(text):
@@ -551,7 +553,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     idx += 1
                 continue
 
-            # 3. エスケープ処理（文字列の中のみでエスケープを考慮）
+            # 3. エスケープ処理（文字列と正規表現リテラルの中のみでエスケープを考慮）
             if escaped:
                 escaped = False
                 idx += 1
@@ -562,10 +564,22 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     escaped = True
                 elif char == in_string:
                     in_string = None
+                if not char.isspace():
+                    last_char = char
                 idx += 1
                 continue
 
-            # 4. 文字列またはコメントの開始判定
+            if in_regex:
+                if char == "\\":
+                    escaped = True
+                elif char == "/":
+                    in_regex = False
+                if not char.isspace():
+                    last_char = char
+                idx += 1
+                continue
+
+            # 4. 文字列、コメント、正規表現リテラルの開始判定
             if char == "/" and idx + 1 < len(text):
                 next_char = text[idx + 1]
                 if next_char == "*":
@@ -576,9 +590,36 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     in_line_comment = True
                     idx += 2
                     continue
+                else:
+                    # 正規表現リテラルの開始判定
+                    regex_start_chars = {
+                        "(",
+                        "[",
+                        ",",
+                        "=",
+                        ":",
+                        "?",
+                        "!",
+                        "&",
+                        "|",
+                        "+",
+                        "-",
+                        "*",
+                        "~",
+                        ";",
+                        "}",
+                    }
+                    if last_char is None or last_char in regex_start_chars:
+                        in_regex = True
+                        if not char.isspace():
+                            last_char = char
+                        idx += 1
+                        continue
 
             if char in {"'", '"', "`"}:
                 in_string = char
+                if not char.isspace():
+                    last_char = char
                 idx += 1
                 continue
 
@@ -589,6 +630,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 paren_count -= 1
                 if paren_count == 0:
                     return text[start_paren_idx : idx + 1]
+
+            if not char.isspace():
+                last_char = char
             idx += 1
 
         return text[start_paren_idx:]
@@ -597,7 +641,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _remove_line_comments(line: str) -> str:
         in_string = None
         in_block_comment = False
+        in_regex = False
         escaped = False
+        last_char = None
         idx = 0
         while idx < len(line):
             char = line[idx]
@@ -617,6 +663,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     escaped = True
                 elif char == in_string:
                     in_string = None
+                if not char.isspace():
+                    last_char = char
+                idx += 1
+                continue
+            if in_regex:
+                if char == "\\":
+                    escaped = True
+                elif char == "/":
+                    in_regex = False
+                if not char.isspace():
+                    last_char = char
                 idx += 1
                 continue
             if char == "/" and idx + 1 < len(line):
@@ -627,10 +684,39 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
                 elif next_char == "/":
                     return line[:idx]
+                else:
+                    # 正規表現リテラルの開始判定
+                    regex_start_chars = {
+                        "(",
+                        "[",
+                        ",",
+                        "=",
+                        ":",
+                        "?",
+                        "!",
+                        "&",
+                        "|",
+                        "+",
+                        "-",
+                        "*",
+                        "~",
+                        ";",
+                        "}",
+                    }
+                    if last_char is None or last_char in regex_start_chars:
+                        in_regex = True
+                        if not char.isspace():
+                            last_char = char
+                        idx += 1
+                        continue
             if char in {"'", '"', "`"}:
                 in_string = char
+                if not char.isspace():
+                    last_char = char
                 idx += 1
                 continue
+            if not char.isspace():
+                last_char = char
             idx += 1
         return line
 
