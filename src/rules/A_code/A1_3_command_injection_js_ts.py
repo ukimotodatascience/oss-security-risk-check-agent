@@ -526,28 +526,70 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _get_argument_list_text(text: str, start_paren_idx: int) -> str:
         paren_count = 0
         in_string = None
+        in_block_comment = False
+        in_line_comment = False
         escaped = False
-        for idx in range(start_paren_idx, len(text)):
+
+        idx = start_paren_idx
+        while idx < len(text):
             char = text[idx]
+
+            # 1. 1行コメント中の処理
+            if in_line_comment:
+                if char == "\n":
+                    in_line_comment = False
+                idx += 1
+                continue
+
+            # 2. ブロックコメント中の処理
+            if in_block_comment:
+                if char == "*" and idx + 1 < len(text) and text[idx + 1] == "/":
+                    in_block_comment = False
+                    idx += 2
+                else:
+                    idx += 1
+                continue
+
+            # 3. エスケープ処理（文字列の中のみでエスケープを考慮）
             if escaped:
                 escaped = False
+                idx += 1
                 continue
-            if char == "\\":
-                escaped = True
-                continue
+
             if in_string:
-                if char == in_string:
+                if char == "\\":
+                    escaped = True
+                elif char == in_string:
                     in_string = None
+                idx += 1
                 continue
+
+            # 4. 文字列またはコメントの開始判定
+            if char == "/" and idx + 1 < len(text):
+                next_char = text[idx + 1]
+                if next_char == "*":
+                    in_block_comment = True
+                    idx += 2
+                    continue
+                elif next_char == "/":
+                    in_line_comment = True
+                    idx += 2
+                    continue
+
             if char in {"'", '"', "`"}:
                 in_string = char
+                idx += 1
                 continue
+
+            # 5. 括弧のカウント
             if char == "(":
                 paren_count += 1
             elif char == ")":
                 paren_count -= 1
                 if paren_count == 0:
                     return text[start_paren_idx : idx + 1]
+            idx += 1
+
         return text[start_paren_idx:]
 
     @staticmethod

@@ -178,7 +178,10 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     line=i,
                     message="External input reaches xargs/find shell -c execution",
                 )
-                col = stmt_start_idx + m.start()
+                matched_str = m.group(0)
+                sh_match = re.search(r"\b(?:sh|bash|zsh|ksh)\s+-c\b", matched_str)
+                rel_offset = sh_match.start() if sh_match else 0
+                col = stmt_start_idx + m.start() + rel_offset
                 rec._column = col
                 rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
