@@ -261,6 +261,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(file_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    if prefix_match:
+                        obj_name = prefix_match.group(1)
+                        is_valid = False
+                        if child_process_sinks:
+                            is_valid = (obj_name in child_process_sinks) or (
+                                child_process_sinks.get(obj_name) == "child_process"
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
+                        if not is_valid:
+                            continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -344,6 +356,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(exec_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    if prefix_match:
+                        obj_name = prefix_match.group(1)
+                        is_valid = False
+                        if child_process_sinks:
+                            is_valid = (obj_name in child_process_sinks) or (
+                                child_process_sinks.get(obj_name) == "child_process"
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
+                        if not is_valid:
+                            continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -391,6 +415,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(spawn_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
+                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    if prefix_match:
+                        obj_name = prefix_match.group(1)
+                        is_valid = False
+                        if child_process_sinks:
+                            is_valid = (obj_name in child_process_sinks) or (
+                                child_process_sinks.get(obj_name) == "child_process"
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
+                        if not is_valid:
+                            continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1

@@ -78,7 +78,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 2. sh, bash, zsh, ksh -c
             for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped):
-                prefix = stripped[: m.start()]
+                prefix = self._get_shell_prefix_context(stripped, m.start())
                 if re.search("\\b(?:xargs|find)\\b", prefix):
                     continue
                 call_text = self._get_shell_statement_context(stripped, m.start())
@@ -354,6 +354,30 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if char in {";", "|", "&"}:
                 return text[start_idx:idx]
         return text[start_idx:]
+
+    @staticmethod
+    def _get_shell_prefix_context(text: str, match_start: int) -> str:
+        last_delim_idx = -1
+        in_string = None
+        escaped = False
+        for idx in range(match_start):
+            char = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char in {";", "|", "&"}:
+                last_delim_idx = idx
+        return text[last_delim_idx + 1 : match_start]
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
