@@ -12,7 +12,6 @@ from src.rules.A_code.A1_1_command_injection_common import (
     iter_ts_nodes,
     ts_child_by_field_name,
     ts_node_text,
-    line_col_to_offset,
 )
 from src.rules.A_code.A1_3_1_command_injection_js_ts_sources import JsTsSourceMixin
 from src.rules.A_code.A1_3_2_command_injection_js_ts_sinks import JsTsSinkMixin
@@ -201,27 +200,32 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         child_process_sinks: Dict[str, str] = {}
         shell_true_option_names: Set[str] = set()
         lines = src.splitlines()
-        statements: List[Tuple[int, str]] = []
+        raw_lines = src.splitlines(keepends=True)
+        statements: List[Tuple[int, str, str, int]] = []
         buffer = ""
+        raw_buffer = ""
         start_line = 1
+        curr_raw_offset = 0
+        stmt_start_offset = 0
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
+            raw_line = raw_lines[i - 1] if 1 <= i <= len(raw_lines) else ""
             if not stripped or stripped.startswith("//"):
+                curr_raw_offset += len(raw_line)
                 continue
             if not buffer:
                 start_line = i
+                stmt_start_offset = curr_raw_offset
             buffer = f"{buffer} {stripped}".strip()
+            raw_buffer = f"{raw_buffer}{raw_line}"
+            curr_raw_offset += len(raw_line)
             if stripped.endswith((";", "}", ")")):
-                statements.append((start_line, buffer))
+                statements.append((start_line, buffer, raw_buffer, stmt_start_offset))
                 buffer = ""
+                raw_buffer = ""
         if buffer:
-            statements.append((start_line, buffer))
-        for i, stripped in statements:
-            line_str = lines[i - 1] if 1 <= i <= len(lines) else ""
-            stmt_start_idx = line_str.find(stripped)
-            if stmt_start_idx == -1:
-                stmt_start_idx = len(line_str) - len(line_str.lstrip())
-
+            statements.append((start_line, buffer, raw_buffer, stmt_start_offset))
+        for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
@@ -241,6 +245,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             if not self._js_has_external_input(stripped, tainted_names):
                 continue
+
+            stripped_map = self._build_index_map(raw_stmt)
 
             # 1. execFile, execFileSync, fork
             file_names = {"execFile", "execFileSync", "fork"}
@@ -266,20 +272,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     ]
                     if not self._js_has_external_input(call_text, tainted_names):
                         continue
+                    dot_idx = name.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    match_stripped_idx = m.start() + offset
+                    if match_stripped_idx < len(stripped_map):
+                        raw_offset_in_stmt = stripped_map[match_stripped_idx]
+                    else:
+                        raw_offset_in_stmt = len(raw_stmt)
+                    char_offset = stmt_start_offset + raw_offset_in_stmt
+                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
                         title=self.title,
                         severity=Severity.MEDIUM,
                         file_path=rel_path,
-                        line=i,
+                        line=line_num,
                         message="External input reaches child_process file execution",
                     )
-                    dot_idx = name.rfind(".")
-                    offset = dot_idx + 1 if dot_idx != -1 else 0
-                    col = stmt_start_idx + m.start() + offset
-                    rec._column = col
-                    rec._char_offset = line_col_to_offset(src, i, col)
+                    rec._column = col_num
+                    rec._char_offset = char_offset
                     records.append(rec)
 
             # 2. サードパーティ
@@ -294,21 +307,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 call_text = stripped[m.start() : start_paren_idx + len(call_args_text)]
                 if not self._js_has_external_input(call_text, tainted_names):
                     continue
+                matched_str = m.group(0).rstrip(" (")
+                dot_idx = matched_str.rfind(".")
+                offset = dot_idx + 1 if dot_idx != -1 else 0
+                match_stripped_idx = m.start() + offset
+                if match_stripped_idx < len(stripped_map):
+                    raw_offset_in_stmt = stripped_map[match_stripped_idx]
+                else:
+                    raw_offset_in_stmt = len(raw_stmt)
+                char_offset = stmt_start_offset + raw_offset_in_stmt
+                line_num, col_num = self._offset_to_line_col(src, char_offset)
+
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
                     title=self.title,
                     severity=Severity.HIGH,
                     file_path=rel_path,
-                    line=i,
+                    line=line_num,
                     message="External input reaches shell command execution helper",
                 )
-                matched_str = m.group(0).rstrip(" (")
-                dot_idx = matched_str.rfind(".")
-                offset = dot_idx + 1 if dot_idx != -1 else 0
-                col = stmt_start_idx + m.start() + offset
-                rec._column = col
-                rec._char_offset = line_col_to_offset(src, i, col)
+                rec._column = col_num
+                rec._char_offset = char_offset
                 records.append(rec)
 
             # 3. exec, execSync
@@ -335,20 +355,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     ]
                     if not self._js_has_external_input(call_text, tainted_names):
                         continue
+                    dot_idx = name.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    match_stripped_idx = m.start() + offset
+                    if match_stripped_idx < len(stripped_map):
+                        raw_offset_in_stmt = stripped_map[match_stripped_idx]
+                    else:
+                        raw_offset_in_stmt = len(raw_stmt)
+                    char_offset = stmt_start_offset + raw_offset_in_stmt
+                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
                         title=self.title,
                         severity=Severity.HIGH,
                         file_path=rel_path,
-                        line=i,
+                        line=line_num,
                         message="External input reaches child_process command execution",
                     )
-                    dot_idx = name.rfind(".")
-                    offset = dot_idx + 1 if dot_idx != -1 else 0
-                    col = stmt_start_idx + m.start() + offset
-                    rec._column = col
-                    rec._char_offset = line_col_to_offset(src, i, col)
+                    rec._column = col_num
+                    rec._char_offset = char_offset
                     records.append(rec)
 
             # 4. spawn, spawnSync
@@ -378,22 +405,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     has_shell_true = self._js_call_enables_shell(
                         call_args_text, shell_true_option_names
                     )
+                    dot_idx = name.rfind(".")
+                    offset = dot_idx + 1 if dot_idx != -1 else 0
+                    match_stripped_idx = m.start() + offset
+                    if match_stripped_idx < len(stripped_map):
+                        raw_offset_in_stmt = stripped_map[match_stripped_idx]
+                    else:
+                        raw_offset_in_stmt = len(raw_stmt)
+                    char_offset = stmt_start_offset + raw_offset_in_stmt
+                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+
                     rec = RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
                         title=self.title,
                         severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
                         file_path=rel_path,
-                        line=i,
+                        line=line_num,
                         message="External input reaches child_process spawn with shell=true"
                         if has_shell_true
                         else "External input reaches child_process spawn",
                     )
-                    dot_idx = name.rfind(".")
-                    offset = dot_idx + 1 if dot_idx != -1 else 0
-                    col = stmt_start_idx + m.start() + offset
-                    rec._column = col
-                    rec._char_offset = line_col_to_offset(src, i, col)
+                    rec._column = col_num
+                    rec._char_offset = char_offset
                     records.append(rec)
         return dedupe_records(records)
 
@@ -460,6 +494,52 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if paren_count == 0:
                     return text[start_paren_idx : idx + 1]
         return text[start_paren_idx:]
+
+    @staticmethod
+    def _build_index_map(raw_stmt: str) -> List[int]:
+        raw_lines = []
+        curr = ""
+        for char in raw_stmt:
+            curr += char
+            if char == "\n":
+                raw_lines.append(curr)
+                curr = ""
+        if curr:
+            raw_lines.append(curr)
+
+        stripped_map = []
+        raw_offset = 0
+        has_prev = False
+
+        for line in raw_lines:
+            stripped_line = line.strip()
+            if not stripped_line:
+                raw_offset += len(line)
+                continue
+
+            left_spaces = len(line) - len(line.lstrip())
+            line_start_raw = raw_offset + left_spaces
+
+            if has_prev:
+                stripped_map.append(raw_offset - 1 if raw_offset > 0 else 0)
+
+            for j in range(len(stripped_line)):
+                stripped_map.append(line_start_raw + j)
+
+            has_prev = True
+            raw_offset += len(line)
+
+        return stripped_map
+
+    @staticmethod
+    def _offset_to_line_col(src: str, offset: int) -> Tuple[int, int]:
+        lines = src.splitlines(keepends=True)
+        curr_offset = 0
+        for idx, line in enumerate(lines):
+            if curr_offset <= offset < curr_offset + len(line):
+                return idx + 1, offset - curr_offset
+            curr_offset += len(line)
+        return len(lines), len(lines[-1]) if lines else 0
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
