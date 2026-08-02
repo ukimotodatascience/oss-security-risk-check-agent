@@ -104,6 +104,9 @@ class JsTsSinkMixin:
                 for name in self._CHILD_PROCESS_NAMES:
                     if rhs_clean == f"{sink}.{name}":
                         return name
+            rhs_tail = rhs_clean.split(".")[-1]
+            if rhs_tail in sinks or rhs_tail in self._CHILD_PROCESS_NAMES:
+                return rhs_tail
             return None
 
         if rhs_clean in sinks:
@@ -113,6 +116,12 @@ class JsTsSinkMixin:
                 for name in self._CHILD_PROCESS_NAMES:
                     if rhs_clean == f"{sink}.{name}":
                         return name
+        if "." in rhs_clean:
+            rhs_tail = rhs_clean.split(".")[-1]
+            if rhs_tail in sinks:
+                return sinks[rhs_tail]
+            if rhs_tail in self._CHILD_PROCESS_NAMES:
+                return rhs_tail
         return None
 
     def _is_child_process_alias_assignment(
