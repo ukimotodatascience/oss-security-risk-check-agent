@@ -375,7 +375,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 continue
             if char in {";", "|", "&"}:
                 if char == "&":
-                    if idx > 0 and text[idx - 1] in {">", "<"}:
+                    if (idx > 0 and text[idx - 1] in {">", "<"}) or (
+                        idx + 1 < len(text) and text[idx + 1] == ">"
+                    ):
                         continue
                 return text[start_idx:idx]
         return text[start_idx:]
@@ -402,7 +404,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 continue
             if char in {";", "|", "&"}:
                 if char == "&":
-                    if idx > 0 and text[idx - 1] in {">", "<"}:
+                    if (idx > 0 and text[idx - 1] in {">", "<"}) or (
+                        idx + 1 < len(text) and text[idx + 1] == ">"
+                    ):
                         continue
                 last_delim_idx = idx
         return text[last_delim_idx + 1 : match_start]

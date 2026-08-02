@@ -229,6 +229,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             eval 2>&1 "$1"
             """,
         ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            eval &>/dev/null "$1"
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
