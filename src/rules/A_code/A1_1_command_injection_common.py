@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from src.models import RiskRecord, Severity
 
@@ -61,6 +61,16 @@ def line_col_to_offset(src: str, line_1indexed: int, col_0indexed: int) -> int:
         if i < len(lines):
             offset += len(lines[i])
     return offset + col_0indexed
+
+
+def offset_to_line_col(src: str, offset: int) -> Tuple[int, int]:
+    lines = src.splitlines(keepends=True)
+    curr_offset = 0
+    for idx, line in enumerate(lines):
+        if curr_offset <= offset < curr_offset + len(line):
+            return idx + 1, offset - curr_offset
+        curr_offset += len(line)
+    return len(lines), len(lines[-1]) if lines else 0
 
 
 def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:

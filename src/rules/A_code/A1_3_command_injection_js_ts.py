@@ -12,6 +12,7 @@ from src.rules.A_code.A1_1_command_injection_common import (
     iter_ts_nodes,
     ts_child_by_field_name,
     ts_node_text,
+    offset_to_line_col,
 )
 from src.rules.A_code.A1_3_1_command_injection_js_ts_sources import JsTsSourceMixin
 from src.rules.A_code.A1_3_2_command_injection_js_ts_sinks import JsTsSinkMixin
@@ -213,6 +214,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             raw_line = raw_lines[i - 1] if 1 <= i <= len(raw_lines) else ""
             if not stripped or stripped.startswith("//"):
                 curr_raw_offset += len(raw_line)
+                if buffer:
+                    raw_buffer = f"{raw_buffer}{raw_line}"
                 continue
             if not buffer:
                 start_line = i
@@ -292,7 +295,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         raw_offset_in_stmt = len(raw_stmt)
                     char_offset = stmt_start_offset + raw_offset_in_stmt
-                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+                    line_num, col_num = offset_to_line_col(src, char_offset)
 
                     rec = RiskRecord(
                         rule_id=self.rule_id,
@@ -310,8 +313,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             # 2. サードパーティ
             third_party_matches = self._find_all_known_third_party_shell_sinks(stripped)
             for m, name in third_party_matches:
-                if name == "exec" and "exec" in child_process_sinks:
-                    continue
+                if name == "exec":
+                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    if prefix_match:
+                        obj_name = prefix_match.group(1)
+                        if obj_name in {"child_process", "cp"} or (
+                            child_process_sinks and obj_name in child_process_sinks
+                        ):
+                            continue
+                    else:
+                        continue
                 start_paren_idx = stripped.find("(", m.start())
                 if start_paren_idx == -1:
                     start_paren_idx = m.end() - 1
@@ -328,7 +339,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     raw_offset_in_stmt = len(raw_stmt)
                 char_offset = stmt_start_offset + raw_offset_in_stmt
-                line_num, col_num = self._offset_to_line_col(src, char_offset)
+                line_num, col_num = offset_to_line_col(src, char_offset)
 
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -386,7 +397,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         raw_offset_in_stmt = len(raw_stmt)
                     char_offset = stmt_start_offset + raw_offset_in_stmt
-                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+                    line_num, col_num = offset_to_line_col(src, char_offset)
 
                     rec = RiskRecord(
                         rule_id=self.rule_id,
@@ -447,7 +458,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         raw_offset_in_stmt = len(raw_stmt)
                     char_offset = stmt_start_offset + raw_offset_in_stmt
-                    line_num, col_num = self._offset_to_line_col(src, char_offset)
+                    line_num, col_num = offset_to_line_col(src, char_offset)
 
                     rec = RiskRecord(
                         rule_id=self.rule_id,
@@ -564,16 +575,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             raw_offset += len(line)
 
         return stripped_map
-
-    @staticmethod
-    def _offset_to_line_col(src: str, offset: int) -> Tuple[int, int]:
-        lines = src.splitlines(keepends=True)
-        curr_offset = 0
-        for idx, line in enumerate(lines):
-            if curr_offset <= offset < curr_offset + len(line):
-                return idx + 1, offset - curr_offset
-            curr_offset += len(line)
-        return len(lines), len(lines[-1]) if lines else 0
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []

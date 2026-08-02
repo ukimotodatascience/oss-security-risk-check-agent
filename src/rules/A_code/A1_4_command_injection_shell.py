@@ -12,6 +12,7 @@ from src.rules.A_code.A1_1_command_injection_common import (
     iter_ts_nodes,
     ts_node_text,
     line_col_to_offset,
+    offset_to_line_col,
 )
 from src.rules.A_code.A1_4_1_command_injection_shell_sources import ShellSourceMixin
 
@@ -269,39 +270,53 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             col = start_point[1]
             self._track_shell_taint_from_text(text, tainted_names)
             self._track_shell_case_allowlist_from_text(text, tainted_names)
+            byte_offset = getattr(node, "start_byte", 0)
             if not self._shell_expands_external_input(text, tainted_names):
                 continue
-            byte_offset = getattr(node, "start_byte", 0)
             if re.search("\\beval\\b", text):
+                eval_match = re.search(r"\beval\b", text)
+                eval_sub_bytes = (
+                    text[: eval_match.start()].encode("utf-8") if eval_match else b""
+                )
+                target_byte_offset = byte_offset + len(eval_sub_bytes)
+                char_offset = len(
+                    src_bytes[:target_byte_offset].decode("utf-8", errors="replace")
+                )
+                line_num, col_num = offset_to_line_col(src, char_offset)
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
                     title=self.title,
                     severity=Severity.HIGH,
                     file_path=rel_path,
-                    line=line,
+                    line=line_num,
                     message="External input reaches shell eval",
                 )
-                rec._column = col
-                rec._char_offset = len(
-                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
-                )
+                rec._column = col_num
+                rec._char_offset = char_offset
                 records.append(rec)
                 continue
             if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", text):
+                sh_match = re.search(r"\b(?:sh|bash|zsh|ksh)\s+-c\b", text)
+                sh_sub_bytes = (
+                    text[: sh_match.start()].encode("utf-8") if sh_match else b""
+                )
+                target_byte_offset = byte_offset + len(sh_sub_bytes)
+                char_offset = len(
+                    src_bytes[:target_byte_offset].decode("utf-8", errors="replace")
+                )
+                line_num, col_num = offset_to_line_col(src, char_offset)
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
                     title=self.title,
                     severity=Severity.HIGH,
                     file_path=rel_path,
-                    line=line,
+                    line=line_num,
                     message="External input reaches shell -c execution",
                 )
-                rec._column = col
-                rec._char_offset = len(
-                    src_bytes[:byte_offset].decode("utf-8", errors="replace")
-                )
+                rec._column = col_num
+                rec._char_offset = char_offset
                 records.append(rec)
                 continue
             is_cmd_sub = getattr(node, "type", "") == "command_substitution"
