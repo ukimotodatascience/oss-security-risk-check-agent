@@ -204,6 +204,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 8. here-string
             for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+<<<\\s*", stripped):
+                call_text = self._get_shell_statement_context(stripped, m.start())
+                if not self._shell_expands_external_input(call_text, tainted_names):
+                    continue
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
