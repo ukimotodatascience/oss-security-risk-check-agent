@@ -314,15 +314,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             third_party_matches = self._find_all_known_third_party_shell_sinks(stripped)
             for m, name in third_party_matches:
                 if name == "exec":
-                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
-                    if prefix_match:
-                        obj_name = prefix_match.group(1)
+                    matched_str = m.group(0)
+                    if "." in matched_str:
+                        obj_name = matched_str.split(".")[0].strip()
                         if obj_name in {"child_process", "cp"} or (
                             child_process_sinks and obj_name in child_process_sinks
                         ):
                             continue
                     else:
-                        continue
+                        prefix_match = re.search(
+                            r"([\w$]+)\.\s*$", stripped[: m.start()]
+                        )
+                        if prefix_match:
+                            obj_name = prefix_match.group(1)
+                            if obj_name in {"child_process", "cp"} or (
+                                child_process_sinks and obj_name in child_process_sinks
+                            ):
+                                continue
+                        else:
+                            continue
                 start_paren_idx = stripped.find("(", m.start())
                 if start_paren_idx == -1:
                     start_paren_idx = m.end() - 1
