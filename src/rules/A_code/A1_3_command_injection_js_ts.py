@@ -133,9 +133,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if "." in callee:
                     obj_name = callee.split(".")[0]
                     if child_process_sinks:
-                        is_valid = (
-                            child_process_sinks.get(obj_name) == "child_process"
-                        )
+                        is_valid = child_process_sinks.get(obj_name) == "child_process"
                     else:
                         is_valid = obj_name in {"child_process", "cp"}
                     if is_valid:
@@ -722,6 +720,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "}",
                         ">",
                         "<",
+                        "/",
+                        "%",
+                        "^",
                     }
                     regex_start_keywords = {
                         "return",
@@ -923,6 +924,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "}",
                         ">",
                         "<",
+                        "/",
+                        "%",
+                        "^",
                     }
                     regex_start_keywords = {
                         "return",
@@ -1152,6 +1156,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     "}",
                     ">",
                     "<",
+                    "/",
+                    "%",
+                    "^",
                 }
                 regex_start_keywords = {
                     "return",
