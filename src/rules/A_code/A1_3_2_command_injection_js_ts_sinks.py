@@ -78,20 +78,27 @@ class JsTsSinkMixin:
                 sinks.update(f"{ns_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
 
         module_match = re.search(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)(?:\.([A-Za-z_$][\w$]*))?",
             text,
         )
         if module_match:
             module_name = module_match.group(1)
-            if is_dict:
-                sinks[module_name] = "child_process"
-                for name in self._CHILD_PROCESS_NAMES:
-                    sinks[f"{module_name}.{name}"] = name
+            prop_name = module_match.group(2)
+            if prop_name:
+                if is_dict:
+                    sinks[module_name] = prop_name
+                else:
+                    sinks.add(module_name)
             else:
-                sinks.add(module_name)
-                sinks.update(
-                    f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
-                )
+                if is_dict:
+                    sinks[module_name] = "child_process"
+                    for name in self._CHILD_PROCESS_NAMES:
+                        sinks[f"{module_name}.{name}"] = name
+                else:
+                    sinks.add(module_name)
+                    sinks.update(
+                        f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
+                    )
 
     def _get_child_process_original_name(
         self, rhs_clean: str, sinks: Union[Set[str], Dict[str, str]]
