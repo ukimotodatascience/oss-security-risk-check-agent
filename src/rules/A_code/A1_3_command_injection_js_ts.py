@@ -243,10 +243,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             statements.append((start_line, buffer, raw_buffer, stmt_start_offset))
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
-            decl_pattern = r"\b(?:const|let|var)\s+([A-Za-z_$\{\}][\w$,\s\{\}]*)\s*=\s*(.*?)(?=\b(?:const|let|var)\b|;$|$)"
-            for match in re.finditer(decl_pattern, stripped):
-                var_names_str = match.group(1).strip()
-                rhs = match.group(2).strip()
+            for var_names_str, rhs in self._split_declarations(stripped):
+                var_names_str = var_names_str.strip()
+                rhs = rhs.strip()
                 rhs_clean = rhs.rstrip(";").strip()
                 names_to_register = []
                 if var_names_str.startswith("{") and var_names_str.endswith("}"):
@@ -979,6 +978,215 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             raw_offset += len(line)
 
         return stripped_map
+
+    def _split_declarations(self, text: str) -> List[Tuple[str, str]]:
+        decls = []
+        idx = 0
+        in_string = None
+        template_depths = []
+        in_regex = False
+        in_regex_class = False
+        escaped = False
+
+        current_var_name = None
+        current_rhs_start = -1
+
+        while idx < len(text):
+            char = text[idx]
+
+            if escaped:
+                escaped = False
+                idx += 1
+                continue
+
+            if in_string:
+                if char == "\\":
+                    escaped = True
+                elif (
+                    in_string == "`"
+                    and char == "$"
+                    and idx + 1 < len(text)
+                    and text[idx + 1] == "{"
+                ):
+                    template_depths.append(0)
+                    in_string = None
+                    idx += 2
+                    continue
+                elif char == in_string:
+                    in_string = None
+                idx += 1
+                continue
+
+            if not in_string and not in_regex:
+                if template_depths:
+                    if char == "{":
+                        template_depths[-1] += 1
+                    elif char == "}":
+                        if template_depths[-1] > 0:
+                            template_depths[-1] -= 1
+                        else:
+                            template_depths.pop()
+                            in_string = "`"
+                            idx += 1
+                            continue
+
+            if in_regex:
+                if char == "\\":
+                    escaped = True
+                elif in_regex_class:
+                    if char == "]":
+                        in_regex_class = False
+                else:
+                    if char == "[":
+                        in_regex_class = True
+                    elif char == "/":
+                        in_regex = False
+                idx += 1
+                continue
+
+            if char in {"'", '"', "`"}:
+                in_string = char
+                idx += 1
+                continue
+
+            if char == "/":
+                prev_token = ""
+                p_idx = idx - 1
+                while p_idx >= 0 and text[p_idx].isspace():
+                    p_idx -= 1
+                if p_idx >= 0:
+                    if text[p_idx].isalnum() or text[p_idx] in {"_", "$"}:
+                        end_p = p_idx
+                        while p_idx >= 0 and (
+                            text[p_idx].isalnum() or text[p_idx] in {"_", "$"}
+                        ):
+                            p_idx -= 1
+                        prev_token = text[p_idx + 1 : end_p + 1]
+                    else:
+                        prev_token = text[p_idx]
+
+                if prev_token == ")":
+                    depth = 1
+                    p_search = p_idx - 1
+                    while p_search >= 0 and depth > 0:
+                        if text[p_search] == ")":
+                            depth += 1
+                        elif text[p_search] == "(":
+                            depth -= 1
+                        p_search -= 1
+                    if p_search >= 0 and depth == 0:
+                        while p_search >= 0 and text[p_search].isspace():
+                            p_search -= 1
+                        if p_search >= 0:
+                            control_keyword = ""
+                            if text[p_search].isalnum() or text[p_search] in {"_", "$"}:
+                                end_k = p_search
+                                while p_search >= 0 and (
+                                    text[p_search].isalnum()
+                                    or text[p_search] in {"_", "$"}
+                                ):
+                                    p_search -= 1
+                                control_keyword = text[p_search + 1 : end_k + 1]
+                            else:
+                                control_keyword = text[p_search]
+                            if control_keyword in {"if", "while", "for", "switch"}:
+                                prev_token = "control_statement"
+
+                regex_start_chars = {
+                    "(",
+                    "[",
+                    ",",
+                    "=",
+                    ":",
+                    "?",
+                    "!",
+                    "&",
+                    "|",
+                    "+",
+                    "-",
+                    "*",
+                    "~",
+                    ";",
+                    "}",
+                    ">",
+                    "<",
+                }
+                regex_start_keywords = {
+                    "return",
+                    "yield",
+                    "typeof",
+                    "void",
+                    "delete",
+                    "throw",
+                    "default",
+                    "await",
+                    "case",
+                    "control_statement",
+                }
+                if (
+                    prev_token == ""
+                    or prev_token in regex_start_chars
+                    or prev_token in regex_start_keywords
+                ):
+                    in_regex = True
+                    idx += 1
+                    continue
+
+            word_match = re.match(r"\b(const|let|var)\b", text[idx:])
+            if word_match:
+                if current_var_name is not None and current_rhs_start != -1:
+                    rhs_val = text[current_rhs_start:idx].strip()
+                    decls.append((current_var_name, rhs_val))
+                    current_var_name = None
+                    current_rhs_start = -1
+
+                idx += len(word_match.group(0))
+                eq_found = -1
+                v_in_string = None
+                v_brace_depth = 0
+                v_paren_depth = 0
+                v_idx = idx
+                while v_idx < len(text):
+                    v_char = text[v_idx]
+                    if v_in_string:
+                        if v_char == "\\":
+                            v_idx += 2
+                            continue
+                        if v_char == v_in_string:
+                            v_in_string = None
+                    else:
+                        if v_char in {"'", '"', "`"}:
+                            v_in_string = v_char
+                        elif v_char == "{":
+                            v_brace_depth += 1
+                        elif v_char == "}":
+                            if v_brace_depth > 0:
+                                v_brace_depth -= 1
+                        elif v_char == "(":
+                            v_paren_depth += 1
+                        elif v_char == ")":
+                            if v_paren_depth > 0:
+                                v_paren_depth -= 1
+                        elif (
+                            v_char == "=" and v_brace_depth == 0 and v_paren_depth == 0
+                        ):
+                            eq_found = v_idx
+                            break
+                    v_idx += 1
+
+                if eq_found != -1:
+                    current_var_name = text[idx:eq_found].strip()
+                    current_rhs_start = eq_found + 1
+                    idx = eq_found + 1
+                    continue
+
+            idx += 1
+
+        if current_var_name is not None and current_rhs_start != -1:
+            rhs_val = text[current_rhs_start:].strip()
+            decls.append((current_var_name, rhs_val))
+
+        return decls
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
