@@ -129,11 +129,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if "." in callee:
                     obj_name = callee.split(".")[0]
                     if child_process_sinks:
-                        is_valid = (
-                            child_process_sinks.get(obj_name) == "child_process"
-                            or child_process_sinks.get(obj_name) == obj_name
-                            or obj_name in child_process_sinks
-                        )
+                        is_valid = obj_name in child_process_sinks
                     else:
                         is_valid = obj_name in {"child_process", "cp"}
                     if is_valid:
