@@ -1188,27 +1188,31 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             word_match = re.match(r"\b(const|let|var)\b", text[idx:])
             assign_match = None
-            if (
-                not word_match
-                and current_var_name is None
-                and brace_level == 0
-                and paren_level == 0
-            ):
-                assign_match = re.match(r"\b([A-Za-z_$][\w$]*)\s*=(?!=)", text[idx:])
-                if assign_match:
-                    p_idx = idx - 1
-                    while p_idx >= 0 and text[p_idx].isspace():
-                        p_idx -= 1
-                    if p_idx >= 0 and text[p_idx] == ".":
-                        assign_match = None
+            if not word_match:
+                is_assign_candidate = (current_var_name is None) or (
+                    brace_level > 0 or paren_level > 0
+                )
+                if is_assign_candidate:
+                    assign_match = re.match(
+                        r"\b([A-Za-z_$][\w$]*)\s*=(?!=)", text[idx:]
+                    )
+                    if assign_match:
+                        p_idx = idx - 1
+                        while p_idx >= 0 and text[p_idx].isspace():
+                            p_idx -= 1
+                        if p_idx >= 0 and text[p_idx] == ".":
+                            assign_match = None
 
             if word_match or assign_match:
-                is_boundary = word_match and (
-                    (current_var_name is None)
-                    or (brace_level == 0 and paren_level == 0)
-                )
-                if assign_match:
-                    is_boundary = True
+                is_boundary = False
+                if word_match:
+                    is_boundary = (current_var_name is None) or (
+                        brace_level == 0 and paren_level == 0
+                    )
+                elif assign_match:
+                    is_boundary = (current_var_name is None) and (
+                        brace_level == 0 and paren_level == 0
+                    )
 
                 if is_boundary:
                     if current_var_name is not None and current_rhs_start != -1:
@@ -1274,6 +1278,71 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         brace_level = 0
                         paren_level = 0
                         continue
+                else:
+                    inner_start = idx
+                    idx_skip = (
+                        len(word_match.group(0))
+                        if word_match
+                        else len(assign_match.group(0))
+                    )
+                    eq_found = -1
+                    v_in_string = None
+                    v_brace_depth = 0
+                    v_paren_depth = 0
+                    v_idx = inner_start + idx_skip
+                    while v_idx < len(text):
+                        v_char = text[v_idx]
+                        if v_in_string:
+                            if v_char == "\\":
+                                v_idx += 2
+                                continue
+                            if v_char == v_in_string:
+                                v_in_string = None
+                        else:
+                            if v_char in {"'", '"', "`"}:
+                                v_in_string = v_char
+                            elif v_char == "{":
+                                v_brace_depth += 1
+                            elif v_char == "}":
+                                if v_brace_depth > 0:
+                                    v_brace_depth -= 1
+                                else:
+                                    break
+                            elif v_char == "(":
+                                v_paren_depth += 1
+                            elif v_char == ")":
+                                if v_paren_depth > 0:
+                                    v_paren_depth -= 1
+                                else:
+                                    break
+                            elif (
+                                v_char == "="
+                                and v_brace_depth == 0
+                                and v_paren_depth == 0
+                            ):
+                                eq_found = v_idx
+                            elif (
+                                v_char == ";"
+                                and v_brace_depth == 0
+                                and v_paren_depth == 0
+                            ):
+                                break
+                        v_idx += 1
+
+                    if word_match:
+                        if eq_found != -1:
+                            inner_var_name = text[
+                                inner_start + idx_skip : eq_found
+                            ].strip()
+                            inner_rhs_val = text[eq_found + 1 : v_idx].strip()
+                            decls.append((inner_var_name, inner_rhs_val))
+                    else:  # assign_match
+                        inner_var_name = assign_match.group(1)
+                        inner_rhs_val = text[inner_start + idx_skip : v_idx].strip()
+                        decls.append((inner_var_name, inner_rhs_val))
+
+                    idx += idx_skip
+                    continue
 
             if not in_string and not in_regex and not template_depths:
                 if char == ";" and brace_level == 0 and paren_level == 0:
