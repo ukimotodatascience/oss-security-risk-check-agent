@@ -791,6 +791,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             result.append(char)
             result_indices.append(idx)
             idx += 1
+        state.escaped = False
         return "".join(result), result_indices
 
     @staticmethod

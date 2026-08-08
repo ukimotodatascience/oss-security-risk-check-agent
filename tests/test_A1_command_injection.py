@@ -281,3 +281,18 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
 
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_safe_cases(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const cp = require("child_process");
+                const x = "foo\\
+                ";
+                // cp.exec(req.query.cmd);
+            """
+        },
+    )
+    assert records == []
