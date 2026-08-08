@@ -646,6 +646,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "delete",
                         "throw",
                         "default",
+                        "await",
                     }
                     if (
                         prev_token == ""
@@ -771,6 +772,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "delete",
                         "throw",
                         "default",
+                        "await",
                     }
                     if (
                         prev_token == ""

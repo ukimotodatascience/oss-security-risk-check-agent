@@ -359,6 +359,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         in_string = None
         escaped = False
         paren_level = 0
+        brace_level = 0
         for idx in range(start_idx, len(text)):
             char = text[idx]
             if escaped:
@@ -379,8 +380,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             elif char == ")":
                 if paren_level > 0:
                     paren_level -= 1
+            elif char == "{":
+                brace_level += 1
+            elif char == "}":
+                if brace_level > 0:
+                    brace_level -= 1
             if char in {";", "|", "&"}:
-                if paren_level > 0:
+                if paren_level > 0 or brace_level > 0:
                     continue
                 if char == "&":
                     if (idx > 0 and text[idx - 1] in {">", "<"}) or (
@@ -396,6 +402,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         in_string = None
         escaped = False
         paren_level = 0
+        brace_level = 0
         for idx in range(match_start):
             char = text[idx]
             if escaped:
@@ -416,8 +423,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             elif char == ")":
                 if paren_level > 0:
                     paren_level -= 1
+            elif char == "{":
+                brace_level += 1
+            elif char == "}":
+                if brace_level > 0:
+                    brace_level -= 1
             if char in {";", "|", "&"}:
-                if paren_level > 0:
+                if paren_level > 0 or brace_level > 0:
                     continue
                 if char == "&":
                     if (idx > 0 and text[idx - 1] in {">", "<"}) or (
