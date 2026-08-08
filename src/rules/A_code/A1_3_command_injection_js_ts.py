@@ -242,21 +242,35 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             statements.append((start_line, buffer, raw_buffer, stmt_start_offset))
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
-            m = re.search(
-                "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
-            )
-            if m:
-                (var_name, rhs) = (m.group(1), m.group(2))
+            decl_pattern = r"\b(?:const|let|var)\s+([A-Za-z_$\{\}][\w$,\s\{\}]*)\s*=\s*(.*?)(?=\b(?:const|let|var)\b|;$|$)"
+            for match in re.finditer(decl_pattern, stripped):
+                var_names_str = match.group(1).strip()
+                rhs = match.group(2).strip()
                 rhs_clean = rhs.rstrip(";").strip()
-                orig_name = self._get_child_process_original_name(
-                    rhs_clean, child_process_sinks
-                )
-                if orig_name:
-                    child_process_sinks[var_name] = orig_name
-                if self._js_options_enable_shell(rhs_clean):
-                    shell_true_option_names.add(var_name)
-                if self._js_has_external_input(rhs, tainted_names):
-                    tainted_names.add(var_name)
+                names_to_register = []
+                if var_names_str.startswith("{") and var_names_str.endswith("}"):
+                    inner = var_names_str[1:-1]
+                    for part in inner.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if ":" in part:
+                            names_to_register.append(part.split(":")[1].strip())
+                        else:
+                            names_to_register.append(part)
+                else:
+                    names_to_register.append(var_names_str)
+
+                for var_name in names_to_register:
+                    orig_name = self._get_child_process_original_name(
+                        rhs_clean, child_process_sinks
+                    )
+                    if orig_name:
+                        child_process_sinks[var_name] = orig_name
+                    if self._js_options_enable_shell(rhs_clean):
+                        shell_true_option_names.add(var_name)
+                    if self._js_has_external_input(rhs, tainted_names):
+                        tainted_names.add(var_name)
 
             if not self._js_has_external_input(stripped, tainted_names):
                 continue
@@ -619,6 +633,36 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         else:
                             prev_token = text[p_idx]
 
+                    if prev_token == ")":
+                        depth = 1
+                        p_search = p_idx - 1
+                        while p_search >= 0 and depth > 0:
+                            if text[p_search] == ")":
+                                depth += 1
+                            elif text[p_search] == "(":
+                                depth -= 1
+                            p_search -= 1
+                        if p_search >= 0 and depth == 0:
+                            while p_search >= 0 and text[p_search].isspace():
+                                p_search -= 1
+                            if p_search >= 0:
+                                control_keyword = ""
+                                if text[p_search].isalnum() or text[p_search] in {
+                                    "_",
+                                    "$",
+                                }:
+                                    end_k = p_search
+                                    while p_search >= 0 and (
+                                        text[p_search].isalnum()
+                                        or text[p_search] in {"_", "$"}
+                                    ):
+                                        p_search -= 1
+                                    control_keyword = text[p_search + 1 : end_k + 1]
+                                else:
+                                    control_keyword = text[p_search]
+                                if control_keyword in {"if", "while", "for", "switch"}:
+                                    prev_token = "control_statement"
+
                     regex_start_chars = {
                         "(",
                         "[",
@@ -647,6 +691,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "throw",
                         "default",
                         "await",
+                        "case",
+                        "control_statement",
                     }
                     if (
                         prev_token == ""
@@ -745,6 +791,38 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         else:
                             prev_token = result[p_idx]
 
+                    if prev_token == ")":
+                        depth = 1
+                        p_search = p_idx - 1
+                        while p_search >= 0 and depth > 0:
+                            if result[p_search] == ")":
+                                depth += 1
+                            elif result[p_search] == "(":
+                                depth -= 1
+                            p_search -= 1
+                        if p_search >= 0 and depth == 0:
+                            while p_search >= 0 and result[p_search].isspace():
+                                p_search -= 1
+                            if p_search >= 0:
+                                control_keyword = ""
+                                if result[p_search].isalnum() or result[p_search] in {
+                                    "_",
+                                    "$",
+                                }:
+                                    end_k = p_search
+                                    while p_search >= 0 and (
+                                        result[p_search].isalnum()
+                                        or result[p_search] in {"_", "$"}
+                                    ):
+                                        p_search -= 1
+                                    control_keyword = "".join(
+                                        result[p_search + 1 : end_k + 1]
+                                    )
+                                else:
+                                    control_keyword = result[p_search]
+                                if control_keyword in {"if", "while", "for", "switch"}:
+                                    prev_token = "control_statement"
+
                     regex_start_chars = {
                         "(",
                         "[",
@@ -773,6 +851,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "throw",
                         "default",
                         "await",
+                        "case",
+                        "control_statement",
                     }
                     if (
                         prev_token == ""
