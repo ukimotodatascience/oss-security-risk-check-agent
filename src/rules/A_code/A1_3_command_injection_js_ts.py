@@ -301,6 +301,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 )
                         if not is_valid:
                             continue
+                    else:
+                        if child_process_sinks and name not in child_process_sinks:
+                            continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -413,6 +416,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 )
                         if not is_valid:
                             continue
+                    else:
+                        if child_process_sinks and name not in child_process_sinks:
+                            continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -470,6 +476,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     child_process_sinks.get(obj_name) == "child_process"
                                 )
                         if not is_valid:
+                            continue
+                    else:
+                        if child_process_sinks and name not in child_process_sinks:
                             continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
@@ -716,6 +725,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "default",
                         "await",
                         "case",
+                        "else",
+                        "do",
                         "control_statement",
                     }
                     if (
@@ -912,6 +923,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "default",
                         "await",
                         "case",
+                        "else",
+                        "do",
                         "control_statement",
                     }
                     if (
@@ -1121,6 +1134,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     "default",
                     "await",
                     "case",
+                    "else",
+                    "do",
                     "control_statement",
                 }
                 if (
