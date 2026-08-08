@@ -128,9 +128,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not is_known_sink and callee_tail in self._CHILD_PROCESS_NAMES:
                 if "." in callee:
                     obj_name = callee.split(".")[0]
-                    if obj_name in {"child_process", "cp"} or (
-                        child_process_sinks and obj_name in child_process_sinks
-                    ):
+                    if child_process_sinks:
+                        is_valid = (
+                            child_process_sinks.get(obj_name) == "child_process"
+                            or child_process_sinks.get(obj_name) == obj_name
+                            or obj_name in child_process_sinks
+                        )
+                    else:
+                        is_valid = obj_name in {"child_process", "cp"}
+                    if is_valid:
                         is_known_sink = True
                 else:
                     if not child_process_sinks:
@@ -293,12 +299,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
                     if prefix_match:
                         obj_name = prefix_match.group(1)
-                        is_valid = obj_name in {"child_process", "cp"}
-                        if not is_valid:
-                            if child_process_sinks:
-                                is_valid = (obj_name in child_process_sinks) or (
-                                    child_process_sinks.get(obj_name) == "child_process"
-                                )
+                        if child_process_sinks:
+                            is_valid = (
+                                child_process_sinks.get(obj_name) == "child_process"
+                                or obj_name in child_process_sinks
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
                     else:
@@ -408,12 +415,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
                     if prefix_match:
                         obj_name = prefix_match.group(1)
-                        is_valid = obj_name in {"child_process", "cp"}
-                        if not is_valid:
-                            if child_process_sinks:
-                                is_valid = (obj_name in child_process_sinks) or (
-                                    child_process_sinks.get(obj_name) == "child_process"
-                                )
+                        if child_process_sinks:
+                            is_valid = (
+                                child_process_sinks.get(obj_name) == "child_process"
+                                or obj_name in child_process_sinks
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
                     else:
@@ -469,12 +477,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
                     if prefix_match:
                         obj_name = prefix_match.group(1)
-                        is_valid = obj_name in {"child_process", "cp"}
-                        if not is_valid:
-                            if child_process_sinks:
-                                is_valid = (obj_name in child_process_sinks) or (
-                                    child_process_sinks.get(obj_name) == "child_process"
-                                )
+                        if child_process_sinks:
+                            is_valid = (
+                                child_process_sinks.get(obj_name) == "child_process"
+                                or obj_name in child_process_sinks
+                            )
+                        else:
+                            is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
                     else:
@@ -727,6 +736,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "case",
                         "else",
                         "do",
+                        "instanceof",
+                        "in",
+                        "new",
                         "control_statement",
                     }
                     if (
@@ -925,6 +937,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "case",
                         "else",
                         "do",
+                        "instanceof",
+                        "in",
+                        "new",
                         "control_statement",
                     }
                     if (
@@ -1136,6 +1151,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     "case",
                     "else",
                     "do",
+                    "instanceof",
+                    "in",
+                    "new",
                     "control_statement",
                 }
                 if (

@@ -77,14 +77,20 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 rec._char_offset = line_col_to_offset(src, i, col)
                 records.append(rec)
 
-            # 2. sh, bash, zsh, ksh -c
-            for m in re.finditer("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", stripped):
+            # 2. sh, bash, zsh, ksh -c (xargs/find 含む)
+            for m in re.finditer(r"\b(?:sh|bash|zsh|ksh)\s+-c\b", stripped):
                 prefix = self._get_shell_prefix_context(stripped, m.start())
-                if re.search("\\b(?:xargs|find)\\b", prefix):
-                    continue
+                is_xargs_find = bool(re.search(r"\b(?:xargs|find)\b", prefix))
+
                 call_text = self._get_shell_statement_context(stripped, m.start())
                 if not self._shell_expands_external_input(call_text, tainted_names):
                     continue
+
+                msg = (
+                    "External input reaches xargs/find shell -c execution"
+                    if is_xargs_find
+                    else "External input reaches shell -c execution"
+                )
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -92,7 +98,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     severity=Severity.HIGH,
                     file_path=rel_path,
                     line=i,
-                    message="External input reaches shell -c execution",
+                    message=msg,
                 )
                 col = stmt_start_idx + m.start()
                 rec._column = col
@@ -160,31 +166,6 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     rec._column = col
                     rec._char_offset = line_col_to_offset(src, i, col)
                     records.append(rec)
-
-            # 6. xargs/find -c
-            for m in re.finditer(
-                r"\b(?:xargs|find)\b(?:[^;&|\n]|(?<=[<>])&|&(?=>))*\b(?:sh|bash|zsh|ksh)\s+-c\b",
-                stripped,
-            ):
-                call_text = self._get_shell_statement_context(stripped, m.start())
-                if not self._shell_expands_external_input(call_text, tainted_names):
-                    continue
-                rec = RiskRecord(
-                    rule_id=self.rule_id,
-                    category=self.category,
-                    title=self.title,
-                    severity=Severity.HIGH,
-                    file_path=rel_path,
-                    line=i,
-                    message="External input reaches xargs/find shell -c execution",
-                )
-                matched_str = m.group(0)
-                sh_match = re.search(r"\b(?:sh|bash|zsh|ksh)\s+-c\b", matched_str)
-                rel_offset = sh_match.start() if sh_match else 0
-                col = stmt_start_idx + m.start() + rel_offset
-                rec._column = col
-                rec._char_offset = line_col_to_offset(src, i, col)
-                records.append(rec)
 
             # 7. controls command name
             if self._line_starts_with_tainted_command(stripped, tainted_names):
