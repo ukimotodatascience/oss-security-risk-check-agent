@@ -220,7 +220,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         stmt_start_offset = 0
         state = CommentRemovalState()
         for i, line in enumerate(lines, start=1):
-            comment_removed = self._remove_line_comments(line, state)
+            comment_removed, _ = self._remove_line_comments(line, state)
             stripped = comment_removed.strip()
             raw_line = raw_lines[i - 1] if 1 <= i <= len(raw_lines) else ""
             if not stripped:
@@ -674,9 +674,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return text[start_paren_idx:]
 
     @staticmethod
-    def _remove_line_comments(line: str, state: CommentRemovalState) -> str:
+    def _remove_line_comments(
+        line: str, state: CommentRemovalState
+    ) -> Tuple[str, List[int]]:
         idx = 0
         result = []
+        result_indices = []
         while idx < len(line):
             char = line[idx]
             if state.in_block_comment:
@@ -688,6 +691,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             if state.escaped:
                 state.escaped = False
+                result.append(char)
+                result_indices.append(idx)
                 idx += 1
                 continue
             if state.in_string:
@@ -696,6 +701,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 elif char == state.in_string:
                     state.in_string = None
                 result.append(char)
+                result_indices.append(idx)
                 idx += 1
                 continue
             if state.in_regex:
@@ -710,6 +716,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     elif char == "/":
                         state.in_regex = False
                 result.append(char)
+                result_indices.append(idx)
                 idx += 1
                 continue
             if char == "/" and idx + 1 < len(line):
@@ -772,16 +779,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     ):
                         state.in_regex = True
                         result.append(char)
+                        result_indices.append(idx)
                         idx += 1
                         continue
             if char in {"'", '"', "`"}:
                 state.in_string = char
                 result.append(char)
+                result_indices.append(idx)
                 idx += 1
                 continue
             result.append(char)
+            result_indices.append(idx)
             idx += 1
-        return "".join(result)
+        return "".join(result), result_indices
 
     @staticmethod
     def _build_index_map(raw_stmt: str) -> List[int]:
@@ -801,22 +811,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
         state = CommentRemovalState()
         for line in raw_lines:
-            comment_removed = JsTsCommandInjectionDetector._remove_line_comments(
-                line, state
+            comment_removed, result_indices = (
+                JsTsCommandInjectionDetector._remove_line_comments(line, state)
             )
             stripped_line = comment_removed.strip()
             if not stripped_line:
                 raw_offset += len(line)
                 continue
 
-            left_spaces = len(line) - len(line.lstrip())
-            line_start_raw = raw_offset + left_spaces
+            lstripped = comment_removed.lstrip()
+            left_spaces_in_removed = len(comment_removed) - len(lstripped)
+            rstripped_len = len(lstripped.rstrip())
 
             if has_prev:
                 stripped_map.append(raw_offset - 1 if raw_offset > 0 else 0)
 
-            for j in range(len(stripped_line)):
-                stripped_map.append(line_start_raw + j)
+            for j in range(rstripped_len):
+                removed_char_idx = left_spaces_in_removed + j
+                orig_char_idx = result_indices[removed_char_idx]
+                stripped_map.append(raw_offset + orig_char_idx)
 
             has_prev = True
             raw_offset += len(line)

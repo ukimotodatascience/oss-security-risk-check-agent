@@ -358,6 +358,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
     def _get_shell_statement_context(text: str, start_idx: int) -> str:
         in_string = None
         escaped = False
+        paren_level = 0
         for idx in range(start_idx, len(text)):
             char = text[idx]
             if escaped:
@@ -373,7 +374,14 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if char in {"'", '"', "`"}:
                 in_string = char
                 continue
+            if char == "(":
+                paren_level += 1
+            elif char == ")":
+                if paren_level > 0:
+                    paren_level -= 1
             if char in {";", "|", "&"}:
+                if paren_level > 0:
+                    continue
                 if char == "&":
                     if (idx > 0 and text[idx - 1] in {">", "<"}) or (
                         idx + 1 < len(text) and text[idx + 1] == ">"
@@ -387,6 +395,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         last_delim_idx = -1
         in_string = None
         escaped = False
+        paren_level = 0
         for idx in range(match_start):
             char = text[idx]
             if escaped:
@@ -402,7 +411,14 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if char in {"'", '"', "`"}:
                 in_string = char
                 continue
+            if char == "(":
+                paren_level += 1
+            elif char == ")":
+                if paren_level > 0:
+                    paren_level -= 1
             if char in {";", "|", "&"}:
+                if paren_level > 0:
+                    continue
                 if char == "&":
                     if (idx > 0 and text[idx - 1] in {">", "<"}) or (
                         idx + 1 < len(text) and text[idx + 1] == ">"
