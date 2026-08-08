@@ -25,6 +25,7 @@ class CommentRemovalState:
         self.in_regex: bool = False
         self.in_regex_class: bool = False
         self.escaped: bool = False
+        self.template_depths: List[int] = []
 
 
 class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
@@ -556,6 +557,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_regex = False
         in_regex_class = False
         escaped = False
+        template_depths: List[int] = []
 
         idx = start_paren_idx
         while idx < len(text):
@@ -583,9 +585,32 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 idx += 1
                 continue
 
+            if not in_string and not in_block_comment and not in_regex:
+                if template_depths:
+                    if char == "{":
+                        template_depths[-1] += 1
+                    elif char == "}":
+                        if template_depths[-1] > 0:
+                            template_depths[-1] -= 1
+                        else:
+                            template_depths.pop()
+                            in_string = "`"
+                            idx += 1
+                            continue
+
             if in_string:
                 if char == "\\":
                     escaped = True
+                elif (
+                    in_string == "`"
+                    and char == "$"
+                    and idx + 1 < len(text)
+                    and text[idx + 1] == "{"
+                ):
+                    template_depths.append(0)
+                    in_string = None
+                    idx += 2
+                    continue
                 elif char == in_string:
                     in_string = None
                 idx += 1
@@ -742,9 +767,45 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 result_indices.append(idx)
                 idx += 1
                 continue
+            if (
+                not state.in_string
+                and not state.in_block_comment
+                and not state.in_regex
+            ):
+                if (
+                    getattr(state, "template_depths", None) is not None
+                    and state.template_depths
+                ):
+                    if char == "{":
+                        state.template_depths[-1] += 1
+                    elif char == "}":
+                        if state.template_depths[-1] > 0:
+                            state.template_depths[-1] -= 1
+                        else:
+                            state.template_depths.pop()
+                            state.in_string = "`"
+                            result.append(char)
+                            result_indices.append(idx)
+                            idx += 1
+                            continue
+
             if state.in_string:
                 if char == "\\":
                     state.escaped = True
+                elif (
+                    state.in_string == "`"
+                    and char == "$"
+                    and idx + 1 < len(line)
+                    and line[idx + 1] == "{"
+                ):
+                    state.template_depths.append(0)
+                    state.in_string = None
+                    result.append(char)
+                    result_indices.append(idx)
+                    result.append("{")
+                    result_indices.append(idx + 1)
+                    idx += 2
+                    continue
                 elif char == state.in_string:
                     state.in_string = None
                 result.append(char)

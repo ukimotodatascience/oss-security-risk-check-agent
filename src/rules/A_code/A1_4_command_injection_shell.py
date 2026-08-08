@@ -365,7 +365,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if escaped:
                 escaped = False
                 continue
-            if char == "\\":
+            if char == "\\" and in_string != "'":
                 escaped = True
                 continue
             if in_string:
@@ -408,7 +408,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if escaped:
                 escaped = False
                 continue
-            if char == "\\":
+            if char == "\\" and in_string != "'":
                 escaped = True
                 continue
             if in_string:
