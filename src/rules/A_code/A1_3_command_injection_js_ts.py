@@ -1187,52 +1187,101 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
 
             word_match = re.match(r"\b(const|let|var)\b", text[idx:])
-            if word_match and brace_level == 0 and paren_level == 0:
-                if current_var_name is not None and current_rhs_start != -1:
-                    rhs_val = text[current_rhs_start:idx].strip()
-                    decls.append((current_var_name, rhs_val))
-                    current_var_name = None
-                    current_rhs_start = -1
+            assign_match = None
+            if (
+                not word_match
+                and current_var_name is None
+                and brace_level == 0
+                and paren_level == 0
+            ):
+                assign_match = re.match(r"\b([A-Za-z_$][\w$]*)\s*=(?!=)", text[idx:])
+                if assign_match:
+                    p_idx = idx - 1
+                    while p_idx >= 0 and text[p_idx].isspace():
+                        p_idx -= 1
+                    if p_idx >= 0 and text[p_idx] == ".":
+                        assign_match = None
 
-                idx += len(word_match.group(0))
-                eq_found = -1
-                v_in_string = None
-                v_brace_depth = 0
-                v_paren_depth = 0
-                v_idx = idx
-                while v_idx < len(text):
-                    v_char = text[v_idx]
-                    if v_in_string:
-                        if v_char == "\\":
-                            v_idx += 2
+            if word_match or assign_match:
+                is_boundary = word_match and (
+                    (current_var_name is None)
+                    or (brace_level == 0 and paren_level == 0)
+                )
+                if assign_match:
+                    is_boundary = True
+
+                if is_boundary:
+                    if current_var_name is not None and current_rhs_start != -1:
+                        rhs_val = text[current_rhs_start:idx].strip()
+                        decls.append((current_var_name, rhs_val))
+                        current_var_name = None
+                        current_rhs_start = -1
+
+                    if word_match:
+                        idx += len(word_match.group(0))
+                        brace_level = 0
+                        paren_level = 0
+                        eq_found = -1
+                        v_in_string = None
+                        v_brace_depth = 0
+                        v_paren_depth = 0
+                        v_idx = idx
+                        while v_idx < len(text):
+                            v_char = text[v_idx]
+                            if v_in_string:
+                                if v_char == "\\":
+                                    v_idx += 2
+                                    continue
+                                if v_char == v_in_string:
+                                    v_in_string = None
+                            else:
+                                if v_char in {"'", '"', "`"}:
+                                    v_in_string = v_char
+                                elif v_char == "{":
+                                    v_brace_depth += 1
+                                elif v_char == "}":
+                                    if v_brace_depth > 0:
+                                        v_brace_depth -= 1
+                                elif v_char == "(":
+                                    v_paren_depth += 1
+                                elif v_char == ")":
+                                    if v_paren_depth > 0:
+                                        v_paren_depth -= 1
+                                elif (
+                                    v_char == "="
+                                    and v_brace_depth == 0
+                                    and v_paren_depth == 0
+                                ):
+                                    eq_found = v_idx
+                                    break
+                                elif (
+                                    v_char == ";"
+                                    and v_brace_depth == 0
+                                    and v_paren_depth == 0
+                                ):
+                                    break
+                            v_idx += 1
+
+                        if eq_found != -1:
+                            current_var_name = text[idx:eq_found].strip()
+                            current_rhs_start = eq_found + 1
+                            idx = eq_found + 1
                             continue
-                        if v_char == v_in_string:
-                            v_in_string = None
-                    else:
-                        if v_char in {"'", '"', "`"}:
-                            v_in_string = v_char
-                        elif v_char == "{":
-                            v_brace_depth += 1
-                        elif v_char == "}":
-                            if v_brace_depth > 0:
-                                v_brace_depth -= 1
-                        elif v_char == "(":
-                            v_paren_depth += 1
-                        elif v_char == ")":
-                            if v_paren_depth > 0:
-                                v_paren_depth -= 1
-                        elif (
-                            v_char == "=" and v_brace_depth == 0 and v_paren_depth == 0
-                        ):
-                            eq_found = v_idx
-                            break
-                    v_idx += 1
+                    else:  # assign_match
+                        current_var_name = assign_match.group(1)
+                        idx += len(assign_match.group(0))
+                        current_rhs_start = idx
+                        brace_level = 0
+                        paren_level = 0
+                        continue
 
-                if eq_found != -1:
-                    current_var_name = text[idx:eq_found].strip()
-                    current_rhs_start = eq_found + 1
-                    idx = eq_found + 1
-                    continue
+            if not in_string and not in_regex and not template_depths:
+                if char == ";" and brace_level == 0 and paren_level == 0:
+                    if current_var_name is not None and current_rhs_start != -1:
+                        rhs_val = text[current_rhs_start:idx].strip()
+                        decls.append((current_var_name, rhs_val))
+                        current_var_name = None
+                        current_rhs_start = -1
 
             idx += 1
 
