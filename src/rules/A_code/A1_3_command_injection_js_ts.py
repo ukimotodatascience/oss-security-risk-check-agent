@@ -62,7 +62,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
-        child_process_sinks: Set[str] = set()
+        child_process_sinks: Dict[str, str] = {}
         for node in iter_ts_nodes(root):
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
@@ -88,7 +88,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     ) and self._is_child_process_alias_assignment(
                         right_clean, child_process_sinks
                     ):
-                        child_process_sinks.add(left_text)
+                        orig_name = self._get_child_process_original_name(
+                            right_clean, child_process_sinks
+                        )
+                        if orig_name:
+                            child_process_sinks[left_text] = orig_name
                     if re.fullmatch(
                         "[A-Za-z_$][\\w$]*", left_text
                     ) and self._js_has_external_input(right_text, tainted_names):
@@ -129,7 +133,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if "." in callee:
                     obj_name = callee.split(".")[0]
                     if child_process_sinks:
-                        is_valid = obj_name in child_process_sinks
+                        is_valid = (
+                            child_process_sinks.get(obj_name) == "child_process"
+                        )
                     else:
                         is_valid = obj_name in {"child_process", "cp"}
                     if is_valid:
@@ -298,7 +304,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if child_process_sinks:
                             is_valid = (
                                 child_process_sinks.get(obj_name) == "child_process"
-                                or obj_name in child_process_sinks
                             )
                         else:
                             is_valid = obj_name in {"child_process", "cp"}
@@ -414,7 +419,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if child_process_sinks:
                             is_valid = (
                                 child_process_sinks.get(obj_name) == "child_process"
-                                or obj_name in child_process_sinks
                             )
                         else:
                             is_valid = obj_name in {"child_process", "cp"}
@@ -476,7 +480,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if child_process_sinks:
                             is_valid = (
                                 child_process_sinks.get(obj_name) == "child_process"
-                                or obj_name in child_process_sinks
                             )
                         else:
                             is_valid = obj_name in {"child_process", "cp"}
@@ -1015,6 +1018,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         current_var_name = None
         current_rhs_start = -1
 
+        brace_level = 0
+        paren_level = 0
+
         while idx < len(text):
             char = text[idx]
 
@@ -1067,6 +1073,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         in_regex = False
                 idx += 1
                 continue
+
+            if not in_string and not in_regex and not template_depths:
+                if char == "{":
+                    brace_level += 1
+                elif char == "}":
+                    if brace_level > 0:
+                        brace_level -= 1
+                elif char == "(":
+                    paren_level += 1
+                elif char == ")":
+                    if paren_level > 0:
+                        paren_level -= 1
 
             if char in {"'", '"', "`"}:
                 in_string = char
@@ -1162,7 +1180,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
 
             word_match = re.match(r"\b(const|let|var)\b", text[idx:])
-            if word_match:
+            if word_match and brace_level == 0 and paren_level == 0:
                 if current_var_name is not None and current_rhs_start != -1:
                     rhs_val = text[current_rhs_start:idx].strip()
                     decls.append((current_var_name, rhs_val))
