@@ -72,7 +72,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 "variable_declaration",
             }:
                 self._register_child_process_imports(text, child_process_sinks)
-            if node_type in {"variable_declarator", "assignment_expression"}:
+            if node_type in {
+                "variable_declarator",
+                "assignment_expression",
+                "augmented_assignment_expression",
+            }:
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
                 )
@@ -1031,6 +1035,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
         brace_level = 0
         paren_level = 0
+        bracket_level = 0
 
         while idx < len(text):
             char = text[idx]
@@ -1096,6 +1101,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 elif char == ")":
                     if paren_level > 0:
                         paren_level -= 1
+                elif char == "[":
+                    bracket_level += 1
+                elif char == "]":
+                    if bracket_level > 0:
+                        bracket_level -= 1
 
             if char in {"'", '"', "`"}:
                 in_string = char
@@ -1197,11 +1207,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             assign_match = None
             if not word_match:
                 is_assign_candidate = (current_var_name is None) or (
-                    brace_level > 0 or paren_level > 0
+                    brace_level > 0 or paren_level > 0 or bracket_level > 0
                 )
                 if is_assign_candidate:
                     assign_match = re.match(
-                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=(?!=)",
+                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
                         text[idx:],
                     )
                     if assign_match:
@@ -1215,11 +1225,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 is_boundary = False
                 if word_match:
                     is_boundary = (current_var_name is None) or (
-                        brace_level == 0 and paren_level == 0
+                        brace_level == 0 and paren_level == 0 and bracket_level == 0
                     )
                 elif assign_match:
                     is_boundary = (current_var_name is None) and (
-                        brace_level == 0 and paren_level == 0
+                        brace_level == 0 and paren_level == 0 and bracket_level == 0
                     )
 
                 if is_boundary:
@@ -1233,10 +1243,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         idx += len(word_match.group(0))
                         brace_level = 0
                         paren_level = 0
+                        bracket_level = 0
                         eq_found = -1
                         v_in_string = None
                         v_brace_depth = 0
                         v_paren_depth = 0
+                        v_bracket_depth = 0
                         v_idx = idx
                         while v_idx < len(text):
                             v_char = text[v_idx]
@@ -1259,10 +1271,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 elif v_char == ")":
                                     if v_paren_depth > 0:
                                         v_paren_depth -= 1
+                                elif v_char == "[":
+                                    v_bracket_depth += 1
+                                elif v_char == "]":
+                                    if v_bracket_depth > 0:
+                                        v_bracket_depth -= 1
                                 elif (
                                     v_char == "="
                                     and v_brace_depth == 0
                                     and v_paren_depth == 0
+                                    and v_bracket_depth == 0
                                 ):
                                     eq_found = v_idx
                                     break
@@ -1270,6 +1288,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     v_char == ";"
                                     and v_brace_depth == 0
                                     and v_paren_depth == 0
+                                    and v_bracket_depth == 0
                                 ):
                                     break
                             v_idx += 1
@@ -1285,6 +1304,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         current_rhs_start = idx
                         brace_level = 0
                         paren_level = 0
+                        bracket_level = 0
                         continue
                 else:
                     inner_start = idx
@@ -1297,6 +1317,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     v_in_string = None
                     v_brace_depth = 0
                     v_paren_depth = 0
+                    v_bracket_depth = 0
                     v_idx = inner_start + idx_skip
                     while v_idx < len(text):
                         v_char = text[v_idx]
@@ -1323,16 +1344,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     v_paren_depth -= 1
                                 else:
                                     break
+                            elif v_char == "[":
+                                v_bracket_depth += 1
+                            elif v_char == "]":
+                                if v_bracket_depth > 0:
+                                    v_bracket_depth -= 1
+                                else:
+                                    break
                             elif (
                                 v_char == "="
                                 and v_brace_depth == 0
                                 and v_paren_depth == 0
+                                and v_bracket_depth == 0
                             ):
                                 eq_found = v_idx
                             elif (
                                 v_char == ";"
                                 and v_brace_depth == 0
                                 and v_paren_depth == 0
+                                and v_bracket_depth == 0
                             ):
                                 break
                         v_idx += 1
@@ -1353,7 +1383,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
 
             if not in_string and not in_regex and not template_depths:
-                if char == ";" and brace_level == 0 and paren_level == 0:
+                if (
+                    char == ";"
+                    and brace_level == 0
+                    and paren_level == 0
+                    and bracket_level == 0
+                ):
+                    if current_var_name is not None and current_rhs_start != -1:
+                        rhs_val = text[current_rhs_start:idx].strip()
+                        decls.append((current_var_name, rhs_val))
+                        current_var_name = None
+                        current_rhs_start = -1
+                elif (
+                    char == ","
+                    and brace_level == 0
+                    and paren_level == 0
+                    and bracket_level == 0
+                ):
                     if current_var_name is not None and current_rhs_start != -1:
                         rhs_val = text[current_rhs_start:idx].strip()
                         decls.append((current_var_name, rhs_val))
