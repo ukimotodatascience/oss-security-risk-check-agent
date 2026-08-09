@@ -100,6 +100,20 @@ class JsTsSinkMixin:
                         f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                     )
 
+        default_import_match = re.search(
+            r"import\s+([A-Za-z_$][\w$]*)\s+from\s+['\"](?:node:)?child_process['\"]",
+            text,
+        )
+        if default_import_match:
+            def_name = default_import_match.group(1)
+            if is_dict:
+                sinks[def_name] = "child_process"
+                for name in self._CHILD_PROCESS_NAMES:
+                    sinks[f"{def_name}.{name}"] = name
+            else:
+                sinks.add(def_name)
+                sinks.update(f"{def_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
     def _get_child_process_original_name(
         self, rhs_clean: str, sinks: Union[Set[str], Dict[str, str]]
     ) -> Optional[str]:
