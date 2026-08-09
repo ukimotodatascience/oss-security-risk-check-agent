@@ -25,54 +25,61 @@ class JsTsSinkMixin:
         )
         if import_match:
             imports_str = import_match.group(1).strip()
-            if "as" in imports_str and "*" in imports_str:
-                ns_match = re.match(r"\*\s*as\s+([A-Za-z_$][\w$]*)", imports_str)
-                if ns_match:
-                    ns_name = ns_match.group(1)
-                    if is_dict:
-                        sinks[ns_name] = "child_process"
-                        for name in self._CHILD_PROCESS_NAMES:
-                            sinks[f"{ns_name}.{name}"] = name
-                    else:
-                        sinks.add(ns_name)
-                        sinks.update(
-                            f"{ns_name}.{name}" for name in self._CHILD_PROCESS_NAMES
-                        )
-            else:
-                named_match = re.search(r"\{([^}]+)\}", imports_str)
-                default_part = re.sub(r"\{[^}]*\}", "", imports_str).strip(", \n\t")
-                if default_part:
-                    def_name = default_part.split(",")[0].strip()
-                    if def_name:
+
+            # 1. Extract namespace import if present (e.g. * as ns)
+            ns_match = re.search(r"\*\s*as\s+([A-Za-z_$][\w$]*)", imports_str)
+            if ns_match:
+                ns_name = ns_match.group(1)
+                if is_dict:
+                    sinks[ns_name] = "child_process"
+                    for name in self._CHILD_PROCESS_NAMES:
+                        sinks[f"{ns_name}.{name}"] = name
+                else:
+                    sinks.add(ns_name)
+                    sinks.update(
+                        f"{ns_name}.{name}" for name in self._CHILD_PROCESS_NAMES
+                    )
+                # Remove the namespace part from imports_str
+                imports_str = imports_str.replace(ns_match.group(0), "")
+
+            # 2. Extract named imports if present (e.g. { exec, spawn })
+            named_match = re.search(r"\{([^}]+)\}", imports_str)
+            if named_match:
+                for name in named_match.group(1).split(","):
+                    name = name.strip()
+                    if not name:
+                        continue
+                    alias_match = re.match(
+                        r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s+as\s+([A-Za-z_$][\w$]*)",
+                        name,
+                    )
+                    if alias_match:
                         if is_dict:
-                            sinks[def_name] = "child_process"
-                            for name in self._CHILD_PROCESS_NAMES:
-                                sinks[f"{def_name}.{name}"] = name
+                            sinks[alias_match.group(2)] = alias_match.group(1)
                         else:
-                            sinks.add(def_name)
-                            sinks.update(
-                                f"{def_name}.{name}"
-                                for name in self._CHILD_PROCESS_NAMES
-                            )
-                if named_match:
-                    for name in named_match.group(1).split(","):
-                        name = name.strip()
-                        if not name:
-                            continue
-                        alias_match = re.match(
-                            r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s+as\s+([A-Za-z_$][\w$]*)",
-                            name,
+                            sinks.add(alias_match.group(2))
+                    else:
+                        if is_dict:
+                            sinks[name] = name
+                        else:
+                            sinks.add(name)
+                # Remove the named part from imports_str
+                imports_str = re.sub(r"\{[^}]*\}", "", imports_str)
+
+            # 3. Any remaining part is the default import
+            default_part = imports_str.strip(", \n\t")
+            if default_part:
+                def_name = default_part.split(",")[0].strip()
+                if def_name:
+                    if is_dict:
+                        sinks[def_name] = "child_process"
+                        for name in self._CHILD_PROCESS_NAMES:
+                            sinks[f"{def_name}.{name}"] = name
+                    else:
+                        sinks.add(def_name)
+                        sinks.update(
+                            f"{def_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                         )
-                        if alias_match:
-                            if is_dict:
-                                sinks[alias_match.group(2)] = alias_match.group(1)
-                            else:
-                                sinks.add(alias_match.group(2))
-                        else:
-                            if is_dict:
-                                sinks[name] = name
-                            else:
-                                sinks.add(name)
 
         require_match = re.search(
             r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
