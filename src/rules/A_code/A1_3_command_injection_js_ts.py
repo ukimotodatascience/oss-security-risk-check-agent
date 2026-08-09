@@ -84,7 +84,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     right_text = ts_node_text(src_bytes, right)
                     right_clean = right_text.strip()
                     if re.fullmatch(
-                        "[A-Za-z_$][\\w$]*", left_text
+                        r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text
                     ) and self._is_child_process_alias_assignment(
                         right_clean, child_process_sinks
                     ):
@@ -94,7 +94,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if orig_name:
                             child_process_sinks[left_text] = orig_name
                     if re.fullmatch(
-                        "[A-Za-z_$][\\w$]*", left_text
+                        r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text
                     ) and self._js_has_external_input(right_text, tainted_names):
                         tainted_names.add(left_text)
             if node_type != "call_expression":
@@ -106,6 +106,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if callee_node is None:
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
+            callee = callee.replace("?.", ".")
             call_text = text
             sink_node = None
             if callee_node is not None:
@@ -296,7 +297,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(file_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
-                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    prefix_match = re.search(
+                        r"([\w$]+)\s*\??\.\s*$", stripped[: m.start()]
+                    )
                     if prefix_match:
                         obj_name = prefix_match.group(1)
                         if child_process_sinks:
@@ -350,14 +353,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if name == "exec":
                     matched_str = m.group(0)
                     if "." in matched_str:
-                        obj_name = matched_str.split(".")[0].strip()
+                        obj_name = matched_str.split(".")[0].strip().rstrip("?")
                         if obj_name in {"child_process", "cp"} or (
                             child_process_sinks and obj_name in child_process_sinks
                         ):
                             continue
                     else:
                         prefix_match = re.search(
-                            r"([\w$]+)\.\s*$", stripped[: m.start()]
+                            r"([\w$]+)\s*\??\.\s*$", stripped[: m.start()]
                         )
                         if prefix_match:
                             obj_name = prefix_match.group(1)
@@ -411,7 +414,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(exec_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
-                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    prefix_match = re.search(
+                        r"([\w$]+)\s*\??\.\s*$", stripped[: m.start()]
+                    )
                     if prefix_match:
                         obj_name = prefix_match.group(1)
                         if child_process_sinks:
@@ -472,7 +477,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             for name in sorted(spawn_names):
                 for m in re.finditer(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped):
-                    prefix_match = re.search(r"([\w$]+)\.\s*$", stripped[: m.start()])
+                    prefix_match = re.search(
+                        r"([\w$]+)\s*\??\.\s*$", stripped[: m.start()]
+                    )
                     if prefix_match:
                         obj_name = prefix_match.group(1)
                         if child_process_sinks:
@@ -1194,7 +1201,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 if is_assign_candidate:
                     assign_match = re.match(
-                        r"\b([A-Za-z_$][\w$]*)\s*=(?!=)", text[idx:]
+                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=(?!=)",
+                        text[idx:],
                     )
                     if assign_match:
                         p_idx = idx - 1

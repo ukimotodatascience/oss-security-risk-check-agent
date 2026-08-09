@@ -330,6 +330,29 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "app.js",
+            """
+            import childProcess, { spawn } from "node:child_process";
+            childProcess.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
+            cp?.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
+            const holder = {};
+            holder.cmd = req.query.cmd;
+            cp.exec(holder.cmd);
+            """,
+        ),
+        (
             "run.sh",
             """
             #!/bin/sh
