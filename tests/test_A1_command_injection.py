@@ -197,6 +197,19 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            const cp = require("child_process");
+            require("child_process").exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            proc.exec(req.query.cmd); import * as proc from "node:child_process";
+            """,
+        ),
+        (
+            "app.js",
+            """
             const { spawn } = require("child_process");
             const target = req.query.target;
             spawn("cat", [target.replace(/\\//g, "")], { shell: true });
@@ -582,6 +595,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """
             #!/bin/sh
             sh -c "$(echo safe | cat) $1"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            printf '%s' "$1" | eval "$(cat)"
             """,
         ),
         (

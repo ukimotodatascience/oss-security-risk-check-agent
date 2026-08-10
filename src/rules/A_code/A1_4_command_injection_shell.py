@@ -60,7 +60,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
 
             # 1. eval
             for m in re.finditer("\\beval\\b", stripped):
-                call_text = self._get_shell_statement_context(stripped, m.start())
+                call_text = self._get_shell_pipeline_context(stripped, m.start())
                 if not self._shell_expands_external_input(call_text, tainted_names):
                     continue
                 rec = RiskRecord(
@@ -376,6 +376,56 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         continue
                 return text[start_idx:idx]
         return text[start_idx:]
+
+    @staticmethod
+    def _get_shell_pipeline_context(text: str, target_idx: int) -> str:
+        segment_start = 0
+        in_string = None
+        escaped = False
+        paren_level = 0
+        brace_level = 0
+        idx = 0
+        while idx < len(text):
+            char = text[idx]
+            if escaped:
+                escaped = False
+                idx += 1
+                continue
+            if char == "\\" and in_string != "'":
+                escaped = True
+                idx += 1
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                idx += 1
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                idx += 1
+                continue
+            if char == "(":
+                paren_level += 1
+            elif char == ")" and paren_level:
+                paren_level -= 1
+            elif char == "{" and idx > 0 and text[idx - 1] == "$":
+                brace_level += 1
+            elif char == "}" and brace_level:
+                brace_level -= 1
+            if paren_level == 0 and brace_level == 0:
+                delimiter_length = 0
+                if char == ";":
+                    delimiter_length = 1
+                elif text[idx : idx + 2] in {"&&", "||"}:
+                    delimiter_length = 2
+                if delimiter_length:
+                    if idx >= target_idx:
+                        return text[segment_start:idx]
+                    segment_start = idx + delimiter_length
+                    idx += delimiter_length
+                    continue
+            idx += 1
+        return text[segment_start:]
 
     @staticmethod
     def _get_shell_prefix_context(text: str, match_start: int) -> str:
