@@ -689,7 +689,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 names_to_register = []
                 if var_names_str.startswith("{") and var_names_str.endswith("}"):
                     inner = var_names_str[1:-1]
-                    for part in inner.split(","):
+                    for part in self._split_array_literal_elements(inner):
                         part = part.strip()
                         if not part:
                             continue
@@ -710,7 +710,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             names_to_register.append((part, part, default_val))
                 elif var_names_str.startswith("[") and var_names_str.endswith("]"):
                     inner = var_names_str[1:-1]
-                    for part in inner.split(","):
+                    for part in self._split_array_literal_elements(inner):
                         part = part.strip()
                         if not part:
                             names_to_register.append((None, None, None))

@@ -126,11 +126,11 @@ class JsTsSinkMixin:
                         f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                     )
 
-        dynamic_import_match = re.search(
+        dynamic_import_matches = re.finditer(
             r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
             text,
         )
-        if dynamic_import_match:
+        for dynamic_import_match in dynamic_import_matches:
             module_name = dynamic_import_match.group(1)
             if is_dict:
                 sinks[module_name] = "child_process"

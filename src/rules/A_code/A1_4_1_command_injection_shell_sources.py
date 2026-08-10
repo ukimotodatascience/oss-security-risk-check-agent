@@ -29,10 +29,7 @@ class ShellSourceMixin:
         )
         for statement in self._split_shell_statements(text):
             statement = statement.strip()
-            assignment_prefix = re.match(
-                r"(?:env|export|local|declare|typeset|readonly)\s+", statement
-            )
-            position = assignment_prefix.end() if assignment_prefix else 0
+            position = self._shell_assignment_start_position(statement)
             while position < len(statement):
                 m = assignment_pattern.match(statement, position)
                 if m is None:
@@ -77,6 +74,19 @@ class ShellSourceMixin:
                 start = idx + (2 if text[idx : idx + 2] in {"&&", "||"} else 1)
         statements.append(text[start:])
         return statements
+
+    @staticmethod
+    def _shell_assignment_start_position(statement: str) -> int:
+        env_prefix = re.match(
+            r"env\s+(?:(?:-i|--ignore-environment)\s+|(?:-u|--unset)\s+\S+\s+|--unset=\S+\s+)*",
+            statement,
+        )
+        if env_prefix:
+            return env_prefix.end()
+        declaration_prefix = re.match(
+            r"(?:export|local|declare|typeset|readonly)\s+", statement
+        )
+        return declaration_prefix.end() if declaration_prefix else 0
 
     @staticmethod
     def _track_shell_case_allowlist_from_text(

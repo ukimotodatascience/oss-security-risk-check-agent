@@ -184,6 +184,12 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            async function f(){ const one=await import("child_process"); const two=await import("node:child_process"); two.exec(req.query.cmd); }
+            """,
+        ),
+        (
+            "app.js",
+            """
             const cp = require("child_process");
             (cp).exec(req.query.cmd);
             """,
@@ -493,6 +499,22 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             "app.js",
             """
             const cp = require("child_process");
+            const { cmd = (0, req.query.cmd) } = {};
+            cp.exec(cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
+            const [cmd = (0, req.query.cmd)] = [];
+            cp.exec(cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
             const [safe, cmd] = [/a,b/, req.query.cmd];
             cp.exec(cmd);
             """,
@@ -609,6 +631,20 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """
             #!/bin/sh
             env CMD="$1" sh -c "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            env -i CMD="$1" sh -c "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            env -u PATH CMD="$1" sh -c "$CMD"
             """,
         ),
         (
