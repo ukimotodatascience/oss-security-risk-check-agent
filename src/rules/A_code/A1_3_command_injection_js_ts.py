@@ -697,6 +697,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_child_process_imports(
                 static_import.group(0), child_process_sinks
             )
+        for static_import in re.finditer(
+            r"import\s+[^;]+?\s+from\s+['\"]shelljs['\"]", src
+        ):
+            self._register_third_party_shell_imports(
+                static_import.group(0), third_party_shell_sinks
+            )
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
@@ -1162,6 +1168,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     sinks.add(alias_match.group(1))
                 elif imported_name == "exec":
                     sinks.add("exec")
+
+        namespace_patterns = (
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            r"import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+['\"]shelljs['\"]",
+        )
+        for pattern in namespace_patterns:
+            for namespace_match in re.finditer(pattern, text):
+                sinks.add(f"{namespace_match.group(1)}.exec")
 
     @staticmethod
     def _member_owner_name(text_before_member: str) -> Optional[str]:

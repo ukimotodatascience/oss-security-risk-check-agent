@@ -40,7 +40,7 @@ class JsTsSourceMixin:
         for name in tainted_names:
             normalized_name = JsTsSourceMixin._normalize_property_path(name)
             pattern = (
-                rf"(?<![a-zA-Z0-9_$]){re.escape(normalized_name)}(?![a-zA-Z0-9_$])"
+                rf"(?<![a-zA-Z0-9_$.]){re.escape(normalized_name)}(?![a-zA-Z0-9_$])"
             )
             if re.search(pattern, normalized_text):
                 return True

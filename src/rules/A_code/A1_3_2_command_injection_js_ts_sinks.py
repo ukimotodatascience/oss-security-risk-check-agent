@@ -104,7 +104,7 @@ class JsTsSinkMixin:
                         sinks.add(name)
 
         module_matches = re.finditer(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)(?:\.([A-Za-z_$][\w$]*))?",
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)(?:\.([A-Za-z_$][\w$]*))?",
             text,
         )
         for module_match in module_matches:
@@ -167,6 +167,8 @@ class JsTsSinkMixin:
     def _get_child_process_original_name(
         self, rhs_clean: str, sinks: Union[Set[str], Dict[str, str]]
     ) -> Optional[str]:
+        if re.fullmatch(r"require\(['\"](?:node:)?child_process['\"]\)", rhs_clean):
+            return "child_process"
         if not isinstance(sinks, dict):
             # sinks が set の場合は、単にメンバシップをチェックして自身を返す（フォールバック）
             if rhs_clean in sinks:
