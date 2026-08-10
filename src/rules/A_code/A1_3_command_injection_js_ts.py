@@ -156,6 +156,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     local_name = ts_node_text(src_bytes, child).strip()
                                 if local_name:
                                     tainted_names.add(local_name)
+                    elif left_type == "array_pattern":
+                        if self._js_has_external_input(right_text, tainted_names):
+                            for child in getattr(left, "named_children", []):
+                                c_type = getattr(child, "type", "")
+                                if c_type == "assignment_pattern":
+                                    left_node = ts_child_by_field_name(child, "left")
+                                    if left_node:
+                                        local_name = ts_node_text(
+                                            src_bytes, left_node
+                                        ).strip()
+                                    else:
+                                        local_name = None
+                                else:
+                                    local_name = ts_node_text(src_bytes, child).strip()
+                                if local_name and re.fullmatch(
+                                    r"[A-Za-z_$][\w$]*", local_name
+                                ):
+                                    tainted_names.add(local_name)
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
@@ -333,6 +351,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             names_to_register.append((local_name, prop_name))
                         else:
                             names_to_register.append((part, part))
+                elif var_names_str.startswith("[") and var_names_str.endswith("]"):
+                    inner = var_names_str[1:-1]
+                    for part in inner.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        local_name = part.split("=")[0].strip()
+                        if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
+                            names_to_register.append((local_name, None))
                 else:
                     names_to_register.append((var_names_str, None))
 
@@ -1218,6 +1245,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         ):
                             p_idx -= 1
                         prev_token = text[p_idx + 1 : end_p + 1]
+                    elif (
+                        text[p_idx] == "."
+                        and p_idx - 2 >= 0
+                        and text[p_idx - 2 : p_idx + 1] == "..."
+                    ):
+                        prev_token = "..."
                     else:
                         prev_token = text[p_idx]
 
@@ -1286,6 +1319,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     "in",
                     "new",
                     "control_statement",
+                    "...",
                 }
                 if (
                     prev_token == ""
