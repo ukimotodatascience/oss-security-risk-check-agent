@@ -188,6 +188,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            const cp = require("child_process");
+            cp.exec([.../[)]/.source, req.query.cmd].join(""));
+            """,
+        ),
+        (
+            "app.js",
+            """
             const { spawn } = require("child_process");
             const target = req.query.target;
             spawn("cat", [target, (() => /\\//.test(target))()], { shell: true });
@@ -643,6 +650,28 @@ def test_js_ignores_safe_cases(tmp_path):
                 const { cmd = "safe" } = {};
                 cp.exec(cmd);
             """,
+            "app8.js": """
+                const cp = require("child_process");
+                const { unsafe, safe } = {
+                    unsafe: req.query.cmd,
+                    safe: "date",
+                };
+                cp.exec(safe);
+            """,
         },
     )
+    assert records == []
+
+
+def test_shell_ignores_assignment_text_inside_single_quotes(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "run.sh": """
+                echo 'CMD=$1'
+                eval "$CMD"
+            """,
+        },
+    )
+
     assert records == []

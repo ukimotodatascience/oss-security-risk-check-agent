@@ -686,6 +686,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 rhs_elements = []
                 if rhs_is_array_literal:
                     rhs_elements = self._split_array_literal_elements(rhs_clean[1:-1])
+                is_object_destruct = var_names_str.startswith(
+                    "{"
+                ) and var_names_str.endswith("}")
+                rhs_is_object_literal = rhs_clean.startswith(
+                    "{"
+                ) and rhs_clean.endswith("}")
+                rhs_properties = {}
+                if rhs_is_object_literal:
+                    for property_text in self._split_array_literal_elements(
+                        rhs_clean[1:-1]
+                    ):
+                        property_match = re.match(
+                            r"\s*([A-Za-z_$][\w$]*)\s*:\s*(.+)\s*$",
+                            property_text,
+                        )
+                        if property_match:
+                            rhs_properties[property_match.group(1)] = (
+                                property_match.group(2)
+                            )
 
                 for element_idx, (var_name, prop_name, default_val) in enumerate(
                     names_to_register
@@ -722,6 +741,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             has_input = self._js_has_external_input(
                                 rhs_elements[element_idx], tainted_names
                             )
+                    elif (
+                        is_object_destruct
+                        and rhs_is_object_literal
+                        and prop_name in rhs_properties
+                    ):
+                        has_input = self._js_has_external_input(
+                            rhs_properties[prop_name], tainted_names
+                        )
                     else:
                         has_input = self._js_has_external_input(rhs, tainted_names)
 
@@ -1147,6 +1174,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             prev_token = text[p_idx + 1 : end_p + 1]
                         else:
                             prev_token = text[p_idx]
+                            if p_idx >= 2 and text[p_idx - 2 : p_idx + 1] == "...":
+                                prev_token = "..."
 
                     if prev_token == ")":
                         depth = 1
@@ -1199,6 +1228,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         "/",
                         "%",
                         "^",
+                        "...",
                     }
                     regex_start_keywords = {
                         "return",
