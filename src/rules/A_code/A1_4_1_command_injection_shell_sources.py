@@ -27,7 +27,9 @@ class ShellSourceMixin:
         assignment_pattern = re.compile(
             r"([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))(?:\s+|;\s*|$)"
         )
-        assignment_prefix = re.match(r"(?:env|export)\s+", text)
+        assignment_prefix = re.match(
+            r"(?:env|export|local|declare|typeset|readonly)\s+", text
+        )
         position = assignment_prefix.end() if assignment_prefix else 0
         while position < len(text):
             m = assignment_pattern.match(text, position)

@@ -103,11 +103,11 @@ class JsTsSinkMixin:
                     else:
                         sinks.add(name)
 
-        module_match = re.search(
+        module_matches = re.finditer(
             r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)(?:\.([A-Za-z_$][\w$]*))?",
             text,
         )
-        if module_match:
+        for module_match in module_matches:
             module_name = module_match.group(1)
             prop_name = module_match.group(2)
             if prop_name:

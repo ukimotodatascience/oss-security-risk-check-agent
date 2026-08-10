@@ -172,6 +172,19 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            const cp = require("child_process"); const proc = require("node:child_process"); proc.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
+            (cp).exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
             const { spawn } = require("child_process");
             const target = req.query.target;
             spawn("cat", [target.replace(/\\//g, "")], { shell: true });
@@ -600,6 +613,34 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "run.sh",
+            """
+            #!/bin/sh
+            declare CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            local CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            typeset CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            readonly CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
             "app.js",
             """
             const cp = require("child_process");
@@ -690,3 +731,18 @@ def test_shell_ignores_assignment_text_inside_single_quotes(tmp_path):
     )
 
     assert records == []
+
+
+def test_preserves_nested_adjacent_exec_aliases(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { exec: x } = require("child_process");
+                const y = x;
+                x(y(req.query.cmd));
+            """,
+        },
+    )
+
+    assert len(records) == 2

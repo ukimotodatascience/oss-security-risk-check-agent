@@ -162,12 +162,17 @@ def dedupe_records(records: List[RiskRecord]) -> List[RiskRecord]:
             for ts_rec in ts_list:
                 ts_offset = getattr(ts_rec, "_char_offset", None)
                 if ts_offset is None:
-                    close_regex_rec = regex_list[0] if regex_list else None
-                    if close_regex_rec:
-                        matched_regex_indices.add(0)
+                    close_regex_rec = None
+                    for idx_reg, reg_rec in enumerate(regex_list):
+                        if idx_reg not in matched_regex_indices:
+                            close_regex_rec = reg_rec
+                            matched_regex_indices.add(idx_reg)
+                            break
                 else:
                     close_regex_rec = None
                     for idx_reg, reg_rec in enumerate(regex_list):
+                        if idx_reg in matched_regex_indices:
+                            continue
                         reg_offset = getattr(reg_rec, "_char_offset", None)
                         if reg_offset is not None and abs(ts_offset - reg_offset) <= 2:
                             close_regex_rec = reg_rec
