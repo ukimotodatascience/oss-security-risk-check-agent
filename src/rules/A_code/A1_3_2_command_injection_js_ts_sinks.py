@@ -19,11 +19,11 @@ class JsTsSinkMixin:
         self, text: str, sinks: Union[Set[str], Dict[str, str]]
     ) -> None:
         is_dict = isinstance(sinks, dict)
-        import_match = re.search(
+        import_matches = re.finditer(
             r"import\s+(.*?)\s+from\s+['\"](?:node:)?child_process['\"]",
             text,
         )
-        if import_match:
+        for import_match in import_matches:
             imports_str = import_match.group(1).strip()
 
             # 1. Extract namespace import if present (e.g. * as ns)

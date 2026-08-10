@@ -330,7 +330,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         right_properties = {}
                         if getattr(right, "type", "") == "object":
                             for right_child in getattr(right, "named_children", []):
-                                if getattr(right_child, "type", "") != "pair":
+                                right_child_type = getattr(right_child, "type", "")
+                                if right_child_type != "pair":
+                                    shorthand_name = ts_node_text(
+                                        src_bytes, right_child
+                                    ).strip()
+                                    if re.fullmatch(
+                                        r"[A-Za-z_$][\w$]*", shorthand_name
+                                    ):
+                                        right_properties[shorthand_name] = (
+                                            shorthand_name
+                                        )
                                     continue
                                 key_node = ts_child_by_field_name(right_child, "key")
                                 value_node = ts_child_by_field_name(
@@ -384,13 +394,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 prop_name = local_name
 
                             if local_name:
+                                property_value = right_properties.get(prop_name)
                                 if prop_name in right_properties:
                                     has_input = self._js_has_external_input(
-                                        right_properties[prop_name], tainted_names
+                                        property_value, tainted_names
                                     )
                                 else:
                                     has_input = rhs_tainted
-                                if not has_input and default_node is not None:
+                                default_may_apply = (
+                                    not right_properties
+                                    or prop_name not in right_properties
+                                    or property_value.strip() == "undefined"
+                                )
+                                if (
+                                    not has_input
+                                    and default_node is not None
+                                    and default_may_apply
+                                ):
                                     default_text = ts_node_text(src_bytes, default_node)
                                     has_input = self._js_has_external_input(
                                         default_text, tainted_names
@@ -737,6 +757,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             rhs_properties[property_match.group(1)] = (
                                 property_match.group(2)
                             )
+                        else:
+                            shorthand_name = property_text.strip()
+                            if re.fullmatch(r"[A-Za-z_$][\w$]*", shorthand_name):
+                                rhs_properties[shorthand_name] = shorthand_name
 
                 for element_idx, (var_name, prop_name, default_val) in enumerate(
                     names_to_register
@@ -784,7 +808,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         has_input = self._js_has_external_input(rhs, tainted_names)
 
-                    if not has_input and default_val is not None:
+                    property_value = rhs_properties.get(prop_name)
+                    default_may_apply = (
+                        not (is_object_destruct and rhs_is_object_literal)
+                        or prop_name not in rhs_properties
+                        or property_value.strip() == "undefined"
+                    )
+                    if not has_input and default_val is not None and default_may_apply:
                         has_input = self._js_has_external_input(
                             default_val, tainted_names
                         )

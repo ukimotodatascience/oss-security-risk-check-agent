@@ -27,18 +27,56 @@ class ShellSourceMixin:
         assignment_pattern = re.compile(
             r"([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))(?:\s+|;\s*|$)"
         )
-        assignment_prefix = re.match(
-            r"(?:env|export|local|declare|typeset|readonly)\s+", text
-        )
-        position = assignment_prefix.end() if assignment_prefix else 0
-        while position < len(text):
-            m = assignment_pattern.match(text, position)
-            if m is None:
-                break
-            var_name, rhs = m.group(1), m.group(2)
-            if self._shell_expands_external_input(rhs, tainted_names):
-                tainted_names.add(var_name)
-            position = m.end()
+        for statement in self._split_shell_statements(text):
+            statement = statement.strip()
+            assignment_prefix = re.match(
+                r"(?:env|export|local|declare|typeset|readonly)\s+", statement
+            )
+            position = assignment_prefix.end() if assignment_prefix else 0
+            while position < len(statement):
+                m = assignment_pattern.match(statement, position)
+                if m is None:
+                    break
+                var_name, rhs = m.group(1), m.group(2)
+                if self._shell_expands_external_input(rhs, tainted_names):
+                    tainted_names.add(var_name)
+                position = m.end()
+
+    @staticmethod
+    def _split_shell_statements(text: str):
+        statements = []
+        start = 0
+        in_string = None
+        escaped = False
+        paren_depth = 0
+        for idx, char in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\" and in_string != "'":
+                escaped = True
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char == "(":
+                paren_depth += 1
+                continue
+            if char == ")" and paren_depth:
+                paren_depth -= 1
+                continue
+            if paren_depth:
+                continue
+            is_separator = char == ";" or text[idx : idx + 2] in {"&&", "||"}
+            if is_separator:
+                statements.append(text[start:idx])
+                start = idx + (2 if text[idx : idx + 2] in {"&&", "||"} else 1)
+        statements.append(text[start:])
+        return statements
 
     @staticmethod
     def _track_shell_case_allowlist_from_text(

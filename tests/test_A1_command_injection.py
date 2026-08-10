@@ -178,6 +178,12 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            import cp from "child_process"; import proc from "node:child_process"; proc.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
             const cp = require("child_process");
             (cp).exec(req.query.cmd);
             """,
@@ -641,6 +647,27 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "run.sh",
+            """
+            #!/bin/sh
+            echo ok; CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            true && CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            false || CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
             "app.js",
             """
             const cp = require("child_process");
@@ -713,6 +740,20 @@ def test_js_ignores_safe_cases(tmp_path):
                     safe: "date",
                 };
                 cp.exec(safe);
+            """,
+            "app9.js": """
+                const cp = require("child_process");
+                const { cmd = req.query.cmd } = { cmd: "date" };
+                cp.exec(cmd);
+            """,
+            "app10.js": """
+                const cp = require("child_process");
+                const safe = "date";
+                const { unsafe, safe: cmd } = {
+                    unsafe: req.query.cmd,
+                    safe,
+                };
+                cp.exec(cmd);
             """,
         },
     )
