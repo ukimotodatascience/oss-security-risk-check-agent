@@ -25,9 +25,21 @@ class JsTsSourceMixin:
     }
 
     @staticmethod
+    def _normalize_property_path(path_text: str) -> str:
+        # Normalize bracket property notation to dot notation
+        # e.g., holder["cmd"] -> holder.cmd
+        normalized = path_text.strip()
+        normalized = re.sub(r"\[\s*\"([A-Za-z_$][\w$]*)\"\s*\]", r".\1", normalized)
+        normalized = re.sub(r"\[\s*'([A-Za-z_$][\w$]*)'\s*\]", r".\1", normalized)
+        normalized = re.sub(r"\[\s*`([A-Za-z_$][\w$]*)`\s*\]", r".\1", normalized)
+        return normalized
+
+    @staticmethod
     def _contains_tainted_token(text: str, tainted_names: Set[str]) -> bool:
+        normalized_text = JsTsSourceMixin._normalize_property_path(text)
         for name in tainted_names:
-            if re.search(rf"\b{re.escape(name)}\b", text):
+            normalized_name = JsTsSourceMixin._normalize_property_path(name)
+            if re.search(rf"\b{re.escape(normalized_name)}\b", normalized_text):
                 return True
         return False
 

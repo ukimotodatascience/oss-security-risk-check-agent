@@ -85,22 +85,82 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 if left is not None and right is not None:
                     left_text = ts_node_text(src_bytes, left).strip()
+                    left_text_norm = self._normalize_property_path(left_text)
                     right_text = ts_node_text(src_bytes, right)
                     right_clean = right_text.strip()
-                    if re.fullmatch(
-                        r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text
-                    ) and self._is_child_process_alias_assignment(
-                        right_clean, child_process_sinks
-                    ):
-                        orig_name = self._get_child_process_original_name(
+
+                    left_type = getattr(left, "type", "")
+                    if left_type == "object_pattern":
+                        is_cp = self._is_child_process_alias_assignment(
                             right_clean, child_process_sinks
                         )
-                        if orig_name:
-                            child_process_sinks[left_text] = orig_name
-                    if re.fullmatch(
-                        r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text
-                    ) and self._js_has_external_input(right_text, tainted_names):
-                        tainted_names.add(left_text)
+                        is_require_cp = re.fullmatch(
+                            r"require\(['\"](?:node:)?child_process['\"]\)",
+                            right_clean,
+                        )
+                        if is_cp or is_require_cp:
+                            for child in getattr(left, "named_children", []):
+                                c_type = getattr(child, "type", "")
+                                prop_name = None
+                                local_name = None
+                                if c_type == "pair":
+                                    key_node = ts_child_by_field_name(child, "key")
+                                    val_node = ts_child_by_field_name(child, "value")
+                                    if key_node and val_node:
+                                        prop_name = ts_node_text(
+                                            src_bytes, key_node
+                                        ).strip()
+                                        local_name = ts_node_text(
+                                            src_bytes, val_node
+                                        ).strip()
+                                else:
+                                    prop_name = ts_node_text(src_bytes, child).strip()
+                                    local_name = prop_name
+
+                                if prop_name and local_name:
+                                    if is_require_cp:
+                                        child_process_sinks[local_name] = prop_name
+                                    else:
+                                        orig_name = (
+                                            self._get_child_process_original_name(
+                                                f"{right_clean}.{prop_name}",
+                                                child_process_sinks,
+                                            )
+                                        )
+                                        if orig_name:
+                                            child_process_sinks[local_name] = orig_name
+                    else:
+                        if re.fullmatch(
+                            r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
+                        ) and self._is_child_process_alias_assignment(
+                            right_clean, child_process_sinks
+                        ):
+                            orig_name = self._get_child_process_original_name(
+                                right_clean, child_process_sinks
+                            )
+                            if orig_name:
+                                child_process_sinks[left_text_norm] = orig_name
+
+                    if left_type == "object_pattern":
+                        if self._js_has_external_input(right_text, tainted_names):
+                            for child in getattr(left, "named_children", []):
+                                c_type = getattr(child, "type", "")
+                                local_name = None
+                                if c_type == "pair":
+                                    val_node = ts_child_by_field_name(child, "value")
+                                    if val_node:
+                                        local_name = ts_node_text(
+                                            src_bytes, val_node
+                                        ).strip()
+                                else:
+                                    local_name = ts_node_text(src_bytes, child).strip()
+                                if local_name:
+                                    tainted_names.add(local_name)
+                    else:
+                        if re.fullmatch(
+                            r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
+                        ) and self._js_has_external_input(right_text, tainted_names):
+                            tainted_names.add(left_text_norm)
             if node_type != "call_expression":
                 continue
             callee_node = ts_child_by_field_name(node, "function")
@@ -153,7 +213,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if sink_node
                 else getattr(node, "start_byte", 0)
             )
-            if callee_tail in {"exec", "execSync"}:
+            resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
+            if resolved_sink in {"exec", "execSync"}:
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -169,7 +230,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 records.append(rec)
                 continue
-            if callee_tail in {"execFile", "execFileSync", "fork"}:
+            if resolved_sink in {"execFile", "execFileSync", "fork"}:
                 rec = RiskRecord(
                     rule_id=self.rule_id,
                     category=self.category,
@@ -185,7 +246,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 records.append(rec)
                 continue
-            if callee_tail in {"spawn", "spawnSync"}:
+            if resolved_sink in {"spawn", "spawnSync"}:
                 has_shell_true = "shell: true" in call_text or "shell:true" in call_text
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -266,22 +327,41 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if not part:
                             continue
                         if ":" in part:
-                            names_to_register.append(part.split(":")[1].strip())
+                            p_parts = part.split(":")
+                            prop_name = p_parts[0].strip()
+                            local_name = p_parts[1].strip()
+                            names_to_register.append((local_name, prop_name))
                         else:
-                            names_to_register.append(part)
+                            names_to_register.append((part, part))
                 else:
-                    names_to_register.append(var_names_str)
+                    names_to_register.append((var_names_str, None))
 
-                for var_name in names_to_register:
-                    orig_name = self._get_child_process_original_name(
-                        rhs_clean, child_process_sinks
+                for var_name, prop_name in names_to_register:
+                    var_name_norm = self._normalize_property_path(var_name)
+                    is_require_cp = re.fullmatch(
+                        r"require\(['\"](?:node:)?child_process['\"]\)",
+                        rhs_clean,
                     )
-                    if orig_name:
-                        child_process_sinks[var_name] = orig_name
+                    if prop_name is not None:
+                        if is_require_cp:
+                            child_process_sinks[var_name_norm] = prop_name
+                        else:
+                            orig_name = self._get_child_process_original_name(
+                                f"{rhs_clean}.{prop_name}", child_process_sinks
+                            )
+                            if orig_name:
+                                child_process_sinks[var_name_norm] = orig_name
+                    else:
+                        orig_name = self._get_child_process_original_name(
+                            rhs_clean, child_process_sinks
+                        )
+                        if orig_name:
+                            child_process_sinks[var_name_norm] = orig_name
+
                     if self._js_options_enable_shell(rhs_clean):
-                        shell_true_option_names.add(var_name)
+                        shell_true_option_names.add(var_name_norm)
                     if self._js_has_external_input(rhs, tainted_names):
-                        tainted_names.add(var_name)
+                        tainted_names.add(var_name_norm)
 
             if not self._js_has_external_input(stripped, tainted_names):
                 continue
@@ -317,6 +397,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
+                        if child_process_sinks and name in child_process_sinks:
+                            if child_process_sinks[name] not in {
+                                "execFile",
+                                "execFileSync",
+                                "fork",
+                            }:
+                                continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -434,6 +521,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
+                        if child_process_sinks and name in child_process_sinks:
+                            if child_process_sinks[name] not in {"exec", "execSync"}:
+                                continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -497,6 +587,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
+                        if child_process_sinks and name in child_process_sinks:
+                            if child_process_sinks[name] not in {"spawn", "spawnSync"}:
+                                continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -1211,7 +1304,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 if is_assign_candidate:
                     assign_match = re.match(
-                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
+                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:\"[^\"]*\"|'[^']*'|`[^`]*`)\s*\])*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
                         text[idx:],
                     )
                     if assign_match:
