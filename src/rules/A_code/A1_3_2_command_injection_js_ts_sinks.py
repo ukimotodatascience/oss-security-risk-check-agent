@@ -126,6 +126,44 @@ class JsTsSinkMixin:
                         f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                     )
 
+        dynamic_import_match = re.search(
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            text,
+        )
+        if dynamic_import_match:
+            module_name = dynamic_import_match.group(1)
+            if is_dict:
+                sinks[module_name] = "child_process"
+                for name in self._CHILD_PROCESS_NAMES:
+                    sinks[f"{module_name}.{name}"] = name
+            else:
+                sinks.add(module_name)
+                sinks.update(
+                    f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
+                )
+
+        dynamic_destruct_match = re.search(
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            text,
+        )
+        if dynamic_destruct_match:
+            for name in dynamic_destruct_match.group(1).split(","):
+                name = name.strip()
+                alias_match = re.match(
+                    r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s*:\s*([A-Za-z_$][\w$]*)",
+                    name,
+                )
+                if alias_match:
+                    if is_dict:
+                        sinks[alias_match.group(2)] = alias_match.group(1)
+                    else:
+                        sinks.add(alias_match.group(2))
+                else:
+                    if is_dict:
+                        sinks[name] = name
+                    else:
+                        sinks.add(name)
+
     def _get_child_process_original_name(
         self, rhs_clean: str, sinks: Union[Set[str], Dict[str, str]]
     ) -> Optional[str]:

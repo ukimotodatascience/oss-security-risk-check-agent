@@ -218,10 +218,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     elif left_type == "array_pattern":
                         right_type = getattr(right, "type", "")
                         if right_type == "array":
-                            right_elements = getattr(right, "named_children", [])
-                            left_elements = getattr(left, "named_children", [])
-                            for idx, child in enumerate(left_elements):
+                            right_map = {}
+                            r_elements = getattr(right, "children", [])
+                            r_idx = 0
+                            for r_child in r_elements:
+                                r_c_type = getattr(r_child, "type", "")
+                                if r_c_type == ",":
+                                    r_idx += 1
+                                    continue
+                                if r_c_type in {"[", "]"}:
+                                    continue
+                                right_map[r_idx] = ts_node_text(src_bytes, r_child)
+
+                            left_elements = getattr(left, "children", [])
+                            element_idx = 0
+                            for child in left_elements:
                                 c_type = getattr(child, "type", "")
+                                if c_type == ",":
+                                    element_idx += 1
+                                    continue
+                                if c_type in {"[", "]"}:
+                                    continue
+
                                 local_name = None
                                 if c_type == "assignment_pattern":
                                     left_node = ts_child_by_field_name(child, "left")
@@ -231,12 +249,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                         ).strip()
                                 else:
                                     local_name = ts_node_text(src_bytes, child).strip()
+
                                 if local_name and re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
                                 ):
-                                    if idx < len(right_elements):
-                                        r_el = right_elements[idx]
-                                        r_el_text = ts_node_text(src_bytes, r_el)
+                                    if element_idx in right_map:
+                                        r_el_text = right_map[element_idx]
                                         if self._js_has_external_input(
                                             r_el_text, tainted_names
                                         ):
@@ -455,10 +473,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     for part in inner.split(","):
                         part = part.strip()
                         if not part:
+                            names_to_register.append((None, None))
                             continue
                         local_name = part.split("=")[0].strip()
                         if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
                             names_to_register.append((local_name, None))
+                        else:
+                            names_to_register.append((None, None))
                 else:
                     names_to_register.append((var_names_str, None))
 
@@ -473,6 +494,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     rhs_elements = self._split_array_literal_elements(rhs_clean[1:-1])
 
                 for element_idx, (var_name, prop_name) in enumerate(names_to_register):
+                    if var_name is None:
+                        continue
                     var_name_norm = self._normalize_property_path(var_name)
                     is_require_cp = re.fullmatch(
                         r"require\(['\"](?:node:)?child_process['\"]\)",
