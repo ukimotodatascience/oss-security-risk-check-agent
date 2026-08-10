@@ -25,10 +25,10 @@ class ShellSourceMixin:
                 tainted_names.add(var_name)
 
         assignment_pattern = re.compile(
-            r"([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))(?:\s+|$)"
+            r"([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))(?:\s+|;\s*|$)"
         )
-        env_prefix = re.match(r"env\s+", text)
-        position = env_prefix.end() if env_prefix else 0
+        assignment_prefix = re.match(r"(?:env|export)\s+", text)
+        position = assignment_prefix.end() if assignment_prefix else 0
         while position < len(text):
             m = assignment_pattern.match(text, position)
             if m is None:

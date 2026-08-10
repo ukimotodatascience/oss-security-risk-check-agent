@@ -327,12 +327,34 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         rhs_tainted = self._js_has_external_input(
                             right_text, tainted_names
                         )
+                        right_properties = {}
+                        if getattr(right, "type", "") == "object":
+                            for right_child in getattr(right, "named_children", []):
+                                if getattr(right_child, "type", "") != "pair":
+                                    continue
+                                key_node = ts_child_by_field_name(right_child, "key")
+                                value_node = ts_child_by_field_name(
+                                    right_child, "value"
+                                )
+                                if key_node is not None and value_node is not None:
+                                    property_name = ts_node_text(
+                                        src_bytes, key_node
+                                    ).strip()
+                                    right_properties[property_name] = ts_node_text(
+                                        src_bytes, value_node
+                                    )
                         for child in getattr(left, "named_children", []):
                             c_type = getattr(child, "type", "")
+                            prop_name = None
                             local_name = None
                             default_node = None
                             if c_type == "pair":
+                                key_node = ts_child_by_field_name(child, "key")
                                 val_node = ts_child_by_field_name(child, "value")
+                                if key_node:
+                                    prop_name = ts_node_text(
+                                        src_bytes, key_node
+                                    ).strip()
                                 if val_node:
                                     val_type = getattr(val_node, "type", "")
                                     if val_type == "assignment_pattern":
@@ -359,9 +381,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 default_node = ts_child_by_field_name(child, "right")
                             else:
                                 local_name = ts_node_text(src_bytes, child).strip()
+                                prop_name = local_name
 
                             if local_name:
-                                has_input = rhs_tainted
+                                if prop_name in right_properties:
+                                    has_input = self._js_has_external_input(
+                                        right_properties[prop_name], tainted_names
+                                    )
+                                else:
+                                    has_input = rhs_tainted
                                 if not has_input and default_node is not None:
                                     default_text = ts_node_text(src_bytes, default_node)
                                     has_input = self._js_has_external_input(
@@ -597,6 +625,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             records.extend(tree_sitter_records)
         tainted_names: Set[str] = set()
         child_process_sinks: Dict[str, str] = {}
+        third_party_shell_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
         lines = src.splitlines()
         raw_lines = src.splitlines(keepends=True)
@@ -630,6 +659,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             statements.append((start_line, buffer, raw_buffer, stmt_start_offset))
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
+            self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
             for var_names_str, rhs in self._split_declarations(stripped):
                 var_names_str = var_names_str.strip()
                 rhs = rhs.strip()
@@ -835,6 +865,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
             # 2. サードパーティ
             third_party_matches = self._find_all_known_third_party_shell_sinks(stripped)
+            for alias in sorted(third_party_shell_sinks - {"exec"}):
+                third_party_matches.extend(
+                    (match, alias)
+                    for match in re.finditer(
+                        f"(?<![\\w$]){re.escape(alias)}\\s*\\(", stripped
+                    )
+                )
             for m, name in third_party_matches:
                 if name == "exec":
                     matched_str = m.group(0)
@@ -855,7 +892,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             ):
                                 continue
                         else:
-                            continue
+                            if name not in third_party_shell_sinks:
+                                continue
                 start_paren_idx = stripped.find("(", m.start())
                 if start_paren_idx == -1:
                     start_paren_idx = m.end() - 1
@@ -1064,6 +1102,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for m in re.finditer(pattern, text):
                 sinks.append((m, name))
         return sinks
+
+    @staticmethod
+    def _register_third_party_shell_imports(text: str, sinks: Set[str]) -> None:
+        require_match = re.search(
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"]shelljs['\"]\)",
+            text,
+        )
+        import_match = re.search(
+            r"import\s*\{([^}]+)\}\s*from\s*['\"]shelljs['\"]", text
+        )
+        for match in (require_match, import_match):
+            if match is None:
+                continue
+            for imported_name in match.group(1).split(","):
+                imported_name = imported_name.strip()
+                alias_match = re.fullmatch(
+                    r"exec\s*(?::|as)\s*([A-Za-z_$][\w$]*)", imported_name
+                )
+                if alias_match:
+                    sinks.add(alias_match.group(1))
+                elif imported_name == "exec":
+                    sinks.add("exec")
 
     @staticmethod
     def _get_argument_list_text(text: str, start_paren_idx: int) -> str:
