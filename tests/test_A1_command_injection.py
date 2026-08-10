@@ -448,6 +448,22 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "app.js",
+            """
+            const cp = require("child_process");
+            const { cmd = req.query.cmd } = {};
+            cp.exec(cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process");
+            const [safe, cmd] = [/a,b/, req.query.cmd];
+            cp.exec(cmd);
+            """,
+        ),
+        (
             "run.sh",
             """
             #!/bin/sh
@@ -554,6 +570,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             find . -name 'a|b' -exec sh -c "$1" \\;
             """,
         ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            env CMD="$1" sh -c "$CMD"
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
@@ -598,6 +621,11 @@ def test_js_ignores_safe_cases(tmp_path):
                 const cp = require("child_process");
                 const [, safe] = [req.query.cmd, "date"];
                 cp.exec(safe);
+            """,
+            "app7.js": """
+                const cp = require("child_process");
+                const { cmd = "safe" } = {};
+                cp.exec(cmd);
             """,
         },
     )

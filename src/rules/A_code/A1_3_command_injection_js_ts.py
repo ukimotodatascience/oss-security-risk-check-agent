@@ -42,6 +42,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         brace_level = 0
         bracket_level = 0
         in_string = None
+        in_regex = False
+        in_regex_class = False
         escaped = False
         idx = 0
         while idx < len(text):
@@ -59,11 +61,132 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 current.append(char)
                 idx += 1
                 continue
+            if in_regex:
+                if char == "\\":
+                    escaped = True
+                elif in_regex_class:
+                    if char == "]":
+                        in_regex_class = False
+                else:
+                    if char == "[":
+                        in_regex_class = True
+                    elif char == "/":
+                        in_regex = False
+                current.append(char)
+                idx += 1
+                continue
+
             if char in {"'", '"', "`"}:
                 in_string = char
                 current.append(char)
                 idx += 1
                 continue
+
+            if char == "/":
+                prev_token = ""
+                p_idx = len(current) - 1
+                while p_idx >= 0 and current[p_idx].isspace():
+                    p_idx -= 1
+                if p_idx >= 0:
+                    if current[p_idx].isalnum() or current[p_idx] in {"_", "$"}:
+                        end_p = p_idx
+                        while p_idx >= 0 and (
+                            current[p_idx].isalnum() or current[p_idx] in {"_", "$"}
+                        ):
+                            p_idx -= 1
+                        prev_token = "".join(current[p_idx + 1 : end_p + 1])
+                    elif (
+                        current[p_idx] == "."
+                        and p_idx - 2 >= 0
+                        and "".join(current[p_idx - 2 : p_idx + 1]) == "..."
+                    ):
+                        prev_token = "..."
+                    else:
+                        prev_token = current[p_idx]
+
+                if prev_token == ")":
+                    depth = 1
+                    p_search = p_idx - 1
+                    while p_search >= 0 and depth > 0:
+                        if current[p_search] == ")":
+                            depth += 1
+                        elif current[p_search] == "(":
+                            depth -= 1
+                        p_search -= 1
+                    if p_search >= 0 and depth == 0:
+                        while p_search >= 0 and current[p_search].isspace():
+                            p_search -= 1
+                        if p_search >= 0:
+                            control_keyword = ""
+                            if current[p_search].isalnum() or current[p_search] in {
+                                "_",
+                                "$",
+                            }:
+                                end_k = p_search
+                                while p_search >= 0 and (
+                                    current[p_search].isalnum()
+                                    or current[p_search] in {"_", "$"}
+                                ):
+                                    p_search -= 1
+                                control_keyword = "".join(
+                                    current[p_search + 1 : end_k + 1]
+                                )
+                            else:
+                                control_keyword = current[p_search]
+                            if control_keyword in {"if", "while", "for", "switch"}:
+                                prev_token = "control_statement"
+
+                regex_start_chars = {
+                    "(",
+                    "[",
+                    ",",
+                    "=",
+                    ":",
+                    "?",
+                    "!",
+                    "&",
+                    "|",
+                    "+",
+                    "-",
+                    "*",
+                    "~",
+                    ";",
+                    "}",
+                    ">",
+                    "<",
+                    "/",
+                    "%",
+                    "^",
+                }
+                regex_start_keywords = {
+                    "return",
+                    "yield",
+                    "typeof",
+                    "void",
+                    "delete",
+                    "throw",
+                    "default",
+                    "await",
+                    "case",
+                    "else",
+                    "do",
+                    "instanceof",
+                    "in",
+                    "new",
+                    "control_statement",
+                    "...",
+                    "of",
+                }
+                if (
+                    prev_token == ""
+                    or prev_token in regex_start_chars
+                    or prev_token in regex_start_keywords
+                ):
+                    in_regex = True
+                    current.append(char)
+                    idx += 1
+                    continue
+
             if char == "(":
                 paren_level += 1
             elif char == ")":
@@ -461,27 +584,35 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         part = part.strip()
                         if not part:
                             continue
+                        default_val = None
+                        if "=" in part:
+                            lhs_part, rhs_part = part.split("=", 1)
+                            lhs_part = lhs_part.strip()
+                            default_val = rhs_part.strip()
+                            part = lhs_part
                         if ":" in part:
                             p_parts = part.split(":")
                             prop_name = p_parts[0].strip()
                             local_name = p_parts[1].strip()
-                            names_to_register.append((local_name, prop_name))
+                            names_to_register.append(
+                                (local_name, prop_name, default_val)
+                            )
                         else:
-                            names_to_register.append((part, part))
+                            names_to_register.append((part, part, default_val))
                 elif var_names_str.startswith("[") and var_names_str.endswith("]"):
                     inner = var_names_str[1:-1]
                     for part in inner.split(","):
                         part = part.strip()
                         if not part:
-                            names_to_register.append((None, None))
+                            names_to_register.append((None, None, None))
                             continue
                         local_name = part.split("=")[0].strip()
                         if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
-                            names_to_register.append((local_name, None))
+                            names_to_register.append((local_name, None, None))
                         else:
-                            names_to_register.append((None, None))
+                            names_to_register.append((None, None, None))
                 else:
-                    names_to_register.append((var_names_str, None))
+                    names_to_register.append((var_names_str, None, None))
 
                 is_array_destruct = var_names_str.startswith(
                     "["
@@ -493,7 +624,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if rhs_is_array_literal:
                     rhs_elements = self._split_array_literal_elements(rhs_clean[1:-1])
 
-                for element_idx, (var_name, prop_name) in enumerate(names_to_register):
+                for element_idx, (var_name, prop_name, default_val) in enumerate(
+                    names_to_register
+                ):
                     if var_name is None:
                         continue
                     var_name_norm = self._normalize_property_path(var_name)
@@ -528,6 +661,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             )
                     else:
                         has_input = self._js_has_external_input(rhs, tainted_names)
+
+                    if not has_input and default_val is not None:
+                        has_input = self._js_has_external_input(
+                            default_val, tainted_names
+                        )
 
                     if has_input:
                         tainted_names.add(var_name_norm)

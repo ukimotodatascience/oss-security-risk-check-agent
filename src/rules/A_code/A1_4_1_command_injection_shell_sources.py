@@ -24,6 +24,14 @@ class ShellSourceMixin:
             if self._shell_expands_external_input(rhs, tainted_names):
                 tainted_names.add(var_name)
 
+        for m in re.finditer(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))",
+            text,
+        ):
+            var_name, rhs = m.group(1), m.group(2)
+            if self._shell_expands_external_input(rhs, tainted_names):
+                tainted_names.add(var_name)
+
     @staticmethod
     def _track_shell_case_allowlist_from_text(
         text: str, tainted_names: Set[str]
