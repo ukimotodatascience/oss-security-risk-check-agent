@@ -324,19 +324,50 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 child_process_sinks[left_text_norm] = orig_name
 
                     if left_type == "object_pattern":
-                        if self._js_has_external_input(right_text, tainted_names):
-                            for child in getattr(left, "named_children", []):
-                                c_type = getattr(child, "type", "")
-                                local_name = None
-                                if c_type == "pair":
-                                    val_node = ts_child_by_field_name(child, "value")
-                                    if val_node:
+                        rhs_tainted = self._js_has_external_input(
+                            right_text, tainted_names
+                        )
+                        for child in getattr(left, "named_children", []):
+                            c_type = getattr(child, "type", "")
+                            local_name = None
+                            default_node = None
+                            if c_type == "pair":
+                                val_node = ts_child_by_field_name(child, "value")
+                                if val_node:
+                                    val_type = getattr(val_node, "type", "")
+                                    if val_type == "assignment_pattern":
+                                        left_node = ts_child_by_field_name(
+                                            val_node, "left"
+                                        )
+                                        if left_node:
+                                            local_name = ts_node_text(
+                                                src_bytes, left_node
+                                            ).strip()
+                                        default_node = ts_child_by_field_name(
+                                            val_node, "right"
+                                        )
+                                    else:
                                         local_name = ts_node_text(
                                             src_bytes, val_node
                                         ).strip()
-                                else:
-                                    local_name = ts_node_text(src_bytes, child).strip()
-                                if local_name:
+                            elif c_type == "assignment_pattern":
+                                left_node = ts_child_by_field_name(child, "left")
+                                if left_node:
+                                    local_name = ts_node_text(
+                                        src_bytes, left_node
+                                    ).strip()
+                                default_node = ts_child_by_field_name(child, "right")
+                            else:
+                                local_name = ts_node_text(src_bytes, child).strip()
+
+                            if local_name:
+                                has_input = rhs_tainted
+                                if not has_input and default_node is not None:
+                                    default_text = ts_node_text(src_bytes, default_node)
+                                    has_input = self._js_has_external_input(
+                                        default_text, tainted_names
+                                    )
+                                if has_input:
                                     tainted_names.add(local_name)
                     elif left_type == "array_pattern":
                         right_type = getattr(right, "type", "")
@@ -364,45 +395,71 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     continue
 
                                 local_name = None
+                                default_node = None
                                 if c_type == "assignment_pattern":
                                     left_node = ts_child_by_field_name(child, "left")
                                     if left_node:
                                         local_name = ts_node_text(
                                             src_bytes, left_node
                                         ).strip()
+                                    default_node = ts_child_by_field_name(
+                                        child, "right"
+                                    )
                                 else:
                                     local_name = ts_node_text(src_bytes, child).strip()
 
                                 if local_name and re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
                                 ):
+                                    has_input = False
                                     if element_idx in right_map:
                                         r_el_text = right_map[element_idx]
-                                        if self._js_has_external_input(
+                                        has_input = self._js_has_external_input(
                                             r_el_text, tainted_names
-                                        ):
-                                            tainted_names.add(local_name)
-                        else:
-                            if self._js_has_external_input(right_text, tainted_names):
-                                for child in getattr(left, "named_children", []):
-                                    c_type = getattr(child, "type", "")
-                                    if c_type == "assignment_pattern":
-                                        left_node = ts_child_by_field_name(
-                                            child, "left"
                                         )
-                                        if left_node:
-                                            local_name = ts_node_text(
-                                                src_bytes, left_node
-                                            ).strip()
-                                        else:
-                                            local_name = None
-                                    else:
-                                        local_name = ts_node_text(
-                                            src_bytes, child
-                                        ).strip()
-                                    if local_name and re.fullmatch(
-                                        r"[A-Za-z_$][\w$]*", local_name
+                                    elif (
+                                        c_type == "assignment_pattern"
+                                        and default_node is not None
                                     ):
+                                        default_text = ts_node_text(
+                                            src_bytes, default_node
+                                        )
+                                        has_input = self._js_has_external_input(
+                                            default_text, tainted_names
+                                        )
+                                    if has_input:
+                                        tainted_names.add(local_name)
+                        else:
+                            rhs_tainted = self._js_has_external_input(
+                                right_text, tainted_names
+                            )
+                            for child in getattr(left, "named_children", []):
+                                c_type = getattr(child, "type", "")
+                                local_name = None
+                                default_node = None
+                                if c_type == "assignment_pattern":
+                                    left_node = ts_child_by_field_name(child, "left")
+                                    if left_node:
+                                        local_name = ts_node_text(
+                                            src_bytes, left_node
+                                        ).strip()
+                                    default_node = ts_child_by_field_name(
+                                        child, "right"
+                                    )
+                                else:
+                                    local_name = ts_node_text(src_bytes, child).strip()
+                                if local_name and re.fullmatch(
+                                    r"[A-Za-z_$][\w$]*", local_name
+                                ):
+                                    has_input = rhs_tainted
+                                    if not has_input and default_node is not None:
+                                        default_text = ts_node_text(
+                                            src_bytes, default_node
+                                        )
+                                        has_input = self._js_has_external_input(
+                                            default_text, tainted_names
+                                        )
+                                    if has_input:
                                         tainted_names.add(local_name)
                     else:
                         if re.fullmatch(
@@ -606,9 +663,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if not part:
                             names_to_register.append((None, None, None))
                             continue
-                        local_name = part.split("=")[0].strip()
+                        default_val = None
+                        if "=" in part:
+                            lhs_part, rhs_part = part.split("=", 1)
+                            lhs_part = lhs_part.strip()
+                            default_val = rhs_part.strip()
+                            part = lhs_part
+                        local_name = part.strip()
                         if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
-                            names_to_register.append((local_name, None, None))
+                            names_to_register.append((local_name, None, default_val))
                         else:
                             names_to_register.append((None, None, None))
                 else:
