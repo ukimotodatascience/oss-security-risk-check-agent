@@ -35,6 +35,65 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     severity = DEFAULT_SEVERITY
     _JS_TS_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
+    def _split_array_literal_elements(self, text: str) -> List[str]:
+        parts = []
+        current = []
+        paren_level = 0
+        brace_level = 0
+        bracket_level = 0
+        in_string = None
+        escaped = False
+        idx = 0
+        while idx < len(text):
+            char = text[idx]
+            if escaped:
+                escaped = False
+                current.append(char)
+                idx += 1
+                continue
+            if in_string:
+                if char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+                current.append(char)
+                idx += 1
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                current.append(char)
+                idx += 1
+                continue
+            if char == "(":
+                paren_level += 1
+            elif char == ")":
+                if paren_level > 0:
+                    paren_level -= 1
+            elif char == "{":
+                brace_level += 1
+            elif char == "}":
+                if brace_level > 0:
+                    brace_level -= 1
+            elif char == "[":
+                bracket_level += 1
+            elif char == "]":
+                if bracket_level > 0:
+                    bracket_level -= 1
+            elif (
+                char == ","
+                and paren_level == 0
+                and brace_level == 0
+                and bracket_level == 0
+            ):
+                parts.append("".join(current).strip())
+                current = []
+                idx += 1
+                continue
+            current.append(char)
+            idx += 1
+        parts.append("".join(current).strip())
+        return parts
+
     def _iter_js_ts_files(self, target: Path) -> Iterable[Path]:
         """対象ディレクトリ配下の JavaScript / TypeScript ファイルを列挙する。"""
         for p in target.rglob("*"):
@@ -157,23 +216,53 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 if local_name:
                                     tainted_names.add(local_name)
                     elif left_type == "array_pattern":
-                        if self._js_has_external_input(right_text, tainted_names):
-                            for child in getattr(left, "named_children", []):
+                        right_type = getattr(right, "type", "")
+                        if right_type == "array":
+                            right_elements = getattr(right, "named_children", [])
+                            left_elements = getattr(left, "named_children", [])
+                            for idx, child in enumerate(left_elements):
                                 c_type = getattr(child, "type", "")
+                                local_name = None
                                 if c_type == "assignment_pattern":
                                     left_node = ts_child_by_field_name(child, "left")
                                     if left_node:
                                         local_name = ts_node_text(
                                             src_bytes, left_node
                                         ).strip()
-                                    else:
-                                        local_name = None
                                 else:
                                     local_name = ts_node_text(src_bytes, child).strip()
                                 if local_name and re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
                                 ):
-                                    tainted_names.add(local_name)
+                                    if idx < len(right_elements):
+                                        r_el = right_elements[idx]
+                                        r_el_text = ts_node_text(src_bytes, r_el)
+                                        if self._js_has_external_input(
+                                            r_el_text, tainted_names
+                                        ):
+                                            tainted_names.add(local_name)
+                        else:
+                            if self._js_has_external_input(right_text, tainted_names):
+                                for child in getattr(left, "named_children", []):
+                                    c_type = getattr(child, "type", "")
+                                    if c_type == "assignment_pattern":
+                                        left_node = ts_child_by_field_name(
+                                            child, "left"
+                                        )
+                                        if left_node:
+                                            local_name = ts_node_text(
+                                                src_bytes, left_node
+                                            ).strip()
+                                        else:
+                                            local_name = None
+                                    else:
+                                        local_name = ts_node_text(
+                                            src_bytes, child
+                                        ).strip()
+                                    if local_name and re.fullmatch(
+                                        r"[A-Za-z_$][\w$]*", local_name
+                                    ):
+                                        tainted_names.add(local_name)
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
@@ -231,7 +320,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if sink_node
                 else getattr(node, "start_byte", 0)
             )
-            resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
+            if "." in callee:
+                obj_name = callee.split(".")[0]
+                is_cp_module = child_process_sinks.get(
+                    obj_name
+                ) == "child_process" or obj_name in {"child_process", "cp"}
+                if is_cp_module:
+                    resolved_sink = callee_tail
+                else:
+                    resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
+            else:
+                resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
             if resolved_sink in {"exec", "execSync"}:
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -363,7 +462,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     names_to_register.append((var_names_str, None))
 
-                for var_name, prop_name in names_to_register:
+                is_array_destruct = var_names_str.startswith(
+                    "["
+                ) and var_names_str.endswith("]")
+                rhs_is_array_literal = rhs_clean.startswith("[") and rhs_clean.endswith(
+                    "]"
+                )
+                rhs_elements = []
+                if rhs_is_array_literal:
+                    rhs_elements = self._split_array_literal_elements(rhs_clean[1:-1])
+
+                for element_idx, (var_name, prop_name) in enumerate(names_to_register):
                     var_name_norm = self._normalize_property_path(var_name)
                     is_require_cp = re.fullmatch(
                         r"require\(['\"](?:node:)?child_process['\"]\)",
@@ -387,7 +496,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                     if self._js_options_enable_shell(rhs_clean):
                         shell_true_option_names.add(var_name_norm)
-                    if self._js_has_external_input(rhs, tainted_names):
+
+                    if is_array_destruct and rhs_is_array_literal:
+                        has_input = False
+                        if element_idx < len(rhs_elements):
+                            has_input = self._js_has_external_input(
+                                rhs_elements[element_idx], tainted_names
+                            )
+                    else:
+                        has_input = self._js_has_external_input(rhs, tainted_names)
+
+                    if has_input:
                         tainted_names.add(var_name_norm)
 
             if not self._js_has_external_input(stripped, tainted_names):
@@ -421,16 +540,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
+                        resolved_type = name
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
-                        if child_process_sinks and name in child_process_sinks:
-                            if child_process_sinks[name] not in {
-                                "execFile",
-                                "execFileSync",
-                                "fork",
-                            }:
-                                continue
+                        resolved_type = child_process_sinks.get(name) or name
+
+                    if resolved_type not in {"execFile", "execFileSync", "fork"}:
+                        continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -545,12 +662,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
+                        resolved_type = name
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
-                        if child_process_sinks and name in child_process_sinks:
-                            if child_process_sinks[name] not in {"exec", "execSync"}:
-                                continue
+                        resolved_type = child_process_sinks.get(name) or name
+
+                    if resolved_type not in {"exec", "execSync"}:
+                        continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -611,12 +730,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             is_valid = obj_name in {"child_process", "cp"}
                         if not is_valid:
                             continue
+                        resolved_type = name
                     else:
                         if child_process_sinks and name not in child_process_sinks:
                             continue
-                        if child_process_sinks and name in child_process_sinks:
-                            if child_process_sinks[name] not in {"spawn", "spawnSync"}:
-                                continue
+                        resolved_type = child_process_sinks.get(name) or name
+
+                    if resolved_type not in {"spawn", "spawnSync"}:
+                        continue
                     start_paren_idx = stripped.find("(", m.start())
                     if start_paren_idx == -1:
                         start_paren_idx = m.end() - 1
@@ -1320,6 +1441,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     "new",
                     "control_statement",
                     "...",
+                    "of",
                 }
                 if (
                     prev_token == ""
