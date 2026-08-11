@@ -346,6 +346,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 has_input = self._is_rest_tainted(
                                     target_node, excluded_keys, tainted_names, src_bytes
                                 )
+                            elif isinstance(target_node, list):
+                                has_input = any(
+                                    self._js_has_external_input(
+                                        ts_node_text(src_bytes, item), tainted_names
+                                    )
+                                    for item in target_node
+                                )
                             elif target_node is not None:
                                 has_input = self._js_has_external_input(
                                     ts_node_text(src_bytes, target_node), tainted_names
@@ -600,6 +607,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             has_input = self._is_fallback_rest_tainted(
                                 rhs_clean, excluded_keys, tainted_names
                             )
+                        elif isinstance(target_val, list):
+                            has_input = any(
+                                self._js_has_external_input(item, tainted_names)
+                                for item in target_val
+                            )
                         elif target_val is not None:
                             has_input = self._js_has_external_input(
                                 target_val, tainted_names
@@ -608,9 +620,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             has_input = self._js_has_external_input(rhs, tainted_names)
 
                         if not has_input and default_val is not None:
-                            default_may_apply = (
-                                target_val is None
-                                or target_val.strip() in {"", "undefined"}
+                            default_may_apply = target_val is None or (
+                                isinstance(target_val, str)
+                                and target_val.strip() in {"", "undefined"}
                             )
                             if default_may_apply:
                                 has_input = self._js_has_external_input(
@@ -1831,6 +1843,41 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
         return decls
 
+    def _split_fallback_pair(self, part: str) -> Optional[Tuple[str, str]]:
+        brace_depth = 0
+        bracket_depth = 0
+        paren_depth = 0
+        in_string = None
+        for idx in range(len(part)):
+            char = part[idx]
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth = max(0, brace_depth - 1)
+            elif char == "[":
+                bracket_depth += 1
+            elif char == "]":
+                bracket_depth = max(0, bracket_depth - 1)
+            elif char == "(":
+                paren_depth += 1
+            elif char == ")":
+                paren_depth = max(0, paren_depth - 1)
+            elif (
+                char == ":"
+                and brace_depth == 0
+                and bracket_depth == 0
+                and paren_depth == 0
+            ):
+                return part[:idx].strip(), part[idx + 1 :].strip()
+        return None
+
     def _expand_destructuring(
         self, node: Any, current_path: List[Union[str, int]], src_bytes: bytes
     ) -> List[Tuple[str, List[Union[str, int]], bool, Optional[Set[str]]]]:
@@ -1914,21 +1961,33 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     local_name = ts_node_text(src_bytes, actual_child).strip()
                     results.append((local_name, current_path + [idx], False, None))
-                idx += 1
         else:
             local_name = ts_node_text(src_bytes, node).strip()
             results.append((local_name, current_path, False, None))
         return results
 
     def _get_nested_property_value(
-        self, right_node: Any, path: List[Union[str, int]], src_bytes: bytes
+        self, right_node: Any, path: List[Union[str, int, slice]], src_bytes: bytes
     ) -> Any:
         curr = right_node
         for p in path:
             if curr is None:
                 return None
             if isinstance(p, slice):
-                return curr
+                curr_type = getattr(curr, "type", "")
+                if curr_type == "array":
+                    elements = [
+                        c
+                        for c in getattr(curr, "children", [])
+                        if getattr(c, "type", "") not in {",", "[", "]"}
+                    ]
+                    start = p.start if p.start is not None else 0
+                    curr = elements[start:]
+                else:
+                    return None
+                continue
+            if isinstance(curr, list):
+                return None
             curr_type = getattr(curr, "type", "")
             if isinstance(p, str):
                 if curr_type == "object":
@@ -1999,9 +2058,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
                 if "=" in part:
                     part = part.split("=", 1)[0].strip()
-                if ":" in part:
-                    p_parts = part.split(":")
-                    prop_name = self._normalize_static_property_key(p_parts[0])
+                pair_info = self._split_fallback_pair(part)
+                if pair_info:
+                    prop_name = self._normalize_static_property_key(pair_info[0])
                 else:
                     prop_name = part
                 local_keys.add(prop_name)
@@ -2019,19 +2078,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     results.append(
                         (local_name, current_path, True, local_keys, default_val)
                     )
-                elif ":" in part:
-                    p_parts = part.split(":")
-                    prop_name = self._normalize_static_property_key(p_parts[0])
-                    val_part = p_parts[1].strip()
-                    results.extend(
-                        self._expand_fallback_destructuring(
-                            val_part, current_path + [prop_name]
-                        )
-                    )
                 else:
-                    results.append(
-                        (part, current_path + [part], False, None, default_val)
-                    )
+                    pair_info = self._split_fallback_pair(part)
+                    if pair_info:
+                        prop_name = self._normalize_static_property_key(pair_info[0])
+                        val_part = pair_info[1].strip()
+                        results.extend(
+                            self._expand_fallback_destructuring(
+                                val_part, current_path + [prop_name]
+                            )
+                        )
+                    else:
+                        results.append(
+                            (part, current_path + [part], False, None, default_val)
+                        )
         elif pattern_str.startswith("[") and pattern_str.endswith("]"):
             inner = pattern_str[1:-1]
             idx = 0
@@ -2076,25 +2136,34 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return results
 
     def _get_nested_fallback_value(
-        self, rhs_str: str, path: List[Union[str, int]]
-    ) -> Optional[str]:
+        self, rhs_str: str, path: List[Union[str, int, slice]]
+    ) -> Optional[Union[str, List[str]]]:
         curr = rhs_str.strip()
         for p in path:
             if not curr:
                 return None
             if isinstance(p, slice):
-                return curr
+                if curr.startswith("[") and curr.endswith("]"):
+                    inner = curr[1:-1]
+                    elements = self._split_array_literal_elements(inner)
+                    start = p.start if p.start is not None else 0
+                    curr = [el.strip() for el in elements[start:]]
+                else:
+                    return None
+                continue
+            if isinstance(curr, list):
+                return None
             if isinstance(p, str):
                 if curr.startswith("{") and curr.endswith("}"):
                     inner = curr[1:-1]
                     found = None
                     for part in self._split_array_literal_elements(inner):
                         part = part.strip()
-                        if ":" in part:
-                            p_parts = part.split(":", 1)
-                            key = self._normalize_static_property_key(p_parts[0])
+                        pair_info = self._split_fallback_pair(part)
+                        if pair_info:
+                            key = self._normalize_static_property_key(pair_info[0])
                             if key == p:
-                                found = p_parts[1].strip()
+                                found = pair_info[1].strip()
                                 break
                         else:
                             shorthand = part.strip()
@@ -2125,10 +2194,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         inner = rhs_str[1:-1]
         for part in self._split_array_literal_elements(inner):
             part = part.strip()
-            if ":" in part:
-                p_parts = part.split(":", 1)
-                key = self._normalize_static_property_key(p_parts[0])
-                val = p_parts[1].strip()
+            pair_info = self._split_fallback_pair(part)
+            if pair_info:
+                key = self._normalize_static_property_key(pair_info[0])
+                val = pair_info[1].strip()
                 if key not in excluded_keys:
                     if self._js_has_external_input(val, tainted_names):
                         return True
