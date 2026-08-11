@@ -142,11 +142,11 @@ class JsTsSinkMixin:
                     f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                 )
 
-        dynamic_destruct_match = re.search(
+        dynamic_destruct_matches = re.finditer(
             r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
             text,
         )
-        if dynamic_destruct_match:
+        for dynamic_destruct_match in dynamic_destruct_matches:
             for name in dynamic_destruct_match.group(1).split(","):
                 name = name.strip()
                 alias_match = re.match(

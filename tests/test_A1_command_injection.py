@@ -190,6 +190,12 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            async function f(){ const { spawn } = await import("child_process"); const { exec } = await import("node:child_process"); exec(req.query.cmd); }
+            """,
+        ),
+        (
+            "app.js",
+            """
             const cp = require("child_process");
             (cp).exec(req.query.cmd);
             """,
