@@ -793,6 +793,58 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             cp.exec($cmd);
             """,
         ),
+        (
+            "app.js",
+            """
+            let proc;
+            proc = await import("child_process");
+            proc.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            let exec;
+            ({ exec } = await import("child_process"));
+            exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            let run;
+            ({ exec: run } = await import("child_process"));
+            run(req.query.cmd);
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            declare -r CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            if true; then CMD="$1"; eval "$CMD"; fi
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            for x in 1; do CMD="$1"; eval "$CMD"; done
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            case "$1" in *) CMD="$2"; eval "$CMD"; esac
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):

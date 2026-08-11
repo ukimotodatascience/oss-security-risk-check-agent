@@ -127,7 +127,7 @@ class JsTsSinkMixin:
                     )
 
         dynamic_import_matches = re.finditer(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
             text,
         )
         for dynamic_import_match in dynamic_import_matches:
@@ -143,7 +143,7 @@ class JsTsSinkMixin:
                 )
 
         dynamic_destruct_matches = re.finditer(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            r"(?<![\w$.])(?:(?:const|let|var)\s*)?\{([^}]+)\}\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
             text,
         )
         for dynamic_destruct_match in dynamic_destruct_matches:

@@ -85,12 +85,33 @@ class ShellSourceMixin:
 
     @staticmethod
     def _shell_assignment_start_position(statement: str) -> int:
-        group_prefix = re.match(r"(?:\{\s*)+", statement)
-        if group_prefix:
-            statement_offset = group_prefix.end()
-            statement = statement[statement_offset:]
-        else:
-            statement_offset = 0
+        offset = 0
+        while True:
+            # { の読み飛ばし
+            m = re.match(r"^(?:\{\s*)+", statement[offset:])
+            if m:
+                offset += m.end()
+                continue
+            # then や do の読み飛ばし
+            m = re.match(r"^(?:then|do)\b\s*", statement[offset:])
+            if m:
+                offset += m.end()
+                continue
+            # case ... in の読み飛ばし
+            m = re.match(r"^case\b.*?\bin\b\s*", statement[offset:])
+            if m:
+                offset += m.end()
+                continue
+            # case のパターン終端 ')' の読み飛ばし。例: '*) ' や 'a) '
+            m = re.match(r"^(?:[A-Za-z0-9_*?-]+)\)\s*", statement[offset:])
+            if m:
+                offset += m.end()
+                continue
+            break
+
+        statement_offset = offset
+        statement = statement[statement_offset:]
+
         env_prefix = re.match(
             r"env\s+(?:(?:-i|--ignore-environment)\s+|(?:-u|--unset)\s+\S+\s+|--unset=\S+\s+)*",
             statement,
@@ -98,7 +119,8 @@ class ShellSourceMixin:
         if env_prefix:
             return statement_offset + env_prefix.end()
         declaration_prefix = re.match(
-            r"(?:export|local|declare|typeset|readonly)\s+", statement
+            r"(?:export|local|declare|typeset|readonly)(?:\s+(?:-[a-zA-Z0-9]+|--[a-zA-Z0-9-]+|--))*\s+",
+            statement,
         )
         return (
             statement_offset + declaration_prefix.end()

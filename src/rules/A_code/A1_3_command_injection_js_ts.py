@@ -257,6 +257,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 "import_statement",
                 "lexical_declaration",
                 "variable_declaration",
+                "expression_statement",
             }:
                 self._register_child_process_imports(text, child_process_sinks)
             if node_type in {
