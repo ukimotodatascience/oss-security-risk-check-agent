@@ -839,12 +839,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         has_input = self._js_has_external_input(rhs, tainted_names)
 
-                    property_value = rhs_properties.get(prop_name)
-                    default_may_apply = (
-                        not (is_object_destruct and rhs_is_object_literal)
-                        or prop_name not in rhs_properties
-                        or property_value.strip() == "undefined"
-                    )
+                    if is_array_destruct and rhs_is_array_literal:
+                        element_value = (
+                            rhs_elements[element_idx]
+                            if element_idx < len(rhs_elements)
+                            else None
+                        )
+                        default_may_apply = (
+                            element_value is None
+                            or element_value.strip() in {"", "undefined"}
+                        )
+                    elif is_object_destruct and rhs_is_object_literal:
+                        property_value = rhs_properties.get(prop_name)
+                        default_may_apply = (
+                            property_value is None
+                            or property_value.strip() == "undefined"
+                        )
+                    else:
+                        default_may_apply = True
                     if not has_input and default_val is not None and default_may_apply:
                         has_input = self._js_has_external_input(
                             default_val, tainted_names

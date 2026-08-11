@@ -68,10 +68,18 @@ class ShellSourceMixin:
                 continue
             if paren_depth:
                 continue
-            is_separator = char == ";" or text[idx : idx + 2] in {"&&", "||"}
+            pair = text[idx : idx + 2]
+            is_background_separator = (
+                char == "&"
+                and (idx == 0 or text[idx - 1] not in {"<", ">", "&"})
+                and (idx + 1 == len(text) or text[idx + 1] not in {"&", ">"})
+            )
+            is_separator = (
+                char == ";" or pair in {"&&", "||"} or is_background_separator
+            )
             if is_separator:
                 statements.append(text[start:idx])
-                start = idx + (2 if text[idx : idx + 2] in {"&&", "||"} else 1)
+                start = idx + (2 if pair in {"&&", "||"} else 1)
         statements.append(text[start:])
         return statements
 

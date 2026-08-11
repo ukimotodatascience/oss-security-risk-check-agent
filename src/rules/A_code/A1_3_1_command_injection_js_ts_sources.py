@@ -37,6 +37,12 @@ class JsTsSourceMixin:
     @staticmethod
     def _normalize_static_property_key(key_text: str) -> str:
         normalized = key_text.strip()
+        bracket_match = re.fullmatch(
+            r"\[\s*((?:['\"`][A-Za-z_$][\w$]*['\"`])|(?:[0-9]+(?:\.[0-9]+)?))\s*\]",
+            normalized,
+        )
+        if bracket_match:
+            normalized = bracket_match.group(1)
         match = re.fullmatch(
             r"(['\"`])([A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)\1", normalized
         )
