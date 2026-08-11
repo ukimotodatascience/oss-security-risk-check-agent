@@ -334,7 +334,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             right_text, tainted_names
                         )
                         expanded = self._expand_destructuring(left, [], src_bytes)
-                        for local_name, path, is_rest, excluded_keys in expanded:
+                        for (
+                            local_name,
+                            path,
+                            is_rest,
+                            excluded_keys,
+                            default_node,
+                        ) in expanded:
                             if not local_name or not re.fullmatch(
                                 r"[A-Za-z_$][\w$]*", local_name
                             ):
@@ -359,6 +365,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 )
                             else:
                                 has_input = rhs_tainted
+
+                            if not has_input and default_node is not None:
+                                default_may_apply = (
+                                    target_node is None
+                                    or ts_node_text(src_bytes, target_node).strip()
+                                    == "undefined"
+                                )
+                                if default_may_apply:
+                                    default_text = ts_node_text(src_bytes, default_node)
+                                    has_input = self._js_has_external_input(
+                                        default_text, tainted_names
+                                    )
+
                             if has_input:
                                 tainted_names.add(local_name)
                     else:
@@ -1880,7 +1899,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
     def _expand_destructuring(
         self, node: Any, current_path: List[Union[str, int]], src_bytes: bytes
-    ) -> List[Tuple[str, List[Union[str, int]], bool, Optional[Set[str]]]]:
+    ) -> List[
+        Tuple[str, List[Union[str, int]], bool, Optional[Set[str]], Optional[Any]]
+    ]:
         results = []
         node_type = getattr(node, "type", "")
         if node_type == "object_pattern":
@@ -1914,21 +1935,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             )
                         )
                 elif c_type == "assignment_pattern":
-                    left_node = ts_child_by_field_name(child, "left")
-                    if left_node:
-                        results.extend(
-                            self._expand_destructuring(
-                                left_node, current_path, src_bytes
-                            )
-                        )
+                    results.extend(
+                        self._expand_destructuring(child, current_path, src_bytes)
+                    )
                 elif c_type == "rest_pattern":
                     local_name = ts_node_text(src_bytes, child).strip()
                     if local_name.startswith("..."):
                         local_name = local_name[3:].strip()
-                    results.append((local_name, current_path, True, local_keys))
+                    results.append((local_name, current_path, True, local_keys, None))
                 else:
                     p_name = ts_node_text(src_bytes, child).strip()
-                    results.append((p_name, current_path + [p_name], False, None))
+                    results.append((p_name, current_path + [p_name], False, None, None))
         elif node_type == "array_pattern":
             elements = getattr(node, "children", [])
             idx = 0
@@ -1941,29 +1958,51 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     continue
                 actual_child = child
                 if c_type == "assignment_pattern":
-                    left_node = ts_child_by_field_name(child, "left")
-                    if left_node:
-                        actual_child = left_node
-                actual_type = getattr(actual_child, "type", "")
-                if actual_type in {"object_pattern", "array_pattern"}:
                     results.extend(
                         self._expand_destructuring(
-                            actual_child, current_path + [idx], src_bytes
+                            child, current_path + [idx], src_bytes
                         )
                     )
-                elif c_type == "rest_pattern" or actual_type == "rest_pattern":
-                    local_name = ts_node_text(src_bytes, actual_child).strip()
-                    if local_name.startswith("..."):
-                        local_name = local_name[3:].strip()
-                    results.append(
-                        (local_name, current_path + [slice(idx, None)], False, None)
-                    )
                 else:
-                    local_name = ts_node_text(src_bytes, actual_child).strip()
-                    results.append((local_name, current_path + [idx], False, None))
+                    actual_type = getattr(actual_child, "type", "")
+                    if actual_type in {"object_pattern", "array_pattern"}:
+                        results.extend(
+                            self._expand_destructuring(
+                                actual_child, current_path + [idx], src_bytes
+                            )
+                        )
+                    elif c_type == "rest_pattern" or actual_type == "rest_pattern":
+                        local_name = ts_node_text(src_bytes, actual_child).strip()
+                        if local_name.startswith("..."):
+                            local_name = local_name[3:].strip()
+                        results.append(
+                            (
+                                local_name,
+                                current_path + [slice(idx, None)],
+                                False,
+                                None,
+                                None,
+                            )
+                        )
+                    else:
+                        local_name = ts_node_text(src_bytes, actual_child).strip()
+                        results.append(
+                            (local_name, current_path + [idx], False, None, None)
+                        )
+        elif node_type == "assignment_pattern":
+            left_node = ts_child_by_field_name(node, "left")
+            right_node = ts_child_by_field_name(node, "right")
+            if left_node:
+                sub_results = self._expand_destructuring(
+                    left_node, current_path, src_bytes
+                )
+                for local_name, path, is_rest, excluded_keys, _ in sub_results:
+                    results.append(
+                        (local_name, path, is_rest, excluded_keys, right_node)
+                    )
         else:
             local_name = ts_node_text(src_bytes, node).strip()
-            results.append((local_name, current_path, False, None))
+            results.append((local_name, current_path, False, None, None))
         return results
 
     def _get_nested_property_value(
@@ -2083,11 +2122,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     if pair_info:
                         prop_name = self._normalize_static_property_key(pair_info[0])
                         val_part = pair_info[1].strip()
-                        results.extend(
-                            self._expand_fallback_destructuring(
-                                val_part, current_path + [prop_name]
-                            )
+                        sub_res = self._expand_fallback_destructuring(
+                            val_part, current_path + [prop_name]
                         )
+                        for (
+                            local_name,
+                            path,
+                            is_rest,
+                            excluded_keys,
+                            sub_def,
+                        ) in sub_res:
+                            final_def = sub_def if sub_def is not None else default_val
+                            results.append(
+                                (local_name, path, is_rest, excluded_keys, final_def)
+                            )
                     else:
                         results.append(
                             (part, current_path + [part], False, None, default_val)

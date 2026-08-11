@@ -886,6 +886,25 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             const cp = require("child_process"); const {outer: {safe: cmd}} = {outer: {safe: req.query.cmd}}; cp.exec(cmd);
             """,
         ),
+        (
+            "app.js",
+            """
+            const cp = require ("child_process"); cp.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process"); const {safe: cmd = req.query.cmd} = {safe: undefined}; cp.exec(cmd);
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            { printf '%s' "$1"; } | eval "$(cat)"
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):

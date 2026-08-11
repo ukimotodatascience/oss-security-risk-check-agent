@@ -408,7 +408,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 paren_level += 1
             elif char == ")" and paren_level:
                 paren_level -= 1
-            elif char == "{" and idx > 0 and text[idx - 1] == "$":
+            elif char == "{":
                 brace_level += 1
             elif char == "}" and brace_level:
                 brace_level -= 1

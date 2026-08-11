@@ -82,7 +82,7 @@ class JsTsSinkMixin:
                         )
 
         require_match = re.search(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if require_match:
@@ -104,7 +104,7 @@ class JsTsSinkMixin:
                         sinks.add(name)
 
         module_matches = re.finditer(
-            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)(?:\.([A-Za-z_$][\w$]*))?",
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)(?:\s*\.\s*([A-Za-z_$][\w$]*))?",
             text,
         )
         for module_match in module_matches:
@@ -127,7 +127,7 @@ class JsTsSinkMixin:
                     )
 
         dynamic_import_matches = re.finditer(
-            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         for dynamic_import_match in dynamic_import_matches:
@@ -143,7 +143,7 @@ class JsTsSinkMixin:
                 )
 
         dynamic_destruct_matches = re.finditer(
-            r"(?<![\w$.])(?:(?:const|let|var)\s*)?\{([^}]+)\}\s*=\s*(?:await\s+)?import\(['\"](?:node:)?child_process['\"]\)",
+            r"(?<![\w$.])(?:(?:const|let|var)\s*)?\{([^}]+)\}\s*=\s*(?:await\s+)?import\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         for dynamic_destruct_match in dynamic_destruct_matches:
@@ -167,7 +167,9 @@ class JsTsSinkMixin:
     def _get_child_process_original_name(
         self, rhs_clean: str, sinks: Union[Set[str], Dict[str, str]]
     ) -> Optional[str]:
-        if re.fullmatch(r"require\(['\"](?:node:)?child_process['\"]\)", rhs_clean):
+        if re.fullmatch(
+            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)", rhs_clean
+        ):
             return "child_process"
         if not isinstance(sinks, dict):
             # sinks が set の場合は、単にメンバシップをチェックして自身を返す（フォールバック）
