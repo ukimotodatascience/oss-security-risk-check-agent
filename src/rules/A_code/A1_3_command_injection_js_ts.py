@@ -1666,7 +1666,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 if is_assign_candidate:
                     assign_match = re.match(
-                        r"\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:\"[^\"]*\"|'[^']*'|`[^`]*`)\s*\])*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
+                        r"(\(\s*(?:\{[^;]*?\}|\[[^;]*?\])\s*\)|(?:\{[^;]*?\}|\[[^;]*?\])|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:\"[^\"]*\"|'[^']*'|`[^`]*`)\s*\])*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
                         text[idx:],
                     )
                     if assign_match:
@@ -1754,7 +1754,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             idx = eq_found + 1
                             continue
                     else:  # assign_match
-                        current_var_name = assign_match.group(1)
+                        current_var_name = assign_match.group(1).strip()
+                        if current_var_name.startswith(
+                            "("
+                        ) and current_var_name.endswith(")"):
+                            current_var_name = current_var_name[1:-1].strip()
                         idx += len(assign_match.group(0))
                         current_rhs_start = idx
                         brace_level = 0
@@ -1830,7 +1834,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             inner_rhs_val = text[eq_found + 1 : v_idx].strip()
                             decls.append((inner_var_name, inner_rhs_val))
                     else:  # assign_match
-                        inner_var_name = assign_match.group(1)
+                        inner_var_name = assign_match.group(1).strip()
+                        if inner_var_name.startswith("(") and inner_var_name.endswith(
+                            ")"
+                        ):
+                            inner_var_name = inner_var_name[1:-1].strip()
                         inner_rhs_val = text[inner_start + idx_skip : v_idx].strip()
                         decls.append((inner_var_name, inner_rhs_val))
 

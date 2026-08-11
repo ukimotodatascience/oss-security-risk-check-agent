@@ -25,7 +25,7 @@ class ShellSourceMixin:
                 tainted_names.add(var_name)
 
         assignment_pattern = re.compile(
-            r"([A-Za-z_][A-Za-z0-9_]*)=([^\s'\"`]+|'[^']*'|\"[^\"]*\"|`[^`]*`|\$\([^)]*\))(?:\s+|;\s*|$)"
+            r"([A-Za-z_][A-Za-z0-9_]*)=((?:\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`|[^\s;'\"`])+)(?:\s+|;\s*|$)"
         )
         for statement in self._split_shell_statements(text):
             statement = statement.strip()
