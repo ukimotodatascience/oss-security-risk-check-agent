@@ -1187,6 +1187,12 @@ def test_js_ignores_safe_cases(tmp_path):
                 const [unsafe, cmd] = [...[req.query.cmd, "date"]];
                 cp.exec(cmd);
             """,
+            "app26.js": """
+                const cp = require("child_process");
+                function f(cmd = req.query.cmd) { return cmd; }
+                const cmd = "date";
+                cp.exec(cmd);
+            """,
         },
     )
     assert records == []

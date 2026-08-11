@@ -250,11 +250,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 self._register_child_process_imports(
                     ts_node_text(src_bytes, import_node), child_process_sinks
                 )
+        skip_body_node = None
         for node in iter_ts_nodes(root):
+            if skip_body_node is not None:
+                if (
+                    node.start_byte >= skip_body_node.start_byte
+                    and node.end_byte <= skip_body_node.end_byte
+                ):
+                    continue
+                else:
+                    skip_body_node = None
+
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
 
-            # 関数定義のパラメータにおけるデフォルト値の評価 (P2 round 11)
+            # 関数定義のパラメータにおけるデフォルト値の評価 (P2 round 11/12)
             if node_type in {
                 "function_declaration",
                 "generator_function_declaration",
@@ -262,40 +272,58 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 "arrow_function",
                 "function_expression",
             }:
-                params_node = ts_child_by_field_name(node, "parameters")
-                if not params_node:
-                    for c in getattr(node, "named_children", []):
-                        if getattr(c, "type", "") == "formal_parameters":
-                            params_node = c
-                            break
-                if params_node:
-                    for param in getattr(params_node, "named_children", []):
-                        if getattr(param, "type", "") == "assignment_pattern":
-                            p_left = ts_child_by_field_name(param, "left")
-                            p_right = ts_child_by_field_name(param, "right")
-                            if p_left and p_right:
-                                p_right_text = ts_node_text(src_bytes, p_right)
-                                if self._js_has_external_input(
-                                    p_right_text, tainted_names
-                                ):
-                                    p_left_type = getattr(p_left, "type", "")
-                                    if p_left_type == "identifier":
-                                        p_left_text = ts_node_text(
-                                            src_bytes, p_left
-                                        ).strip()
-                                        tainted_names.add(p_left_text)
-                                    elif p_left_type in {
-                                        "object_pattern",
-                                        "array_pattern",
-                                    }:
-                                        expanded = self._expand_destructuring(
-                                            p_left, [], src_bytes
-                                        )
-                                        for local_name, _, _, _, _ in expanded:
-                                            if local_name and re.fullmatch(
-                                                r"[A-Za-z_$][\w$]*", local_name
-                                            ):
-                                                tainted_names.add(local_name)
+                body_node = ts_child_by_field_name(node, "body")
+                if body_node:
+                    local_taints = set()
+                    params_node = ts_child_by_field_name(node, "parameters")
+                    if not params_node:
+                        for c in getattr(node, "named_children", []):
+                            if getattr(c, "type", "") == "formal_parameters":
+                                params_node = c
+                                break
+                    if params_node:
+                        for param in getattr(params_node, "named_children", []):
+                            if getattr(param, "type", "") == "assignment_pattern":
+                                p_left = ts_child_by_field_name(param, "left")
+                                p_right = ts_child_by_field_name(param, "right")
+                                if p_left and p_right:
+                                    p_right_text = ts_node_text(src_bytes, p_right)
+                                    if self._js_has_external_input(
+                                        p_right_text, tainted_names
+                                    ):
+                                        p_left_type = getattr(p_left, "type", "")
+                                        if p_left_type == "identifier":
+                                            p_left_text = ts_node_text(
+                                                src_bytes, p_left
+                                            ).strip()
+                                            local_taints.add(p_left_text)
+                                        elif p_left_type in {
+                                            "object_pattern",
+                                            "array_pattern",
+                                        }:
+                                            expanded = self._expand_destructuring(
+                                                p_left, [], src_bytes
+                                            )
+                                            for local_name, _, _, _, _ in expanded:
+                                                if local_name and re.fullmatch(
+                                                    r"[A-Za-z_$][\w$]*", local_name
+                                                ):
+                                                    local_taints.add(local_name)
+
+                    if local_taints:
+                        local_tainted = tainted_names.union(local_taints)
+                        local_records = self._evaluate_js_ts_subtree(
+                            body_node,
+                            target,
+                            src_bytes,
+                            local_tainted,
+                            child_process_sinks,
+                            file_path,
+                        )
+                        if local_records:
+                            records.extend(local_records)
+                        skip_body_node = body_node
+                        continue
             if node_type in {
                 "import_statement",
                 "lexical_declaration",
@@ -654,11 +682,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_third_party_shell_imports(
                 static_import.group(0), third_party_shell_sinks
             )
+        active_local_taints = []
+        current_brace_level = 0
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
 
-            # 関数引数のデフォルト値汚染伝播 (P2 round 11)
+            # 波括弧レベルの更新
+            current_brace_level += stripped.count("{") - stripped.count("}")
+            if current_brace_level < 0:
+                current_brace_level = 0
+
+            # 関数引数のデフォルト値汚染伝播 (P2 round 11/12)
             for m in re.finditer(r"\(([^)]+)\)", stripped):
                 params_str = m.group(1)
                 for part in self._split_array_literal_elements(params_str):
@@ -667,11 +702,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         p_left_raw, p_right_raw = part.split("=", 1)
                         p_left_raw = p_left_raw.strip()
                         p_right_raw = p_right_raw.strip()
-                        if self._js_has_external_input(p_right_raw, tainted_names):
+                        current_tainted = tainted_names.union(
+                            p for p, _ in active_local_taints
+                        )
+                        if self._js_has_external_input(p_right_raw, current_tainted):
                             is_dest_param = (
                                 p_left_raw.startswith("{") and p_left_raw.endswith("}")
                             ) or (
                                 p_left_raw.startswith("[") and p_left_raw.endswith("]")
+                            )
+                            lvl_offset = (
+                                1 if stripped.count("{") <= stripped.count("}") else 0
                             )
                             if is_dest_param:
                                 expanded = self._expand_fallback_destructuring(
@@ -681,13 +722,22 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     if local_name and re.fullmatch(
                                         r"[A-Za-z_$][\w$]*", local_name
                                     ):
-                                        tainted_names.add(
-                                            self._normalize_property_path(local_name)
+                                        norm_name = self._normalize_property_path(
+                                            local_name
+                                        )
+                                        active_local_taints.append(
+                                            (
+                                                norm_name,
+                                                current_brace_level + lvl_offset,
+                                            )
                                         )
                             else:
                                 if re.fullmatch(r"[A-Za-z_$][\w$]*", p_left_raw):
-                                    tainted_names.add(
-                                        self._normalize_property_path(p_left_raw)
+                                    norm_name = self._normalize_property_path(
+                                        p_left_raw
+                                    )
+                                    active_local_taints.append(
+                                        (norm_name, current_brace_level + lvl_offset)
                                     )
 
             for var_names_str, rhs in self._split_declarations(stripped):
@@ -756,21 +806,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             shell_true_option_names.add(var_name_norm)
 
                         target_val = self._get_nested_fallback_value(rhs_clean, path)
+                        current_taints = tainted_names.union(
+                            p for p, _ in active_local_taints
+                        )
                         if is_rest and excluded_keys:
                             has_input = self._is_fallback_rest_tainted(
-                                rhs_clean, excluded_keys, tainted_names
+                                rhs_clean, excluded_keys, current_taints
                             )
                         elif isinstance(target_val, list):
                             has_input = any(
-                                self._js_has_external_input(item, tainted_names)
+                                self._js_has_external_input(item, current_taints)
                                 for item in target_val
                             )
                         elif target_val is not None:
                             has_input = self._js_has_external_input(
-                                target_val, tainted_names
+                                target_val, current_taints
                             )
                         else:
-                            has_input = self._js_has_external_input(rhs, tainted_names)
+                            has_input = self._js_has_external_input(rhs, current_taints)
 
                         if not has_input and default_val is not None:
                             default_may_apply = target_val is None or (
@@ -782,7 +835,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             )
                             if default_may_apply:
                                 has_input = self._js_has_external_input(
-                                    default_val, tainted_names
+                                    default_val, current_taints
                                 )
 
                         if has_input:
@@ -823,11 +876,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     if self._js_options_enable_shell(rhs_clean):
                         shell_true_option_names.add(var_name_norm)
 
-                    has_input = self._js_has_external_input(rhs, tainted_names)
+                    current_taints = tainted_names.union(
+                        p for p, _ in active_local_taints
+                    )
+                    has_input = self._js_has_external_input(rhs, current_taints)
                     if has_input:
                         tainted_names.add(var_name_norm)
 
-            if not self._js_has_external_input(stripped, tainted_names):
+            current_taints = tainted_names.union(p for p, _ in active_local_taints)
+            if not self._js_has_external_input(stripped, current_taints):
                 continue
 
             stripped_map = self._build_index_map(raw_stmt)
@@ -872,7 +929,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     call_text = stripped[
                         m.start() : start_paren_idx + len(call_args_text)
                     ]
-                    if not self._js_has_external_input(call_text, tainted_names):
+                    current_taints = tainted_names.union(
+                        p for p, _ in active_local_taints
+                    )
+                    if not self._js_has_external_input(call_text, current_taints):
                         continue
                     dot_idx = name.rfind(".")
                     offset = dot_idx + 1 if dot_idx != -1 else 0
@@ -930,7 +990,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     start_paren_idx = m.end() - 1
                 call_args_text = self._get_argument_list_text(stripped, start_paren_idx)
                 call_text = stripped[m.start() : start_paren_idx + len(call_args_text)]
-                if not self._js_has_external_input(call_text, tainted_names):
+                current_taints = tainted_names.union(p for p, _ in active_local_taints)
+                if not self._js_has_external_input(call_text, current_taints):
                     continue
                 matched_str = m.group(0).rstrip(" (")
                 dot_idx = matched_str.rfind(".")
@@ -998,7 +1059,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     call_text = stripped[
                         m.start() : start_paren_idx + len(call_args_text)
                     ]
-                    if not self._js_has_external_input(call_text, tainted_names):
+                    current_taints = tainted_names.union(
+                        p for p, _ in active_local_taints
+                    )
+                    if not self._js_has_external_input(call_text, current_taints):
                         continue
                     dot_idx = name.rfind(".")
                     offset = dot_idx + 1 if dot_idx != -1 else 0
@@ -1063,7 +1127,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     call_text = stripped[
                         m.start() : start_paren_idx + len(call_args_text)
                     ]
-                    if not self._js_has_external_input(call_text, tainted_names):
+                    current_taints = tainted_names.union(
+                        p for p, _ in active_local_taints
+                    )
+                    if not self._js_has_external_input(call_text, current_taints):
                         continue
                     has_shell_true = self._js_call_enables_shell(
                         call_args_text, shell_true_option_names
@@ -1092,6 +1159,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     rec._column = col_num
                     rec._char_offset = char_offset
                     records.append(rec)
+
+            # 各ステートメント評価の最後で、現在の波括弧レベルが関数開始レベル未満になった項目をクリアする
+            active_local_taints = [
+                (param, lvl)
+                for param, lvl in active_local_taints
+                if current_brace_level >= lvl
+            ]
         return dedupe_records(records)
 
     @staticmethod
@@ -1816,9 +1890,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             word_match = re.match(r"\b(const|let|var)\b", text[idx:])
             assign_match = None
             if not word_match:
-                is_assign_candidate = (current_var_name is None) or (
-                    brace_level > 0 or paren_level > 0 or bracket_level > 0
-                )
+                if current_var_name is None and paren_level > 0:
+                    is_assign_candidate = False
+                else:
+                    is_assign_candidate = (current_var_name is None) or (
+                        brace_level > 0 or paren_level > 0 or bracket_level > 0
+                    )
                 if is_assign_candidate:
                     assign_match = re.match(
                         r"(\(\s*(?:\{[^;]*?\}|\[[^;]*?\])\s*\)|(?:\{[^;]*?\}|\[[^;]*?\])|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:\"[^\"]*\"|'[^']*'|`[^`]*`)\s*\])*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
@@ -2550,6 +2627,232 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if self._js_has_external_input(shorthand, tainted_names):
                             return True
         return False
+
+    def _evaluate_js_ts_subtree(
+        self,
+        root_node: Any,
+        target: Path,
+        src_bytes: bytes,
+        tainted_names: Set[str],
+        child_process_sinks: Dict[str, str],
+        file_path: Path,
+    ) -> List[RiskRecord]:
+        records = []
+        local_sinks = child_process_sinks.copy()
+
+        # subtree 内の関数再帰定義時の二重検知を防止する
+        skip_body_node = None
+
+        for node in iter_ts_nodes(root_node):
+            if skip_body_node is not None:
+                if (
+                    node.start_byte >= skip_body_node.start_byte
+                    and node.end_byte <= skip_body_node.end_byte
+                ):
+                    continue
+                else:
+                    skip_body_node = None
+
+            node_type = getattr(node, "type", "")
+
+            # サブツリー内の入れ子になった関数パラメータデフォルト汚染伝播
+            if node_type in {
+                "function_declaration",
+                "generator_function_declaration",
+                "method_definition",
+                "arrow_function",
+                "function_expression",
+            }:
+                body_node = ts_child_by_field_name(node, "body")
+                if body_node:
+                    local_taints = set()
+                    params_node = ts_child_by_field_name(node, "parameters")
+                    if not params_node:
+                        for c in getattr(node, "named_children", []):
+                            if getattr(c, "type", "") == "formal_parameters":
+                                params_node = c
+                                break
+                    if params_node:
+                        for param in getattr(params_node, "named_children", []):
+                            if getattr(param, "type", "") == "assignment_pattern":
+                                p_left = ts_child_by_field_name(param, "left")
+                                p_right = ts_child_by_field_name(param, "right")
+                                if p_left and p_right:
+                                    p_right_text = ts_node_text(src_bytes, p_right)
+                                    if self._js_has_external_input(
+                                        p_right_text, tainted_names
+                                    ):
+                                        p_left_type = getattr(p_left, "type", "")
+                                        if p_left_type == "identifier":
+                                            p_left_text = ts_node_text(
+                                                src_bytes, p_left
+                                            ).strip()
+                                            local_taints.add(p_left_text)
+                                        elif p_left_type in {
+                                            "object_pattern",
+                                            "array_pattern",
+                                        }:
+                                            expanded = self._expand_destructuring(
+                                                p_left, [], src_bytes
+                                            )
+                                            for local_name, _, _, _, _ in expanded:
+                                                if local_name and re.fullmatch(
+                                                    r"[A-Za-z_$][\w$]*", local_name
+                                                ):
+                                                    local_taints.add(local_name)
+
+                    if local_taints:
+                        local_tainted_nested = tainted_names.union(local_taints)
+                        local_records = self._evaluate_js_ts_subtree(
+                            body_node,
+                            target,
+                            src_bytes,
+                            local_tainted_nested,
+                            local_sinks,
+                            file_path,
+                        )
+                        if local_records:
+                            records.extend(local_records)
+                        skip_body_node = body_node
+                        continue
+
+            if node_type in {
+                "variable_declarator",
+                "assignment_expression",
+                "augmented_assignment_expression",
+            }:
+                left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
+                    node, "left"
+                )
+                right = ts_child_by_field_name(node, "value") or ts_child_by_field_name(
+                    node, "right"
+                )
+                if left is not None and right is not None:
+                    left_text = ts_node_text(src_bytes, left).strip()
+                    left_text_norm = self._normalize_property_path(left_text)
+                    right_text = ts_node_text(src_bytes, right)
+                    right_clean = right_text.strip()
+                    left_type = getattr(left, "type", "")
+
+                    if left_type in {"object_pattern", "array_pattern"}:
+                        rhs_tainted = self._js_has_external_input(
+                            right_text, tainted_names
+                        )
+                        expanded = self._expand_destructuring(left, [], src_bytes)
+                        for (
+                            local_name,
+                            path,
+                            _,
+                            _,
+                            _,
+                        ) in expanded:
+                            if not local_name or not re.fullmatch(
+                                r"[A-Za-z_$][\w$]*", local_name
+                            ):
+                                continue
+                            if re.fullmatch(
+                                r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", right_clean
+                            ):
+                                path_str = ".".join(
+                                    str(p) for p in path if isinstance(p, (str, int))
+                                )
+                                joined_name = f"{right_clean}.{path_str}"
+                                if joined_name in local_sinks:
+                                    local_sinks[local_name] = local_sinks[joined_name]
+                            target_node = self._get_nested_property_value(
+                                right, path, src_bytes
+                            )
+                            if isinstance(target_node, list):
+                                has_input = any(
+                                    self._js_has_external_input(
+                                        ts_node_text(src_bytes, item), tainted_names
+                                    )
+                                    for item in target_node
+                                )
+                            elif target_node is not None:
+                                has_input = self._js_has_external_input(
+                                    ts_node_text(src_bytes, target_node),
+                                    tainted_names,
+                                )
+                            else:
+                                has_input = rhs_tainted
+                            if has_input:
+                                tainted_names.add(local_name)
+                    else:
+                        if re.fullmatch(
+                            r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
+                        ):
+                            if self._is_child_process_alias_assignment(
+                                right_clean, local_sinks
+                            ):
+                                orig_name = self._get_child_process_original_name(
+                                    right_clean, local_sinks
+                                )
+                                if orig_name:
+                                    local_sinks[left_text_norm] = orig_name
+                            elif getattr(right, "type", "") == "object":
+                                for child in getattr(right, "named_children", []):
+                                    if getattr(child, "type", "") == "pair":
+                                        key_node = ts_child_by_field_name(child, "key")
+                                        val_node = ts_child_by_field_name(
+                                            child, "value"
+                                        )
+                                        if key_node and val_node:
+                                            k_name = ts_node_text(
+                                                src_bytes, key_node
+                                            ).strip()
+                                            k_name = (
+                                                self._normalize_static_property_key(
+                                                    k_name
+                                                )
+                                            )
+                                            v_text = ts_node_text(
+                                                src_bytes, val_node
+                                            ).strip()
+                                            if self._is_child_process_alias_assignment(
+                                                v_text, local_sinks
+                                            ):
+                                                orig_name = self._get_child_process_original_name(
+                                                    v_text, local_sinks
+                                                )
+                                                if orig_name:
+                                                    local_sinks[
+                                                        f"{left_text_norm}.{k_name}"
+                                                    ] = orig_name
+
+                            has_input = self._js_has_external_input(
+                                right_text, tainted_names
+                            )
+                            if has_input:
+                                tainted_names.add(left_text_norm)
+
+            if node_type == "call_expression":
+                function_node = ts_child_by_field_name(node, "function")
+                if function_node:
+                    func_text = ts_node_text(src_bytes, function_node).strip()
+                    func_text_norm = self._normalize_property_path(func_text)
+                    if self._is_child_process_sink_call(func_text_norm, local_sinks):
+                        arguments = ts_child_by_field_name(node, "arguments")
+                        if arguments:
+                            arg_nodes = getattr(arguments, "named_children", [])
+                            if arg_nodes:
+                                first_arg = arg_nodes[0]
+                                first_arg_text = ts_node_text(
+                                    src_bytes, first_arg
+                                ).strip()
+                                if self._js_has_external_input(
+                                    first_arg_text, tainted_names
+                                ):
+                                    start_point = getattr(node, "start_point", (0, 0))
+                                    records.append(
+                                        RiskRecord(
+                                            file_path=str(file_path),
+                                            line_number=start_point[0] + 1,
+                                            severity=Severity.HIGH,
+                                            description=f"Command injection sink call with external input: {func_text_norm}",
+                                        )
+                                    )
+        return records
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
