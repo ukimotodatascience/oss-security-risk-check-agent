@@ -320,14 +320,44 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
-                        ) and self._is_child_process_alias_assignment(
-                            right_clean, child_process_sinks
                         ):
-                            orig_name = self._get_child_process_original_name(
+                            if self._is_child_process_alias_assignment(
                                 right_clean, child_process_sinks
-                            )
-                            if orig_name:
-                                child_process_sinks[left_text_norm] = orig_name
+                            ):
+                                orig_name = self._get_child_process_original_name(
+                                    right_clean, child_process_sinks
+                                )
+                                if orig_name:
+                                    child_process_sinks[left_text_norm] = orig_name
+                            elif getattr(right, "type", "") == "object":
+                                for child in getattr(right, "named_children", []):
+                                    if getattr(child, "type", "") == "pair":
+                                        key_node = ts_child_by_field_name(child, "key")
+                                        val_node = ts_child_by_field_name(
+                                            child, "value"
+                                        )
+                                        if key_node and val_node:
+                                            k_name = ts_node_text(
+                                                src_bytes, key_node
+                                            ).strip()
+                                            k_name = (
+                                                self._normalize_static_property_key(
+                                                    k_name
+                                                )
+                                            )
+                                            v_text = ts_node_text(
+                                                src_bytes, val_node
+                                            ).strip()
+                                            if self._is_child_process_alias_assignment(
+                                                v_text, child_process_sinks
+                                            ):
+                                                orig_name = self._get_child_process_original_name(
+                                                    v_text, child_process_sinks
+                                                )
+                                                if orig_name:
+                                                    child_process_sinks[
+                                                        f"{left_text_norm}.{k_name}"
+                                                    ] = orig_name
 
                     if left_type in {"object_pattern", "array_pattern"}:
                         rhs_tainted = self._js_has_external_input(
@@ -660,11 +690,36 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     var_name = var_names_str
                     var_name_norm = self._normalize_property_path(var_name)
-                    orig_name = self._get_child_process_original_name(
-                        rhs_clean, child_process_sinks
-                    )
-                    if orig_name:
-                        child_process_sinks[var_name_norm] = orig_name
+                    if rhs_clean.startswith("{") and rhs_clean.endswith("}"):
+                        inner = rhs_clean[1:-1]
+                        for part in self._split_array_literal_elements(inner):
+                            part = part.strip()
+                            pair_info = self._split_fallback_pair(part)
+                            if pair_info:
+                                k_name = self._normalize_static_property_key(
+                                    pair_info[0]
+                                )
+                                v_text = pair_info[1].strip()
+                                if self._is_child_process_alias_assignment(
+                                    v_text, child_process_sinks
+                                ):
+                                    orig_name = self._get_child_process_original_name(
+                                        v_text, child_process_sinks
+                                    )
+                                    if orig_name:
+                                        child_process_sinks[
+                                            f"{var_name_norm}.{k_name}"
+                                        ] = orig_name
+                                if v_text in third_party_shell_sinks:
+                                    third_party_shell_sinks.add(
+                                        f"{var_name_norm}.{k_name}"
+                                    )
+                    else:
+                        orig_name = self._get_child_process_original_name(
+                            rhs_clean, child_process_sinks
+                        )
+                        if orig_name:
+                            child_process_sinks[var_name_norm] = orig_name
                     if self._js_options_enable_shell(rhs_clean):
                         shell_true_option_names.add(var_name_norm)
 
