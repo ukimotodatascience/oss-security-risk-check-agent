@@ -283,32 +283,74 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 break
                     if params_node:
                         for param in getattr(params_node, "named_children", []):
-                            if getattr(param, "type", "") == "assignment_pattern":
+                            p_type = getattr(param, "type", "")
+                            if p_type == "assignment_pattern":
                                 p_left = ts_child_by_field_name(param, "left")
                                 p_right = ts_child_by_field_name(param, "right")
                                 if p_left and p_right:
                                     p_right_text = ts_node_text(src_bytes, p_right)
-                                    if self._js_has_external_input(
+                                    rhs_tainted = self._js_has_external_input(
                                         p_right_text, tainted_names
-                                    ):
-                                        p_left_type = getattr(p_left, "type", "")
-                                        if p_left_type == "identifier":
+                                    )
+                                    p_left_type = getattr(p_left, "type", "")
+                                    if p_left_type == "identifier":
+                                        if rhs_tainted:
                                             p_left_text = ts_node_text(
                                                 src_bytes, p_left
                                             ).strip()
                                             local_taints.add(p_left_text)
-                                        elif p_left_type in {
-                                            "object_pattern",
-                                            "array_pattern",
-                                        }:
-                                            expanded = self._expand_destructuring(
-                                                p_left, [], src_bytes
-                                            )
-                                            for local_name, _, _, _, _ in expanded:
-                                                if local_name and re.fullmatch(
-                                                    r"[A-Za-z_$][\w$]*", local_name
-                                                ):
-                                                    local_taints.add(local_name)
+                                    elif p_left_type in {
+                                        "object_pattern",
+                                        "array_pattern",
+                                    }:
+                                        expanded = self._expand_destructuring(
+                                            p_left, [], src_bytes
+                                        )
+                                        for (
+                                            local_name,
+                                            _,
+                                            _,
+                                            _,
+                                            default_node,
+                                        ) in expanded:
+                                            if not local_name or not re.fullmatch(
+                                                r"[A-Za-z_$][\w$]*", local_name
+                                            ):
+                                                continue
+                                            has_taint = rhs_tainted
+                                            if (
+                                                not has_taint
+                                                and default_node is not None
+                                            ):
+                                                def_text = ts_node_text(
+                                                    src_bytes, default_node
+                                                )
+                                                has_taint = self._js_has_external_input(
+                                                    def_text, tainted_names
+                                                )
+                                            if has_taint:
+                                                local_taints.add(local_name)
+                            elif p_type in {"object_pattern", "array_pattern"}:
+                                expanded = self._expand_destructuring(
+                                    param, [], src_bytes
+                                )
+                                for (
+                                    local_name,
+                                    _,
+                                    _,
+                                    _,
+                                    default_node,
+                                ) in expanded:
+                                    if not local_name or not re.fullmatch(
+                                        r"[A-Za-z_$][\w$]*", local_name
+                                    ):
+                                        continue
+                                    if default_node is not None:
+                                        def_text = ts_node_text(src_bytes, default_node)
+                                        if self._js_has_external_input(
+                                            def_text, tainted_names
+                                        ):
+                                            local_taints.add(local_name)
 
                     if local_taints:
                         local_tainted = tainted_names.union(local_taints)
@@ -698,29 +740,73 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 params_str = m.group(1)
                 for part in self._split_array_literal_elements(params_str):
                     part = part.strip()
-                    if "=" in part:
-                        p_left_raw, p_right_raw = part.split("=", 1)
-                        p_left_raw = p_left_raw.strip()
-                        p_right_raw = p_right_raw.strip()
+                    outer_assign = self._split_outer_assignment(part)
+                    if outer_assign is not None:
+                        p_left_raw, p_right_raw = outer_assign
                         current_tainted = tainted_names.union(
                             p for p, _ in active_local_taints
                         )
-                        if self._js_has_external_input(p_right_raw, current_tainted):
-                            is_dest_param = (
-                                p_left_raw.startswith("{") and p_left_raw.endswith("}")
-                            ) or (
-                                p_left_raw.startswith("[") and p_left_raw.endswith("]")
+                        rhs_tainted = self._js_has_external_input(
+                            p_right_raw, current_tainted
+                        )
+                        is_dest_param = (
+                            p_left_raw.startswith("{") and p_left_raw.endswith("}")
+                        ) or (p_left_raw.startswith("[") and p_left_raw.endswith("]"))
+                        lvl_offset = (
+                            1 if stripped.count("{") <= stripped.count("}") else 0
+                        )
+                        if is_dest_param:
+                            expanded = self._expand_fallback_destructuring(
+                                p_left_raw, []
                             )
+                            for local_name, _, _, _, default_val in expanded:
+                                if not local_name or not re.fullmatch(
+                                    r"[A-Za-z_$][\w$]*", local_name
+                                ):
+                                    continue
+                                has_taint = rhs_tainted
+                                if not has_taint and default_val is not None:
+                                    has_taint = self._js_has_external_input(
+                                        default_val, current_tainted
+                                    )
+                                if has_taint:
+                                    norm_name = self._normalize_property_path(
+                                        local_name
+                                    )
+                                    active_local_taints.append(
+                                        (
+                                            norm_name,
+                                            current_brace_level + lvl_offset,
+                                        )
+                                    )
+                        else:
+                            if rhs_tainted and re.fullmatch(
+                                r"[A-Za-z_$][\w$]*", p_left_raw
+                            ):
+                                norm_name = self._normalize_property_path(p_left_raw)
+                                active_local_taints.append(
+                                    (norm_name, current_brace_level + lvl_offset)
+                                )
+                    else:
+                        is_dest_param = (
+                            part.startswith("{") and part.endswith("}")
+                        ) or (part.startswith("[") and part.endswith("]"))
+                        if is_dest_param:
+                            current_tainted = tainted_names.union(
+                                p for p, _ in active_local_taints
+                            )
+                            expanded = self._expand_fallback_destructuring(part, [])
                             lvl_offset = (
                                 1 if stripped.count("{") <= stripped.count("}") else 0
                             )
-                            if is_dest_param:
-                                expanded = self._expand_fallback_destructuring(
-                                    p_left_raw, []
-                                )
-                                for local_name, _, _, _, _ in expanded:
-                                    if local_name and re.fullmatch(
-                                        r"[A-Za-z_$][\w$]*", local_name
+                            for local_name, _, _, _, default_val in expanded:
+                                if not local_name or not re.fullmatch(
+                                    r"[A-Za-z_$][\w$]*", local_name
+                                ):
+                                    continue
+                                if default_val is not None:
+                                    if self._js_has_external_input(
+                                        default_val, current_tainted
                                     ):
                                         norm_name = self._normalize_property_path(
                                             local_name
@@ -731,14 +817,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 current_brace_level + lvl_offset,
                                             )
                                         )
-                            else:
-                                if re.fullmatch(r"[A-Za-z_$][\w$]*", p_left_raw):
-                                    norm_name = self._normalize_property_path(
-                                        p_left_raw
-                                    )
-                                    active_local_taints.append(
-                                        (norm_name, current_brace_level + lvl_offset)
-                                    )
 
             for var_names_str, rhs in self._split_declarations(stripped):
                 var_names_str = var_names_str.strip()
@@ -1697,6 +1775,47 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
         return stripped_map
 
+    @staticmethod
+    def _split_outer_assignment(text: str) -> Optional[Tuple[str, str]]:
+        brace_level = 0
+        bracket_level = 0
+        paren_level = 0
+        in_string = None
+        escaped = False
+
+        for idx, char in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if in_string:
+                if char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char == "{":
+                brace_level += 1
+            elif char == "}":
+                if brace_level > 0:
+                    brace_level -= 1
+            elif char == "[":
+                bracket_level += 1
+            elif char == "]":
+                if bracket_level > 0:
+                    bracket_level -= 1
+            elif char == "(":
+                paren_level += 1
+            elif char == ")":
+                if paren_level > 0:
+                    paren_level -= 1
+            elif char == "=":
+                if brace_level == 0 and bracket_level == 0 and paren_level == 0:
+                    return text[:idx].strip(), text[idx + 1 :].strip()
+        return None
+
     def _split_declarations(self, text: str) -> List[Tuple[str, str]]:
         decls = []
         idx = 0
@@ -2638,6 +2757,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         file_path: Path,
     ) -> List[RiskRecord]:
         records = []
+        rel_path = str(file_path.relative_to(target))
         local_sinks = child_process_sinks.copy()
 
         # subtree 内の関数再帰定義時の二重検知を防止する
@@ -2674,32 +2794,74 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 break
                     if params_node:
                         for param in getattr(params_node, "named_children", []):
-                            if getattr(param, "type", "") == "assignment_pattern":
+                            p_type = getattr(param, "type", "")
+                            if p_type == "assignment_pattern":
                                 p_left = ts_child_by_field_name(param, "left")
                                 p_right = ts_child_by_field_name(param, "right")
                                 if p_left and p_right:
                                     p_right_text = ts_node_text(src_bytes, p_right)
-                                    if self._js_has_external_input(
+                                    rhs_tainted = self._js_has_external_input(
                                         p_right_text, tainted_names
-                                    ):
-                                        p_left_type = getattr(p_left, "type", "")
-                                        if p_left_type == "identifier":
+                                    )
+                                    p_left_type = getattr(p_left, "type", "")
+                                    if p_left_type == "identifier":
+                                        if rhs_tainted:
                                             p_left_text = ts_node_text(
                                                 src_bytes, p_left
                                             ).strip()
                                             local_taints.add(p_left_text)
-                                        elif p_left_type in {
-                                            "object_pattern",
-                                            "array_pattern",
-                                        }:
-                                            expanded = self._expand_destructuring(
-                                                p_left, [], src_bytes
-                                            )
-                                            for local_name, _, _, _, _ in expanded:
-                                                if local_name and re.fullmatch(
-                                                    r"[A-Za-z_$][\w$]*", local_name
-                                                ):
-                                                    local_taints.add(local_name)
+                                    elif p_left_type in {
+                                        "object_pattern",
+                                        "array_pattern",
+                                    }:
+                                        expanded = self._expand_destructuring(
+                                            p_left, [], src_bytes
+                                        )
+                                        for (
+                                            local_name,
+                                            _,
+                                            _,
+                                            _,
+                                            default_node,
+                                        ) in expanded:
+                                            if not local_name or not re.fullmatch(
+                                                r"[A-Za-z_$][\w$]*", local_name
+                                            ):
+                                                continue
+                                            has_taint = rhs_tainted
+                                            if (
+                                                not has_taint
+                                                and default_node is not None
+                                            ):
+                                                def_text = ts_node_text(
+                                                    src_bytes, default_node
+                                                )
+                                                has_taint = self._js_has_external_input(
+                                                    def_text, tainted_names
+                                                )
+                                            if has_taint:
+                                                local_taints.add(local_name)
+                            elif p_type in {"object_pattern", "array_pattern"}:
+                                expanded = self._expand_destructuring(
+                                    param, [], src_bytes
+                                )
+                                for (
+                                    local_name,
+                                    _,
+                                    _,
+                                    _,
+                                    default_node,
+                                ) in expanded:
+                                    if not local_name or not re.fullmatch(
+                                        r"[A-Za-z_$][\w$]*", local_name
+                                    ):
+                                        continue
+                                    if default_node is not None:
+                                        def_text = ts_node_text(src_bytes, default_node)
+                                        if self._js_has_external_input(
+                                            def_text, tainted_names
+                                        ):
+                                            local_taints.add(local_name)
 
                     if local_taints:
                         local_tainted_nested = tainted_names.union(local_taints)
@@ -2846,10 +3008,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     start_point = getattr(node, "start_point", (0, 0))
                                     records.append(
                                         RiskRecord(
-                                            file_path=str(file_path),
-                                            line_number=start_point[0] + 1,
+                                            rule_id=self.rule_id,
+                                            category=self.category,
+                                            title=self.title,
                                             severity=Severity.HIGH,
-                                            description=f"Command injection sink call with external input: {func_text_norm}",
+                                            file_path=rel_path,
+                                            line=start_point[0] + 1,
+                                            message=f"External input reaches child_process command execution: {func_text_norm}",
                                         )
                                     )
         return records
