@@ -114,7 +114,7 @@ class ShellSourceMixin:
                 is_after_case_in = True
                 continue
             # case のパターン終端 ')' の読み飛ばし。例: '*) ' や 'a|b) '
-            if is_after_case_in:
+            if is_after_case_in or not statement[offset:].strip().startswith("("):
                 end_idx = ShellSourceMixin._find_case_pattern_end(statement[offset:])
                 if end_idx is not None:
                     offset += end_idx

@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple, Union, Any
 from src.models import RiskRecord, Severity
 from src.rules.A_code.A1_1_command_injection_common import (
     CATEGORY,
@@ -329,204 +329,31 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             if orig_name:
                                 child_process_sinks[left_text_norm] = orig_name
 
-                    if left_type == "object_pattern":
+                    if left_type in {"object_pattern", "array_pattern"}:
                         rhs_tainted = self._js_has_external_input(
                             right_text, tainted_names
                         )
-                        right_properties = {}
-                        if getattr(right, "type", "") == "object":
-                            for right_child in getattr(right, "named_children", []):
-                                right_child_type = getattr(right_child, "type", "")
-                                if right_child_type != "pair":
-                                    shorthand_name = ts_node_text(
-                                        src_bytes, right_child
-                                    ).strip()
-                                    if re.fullmatch(
-                                        r"[A-Za-z_$][\w$]*", shorthand_name
-                                    ):
-                                        right_properties[shorthand_name] = (
-                                            shorthand_name
-                                        )
-                                    continue
-                                key_node = ts_child_by_field_name(right_child, "key")
-                                value_node = ts_child_by_field_name(
-                                    right_child, "value"
-                                )
-                                if key_node is not None and value_node is not None:
-                                    property_name = ts_node_text(
-                                        src_bytes, key_node
-                                    ).strip()
-                                    property_name = self._normalize_static_property_key(
-                                        property_name
-                                    )
-                                    right_properties[property_name] = ts_node_text(
-                                        src_bytes, value_node
-                                    )
-                        for child in getattr(left, "named_children", []):
-                            c_type = getattr(child, "type", "")
-                            prop_name = None
-                            local_name = None
-                            default_node = None
-                            if c_type == "pair":
-                                key_node = ts_child_by_field_name(child, "key")
-                                val_node = ts_child_by_field_name(child, "value")
-                                if key_node:
-                                    prop_name = ts_node_text(
-                                        src_bytes, key_node
-                                    ).strip()
-                                    prop_name = self._normalize_static_property_key(
-                                        prop_name
-                                    )
-                                if val_node:
-                                    val_type = getattr(val_node, "type", "")
-                                    if val_type == "assignment_pattern":
-                                        left_node = ts_child_by_field_name(
-                                            val_node, "left"
-                                        )
-                                        if left_node:
-                                            local_name = ts_node_text(
-                                                src_bytes, left_node
-                                            ).strip()
-                                        default_node = ts_child_by_field_name(
-                                            val_node, "right"
-                                        )
-                                    else:
-                                        local_name = ts_node_text(
-                                            src_bytes, val_node
-                                        ).strip()
-                            elif c_type == "assignment_pattern":
-                                left_node = ts_child_by_field_name(child, "left")
-                                if left_node:
-                                    local_name = ts_node_text(
-                                        src_bytes, left_node
-                                    ).strip()
-                                default_node = ts_child_by_field_name(child, "right")
-                            else:
-                                local_name = ts_node_text(src_bytes, child).strip()
-                                if local_name.startswith("..."):
-                                    local_name = local_name[3:].strip()
-                                prop_name = local_name
-
-                            if local_name:
-                                property_value = right_properties.get(prop_name)
-                                if prop_name in right_properties:
-                                    has_input = self._js_has_external_input(
-                                        property_value, tainted_names
-                                    )
-                                else:
-                                    has_input = rhs_tainted
-                                default_may_apply = (
-                                    not right_properties
-                                    or prop_name not in right_properties
-                                    or property_value.strip() == "undefined"
-                                )
-                                if (
-                                    not has_input
-                                    and default_node is not None
-                                    and default_may_apply
-                                ):
-                                    default_text = ts_node_text(src_bytes, default_node)
-                                    has_input = self._js_has_external_input(
-                                        default_text, tainted_names
-                                    )
-                                if has_input:
-                                    tainted_names.add(local_name)
-                    elif left_type == "array_pattern":
-                        right_type = getattr(right, "type", "")
-                        if right_type == "array":
-                            right_map = {}
-                            r_elements = getattr(right, "children", [])
-                            r_idx = 0
-                            for r_child in r_elements:
-                                r_c_type = getattr(r_child, "type", "")
-                                if r_c_type == ",":
-                                    r_idx += 1
-                                    continue
-                                if r_c_type in {"[", "]"}:
-                                    continue
-                                right_map[r_idx] = ts_node_text(src_bytes, r_child)
-
-                            left_elements = getattr(left, "children", [])
-                            element_idx = 0
-                            for child in left_elements:
-                                c_type = getattr(child, "type", "")
-                                if c_type == ",":
-                                    element_idx += 1
-                                    continue
-                                if c_type in {"[", "]"}:
-                                    continue
-
-                                local_name = None
-                                default_node = None
-                                if c_type == "assignment_pattern":
-                                    left_node = ts_child_by_field_name(child, "left")
-                                    if left_node:
-                                        local_name = ts_node_text(
-                                            src_bytes, left_node
-                                        ).strip()
-                                    default_node = ts_child_by_field_name(
-                                        child, "right"
-                                    )
-                                else:
-                                    local_name = ts_node_text(src_bytes, child).strip()
-                                    if local_name.startswith("..."):
-                                        local_name = local_name[3:].strip()
-
-                                if local_name and re.fullmatch(
-                                    r"[A-Za-z_$][\w$]*", local_name
-                                ):
-                                    has_input = False
-                                    if element_idx in right_map:
-                                        r_el_text = right_map[element_idx]
-                                        has_input = self._js_has_external_input(
-                                            r_el_text, tainted_names
-                                        )
-                                    elif (
-                                        c_type == "assignment_pattern"
-                                        and default_node is not None
-                                    ):
-                                        default_text = ts_node_text(
-                                            src_bytes, default_node
-                                        )
-                                        has_input = self._js_has_external_input(
-                                            default_text, tainted_names
-                                        )
-                                    if has_input:
-                                        tainted_names.add(local_name)
-                        else:
-                            rhs_tainted = self._js_has_external_input(
-                                right_text, tainted_names
+                        expanded = self._expand_destructuring(left, [], src_bytes)
+                        for local_name, path, is_rest, excluded_keys in expanded:
+                            if not local_name or not re.fullmatch(
+                                r"[A-Za-z_$][\w$]*", local_name
+                            ):
+                                continue
+                            target_node = self._get_nested_property_value(
+                                right, path, src_bytes
                             )
-                            for child in getattr(left, "named_children", []):
-                                c_type = getattr(child, "type", "")
-                                local_name = None
-                                default_node = None
-                                if c_type == "assignment_pattern":
-                                    left_node = ts_child_by_field_name(child, "left")
-                                    if left_node:
-                                        local_name = ts_node_text(
-                                            src_bytes, left_node
-                                        ).strip()
-                                    default_node = ts_child_by_field_name(
-                                        child, "right"
-                                    )
-                                else:
-                                    local_name = ts_node_text(src_bytes, child).strip()
-                                    if local_name.startswith("..."):
-                                        local_name = local_name[3:].strip()
-                                if local_name and re.fullmatch(
-                                    r"[A-Za-z_$][\w$]*", local_name
-                                ):
-                                    has_input = rhs_tainted
-                                    if not has_input and default_node is not None:
-                                        default_text = ts_node_text(
-                                            src_bytes, default_node
-                                        )
-                                        has_input = self._js_has_external_input(
-                                            default_text, tainted_names
-                                        )
-                                    if has_input:
-                                        tainted_names.add(local_name)
+                            if is_rest and excluded_keys:
+                                has_input = self._is_rest_tainted(
+                                    target_node, excluded_keys, tainted_names, src_bytes
+                                )
+                            elif target_node is not None:
+                                has_input = self._js_has_external_input(
+                                    ts_node_text(src_bytes, target_node), tainted_names
+                                )
+                            else:
+                                has_input = rhs_tainted
+                            if has_input:
+                                tainted_names.add(local_name)
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
@@ -723,168 +550,87 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 var_names_str = var_names_str.strip()
                 rhs = rhs.strip()
                 rhs_clean = rhs.rstrip(";").strip()
-                names_to_register = []
-                array_rest_names = set()
-                if var_names_str.startswith("{") and var_names_str.endswith("}"):
-                    inner = var_names_str[1:-1]
-                    for part in self._split_array_literal_elements(inner):
-                        part = part.strip()
-                        if not part:
+                is_destruct = (
+                    var_names_str.startswith("{") and var_names_str.endswith("}")
+                ) or (var_names_str.startswith("[") and var_names_str.endswith("]"))
+                if is_destruct:
+                    expanded = self._expand_fallback_destructuring(var_names_str, [])
+                    for (
+                        local_name,
+                        path,
+                        is_rest,
+                        excluded_keys,
+                        default_val,
+                    ) in expanded:
+                        if not local_name or not re.fullmatch(
+                            r"[A-Za-z_$][\w$]*", local_name
+                        ):
                             continue
-                        default_val = None
-                        if "=" in part:
-                            lhs_part, rhs_part = part.split("=", 1)
-                            lhs_part = lhs_part.strip()
-                            default_val = rhs_part.strip()
-                            part = lhs_part
-                        if ":" in part:
-                            p_parts = part.split(":")
-                            prop_name = self._normalize_static_property_key(p_parts[0])
-                            local_name = p_parts[1].strip()
-                            names_to_register.append(
-                                (local_name, prop_name, default_val)
-                            )
-                        else:
-                            local_name = part
-                            if local_name.startswith("..."):
-                                local_name = local_name[3:].strip()
-                            names_to_register.append(
-                                (local_name, local_name, default_val)
-                            )
-                elif var_names_str.startswith("[") and var_names_str.endswith("]"):
-                    inner = var_names_str[1:-1]
-                    for part in self._split_array_literal_elements(inner):
-                        part = part.strip()
-                        if not part:
-                            names_to_register.append((None, None, None))
-                            continue
-                        default_val = None
-                        if "=" in part:
-                            lhs_part, rhs_part = part.split("=", 1)
-                            lhs_part = lhs_part.strip()
-                            default_val = rhs_part.strip()
-                            part = lhs_part
-                        local_name = part.strip()
-                        if local_name.startswith("..."):
-                            local_name = local_name[3:].strip()
-                            if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
-                                array_rest_names.add(local_name)
-                        if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
-                            names_to_register.append((local_name, None, default_val))
-                        else:
-                            names_to_register.append((None, None, None))
-                else:
-                    names_to_register.append((var_names_str, None, None))
 
-                is_array_destruct = var_names_str.startswith(
-                    "["
-                ) and var_names_str.endswith("]")
-                rhs_is_array_literal = rhs_clean.startswith("[") and rhs_clean.endswith(
-                    "]"
-                )
-                rhs_elements = []
-                if rhs_is_array_literal:
-                    rhs_elements = self._split_array_literal_elements(rhs_clean[1:-1])
-                is_object_destruct = var_names_str.startswith(
-                    "{"
-                ) and var_names_str.endswith("}")
-                rhs_is_object_literal = rhs_clean.startswith(
-                    "{"
-                ) and rhs_clean.endswith("}")
-                rhs_properties = {}
-                if rhs_is_object_literal:
-                    for property_text in self._split_array_literal_elements(
-                        rhs_clean[1:-1]
-                    ):
-                        property_match = re.match(
-                            r"\s*((?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)|(?:['\"`](?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)[\"'`])|(?:\[\s*(?:['\"`][A-Za-z_$][\w$]*['\"`]|[0-9]+(?:\.[0-9]+)?)\s*\]))\s*:\s*(.+)\s*$",
-                            property_text,
+                        var_name_norm = self._normalize_property_path(local_name)
+
+                        is_require_cp = re.fullmatch(
+                            r"require\(['\"](?:node:)?child_process['\"]\)",
+                            rhs_clean,
                         )
-                        if property_match:
-                            property_name = self._normalize_static_property_key(
-                                property_match.group(1)
-                            )
-                            rhs_properties[property_name] = property_match.group(2)
-                        else:
-                            shorthand_name = property_text.strip()
-                            if re.fullmatch(r"[A-Za-z_$][\w$]*", shorthand_name):
-                                rhs_properties[shorthand_name] = shorthand_name
-
-                for element_idx, (var_name, prop_name, default_val) in enumerate(
-                    names_to_register
-                ):
-                    if var_name is None:
-                        continue
-                    var_name_norm = self._normalize_property_path(var_name)
-                    is_require_cp = re.fullmatch(
-                        r"require\(['\"](?:node:)?child_process['\"]\)",
-                        rhs_clean,
-                    )
-                    if prop_name is not None:
-                        if is_require_cp:
-                            child_process_sinks[var_name_norm] = prop_name
+                        prop_name = (
+                            path[-1] if path and isinstance(path[-1], str) else None
+                        )
+                        if prop_name is not None:
+                            if is_require_cp:
+                                child_process_sinks[var_name_norm] = prop_name
+                            else:
+                                orig_name = self._get_child_process_original_name(
+                                    f"{rhs_clean}.{prop_name}", child_process_sinks
+                                )
+                                if orig_name:
+                                    child_process_sinks[var_name_norm] = orig_name
                         else:
                             orig_name = self._get_child_process_original_name(
-                                f"{rhs_clean}.{prop_name}", child_process_sinks
+                                rhs_clean, child_process_sinks
                             )
                             if orig_name:
                                 child_process_sinks[var_name_norm] = orig_name
-                    else:
-                        orig_name = self._get_child_process_original_name(
-                            rhs_clean, child_process_sinks
-                        )
-                        if orig_name:
-                            child_process_sinks[var_name_norm] = orig_name
 
+                        if self._js_options_enable_shell(rhs_clean):
+                            shell_true_option_names.add(var_name_norm)
+
+                        target_val = self._get_nested_fallback_value(rhs_clean, path)
+                        if is_rest and excluded_keys:
+                            has_input = self._is_fallback_rest_tainted(
+                                rhs_clean, excluded_keys, tainted_names
+                            )
+                        elif target_val is not None:
+                            has_input = self._js_has_external_input(
+                                target_val, tainted_names
+                            )
+                        else:
+                            has_input = self._js_has_external_input(rhs, tainted_names)
+
+                        if not has_input and default_val is not None:
+                            default_may_apply = (
+                                target_val is None
+                                or target_val.strip() in {"", "undefined"}
+                            )
+                            if default_may_apply:
+                                has_input = self._js_has_external_input(
+                                    default_val, tainted_names
+                                )
+
+                        if has_input:
+                            tainted_names.add(var_name_norm)
+                else:
+                    var_name = var_names_str
+                    var_name_norm = self._normalize_property_path(var_name)
+                    orig_name = self._get_child_process_original_name(
+                        rhs_clean, child_process_sinks
+                    )
+                    if orig_name:
+                        child_process_sinks[var_name_norm] = orig_name
                     if self._js_options_enable_shell(rhs_clean):
                         shell_true_option_names.add(var_name_norm)
 
-                    if is_array_destruct and rhs_is_array_literal:
-                        if var_name_norm in array_rest_names:
-                            has_input = any(
-                                self._js_has_external_input(element, tainted_names)
-                                for element in rhs_elements[element_idx:]
-                            )
-                        elif element_idx < len(rhs_elements):
-                            has_input = self._js_has_external_input(
-                                rhs_elements[element_idx], tainted_names
-                            )
-                        else:
-                            has_input = False
-                    elif (
-                        is_object_destruct
-                        and rhs_is_object_literal
-                        and prop_name in rhs_properties
-                    ):
-                        has_input = self._js_has_external_input(
-                            rhs_properties[prop_name], tainted_names
-                        )
-                    else:
-                        has_input = self._js_has_external_input(rhs, tainted_names)
-
-                    if is_array_destruct and rhs_is_array_literal:
-                        element_value = (
-                            rhs_elements[element_idx]
-                            if element_idx < len(rhs_elements)
-                            else None
-                        )
-                        default_may_apply = (
-                            element_value is None
-                            or element_value.strip() in {"", "undefined"}
-                        )
-                    elif is_object_destruct and rhs_is_object_literal:
-                        property_value = rhs_properties.get(prop_name)
-                        default_may_apply = (
-                            property_value is None
-                            or property_value.strip() == "undefined"
-                        )
-                    else:
-                        default_may_apply = True
-                    if not has_input and default_val is not None and default_may_apply:
-                        has_input = self._js_has_external_input(
-                            default_val, tainted_names
-                        )
-
+                    has_input = self._js_has_external_input(rhs, tainted_names)
                     if has_input:
                         tainted_names.add(var_name_norm)
 
@@ -2084,6 +1830,314 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             decls.append((current_var_name, rhs_val))
 
         return decls
+
+    def _expand_destructuring(
+        self, node: Any, current_path: List[Union[str, int]], src_bytes: bytes
+    ) -> List[Tuple[str, List[Union[str, int]], bool, Optional[Set[str]]]]:
+        results = []
+        node_type = getattr(node, "type", "")
+        if node_type == "object_pattern":
+            local_keys = set()
+            for child in getattr(node, "named_children", []):
+                c_type = getattr(child, "type", "")
+                if c_type == "pair":
+                    key_node = ts_child_by_field_name(child, "key")
+                    if key_node:
+                        p_name = ts_node_text(src_bytes, key_node).strip()
+                        p_name = self._normalize_static_property_key(p_name)
+                        local_keys.add(p_name)
+                elif c_type != "rest_pattern":
+                    p_name = ts_node_text(src_bytes, child).strip()
+                    if c_type == "assignment_pattern":
+                        left_node = ts_child_by_field_name(child, "left")
+                        if left_node:
+                            p_name = ts_node_text(src_bytes, left_node).strip()
+                    local_keys.add(p_name)
+            for child in getattr(node, "named_children", []):
+                c_type = getattr(child, "type", "")
+                if c_type == "pair":
+                    key_node = ts_child_by_field_name(child, "key")
+                    val_node = ts_child_by_field_name(child, "value")
+                    if key_node and val_node:
+                        p_name = ts_node_text(src_bytes, key_node).strip()
+                        p_name = self._normalize_static_property_key(p_name)
+                        results.extend(
+                            self._expand_destructuring(
+                                val_node, current_path + [p_name], src_bytes
+                            )
+                        )
+                elif c_type == "assignment_pattern":
+                    left_node = ts_child_by_field_name(child, "left")
+                    if left_node:
+                        results.extend(
+                            self._expand_destructuring(
+                                left_node, current_path, src_bytes
+                            )
+                        )
+                elif c_type == "rest_pattern":
+                    local_name = ts_node_text(src_bytes, child).strip()
+                    if local_name.startswith("..."):
+                        local_name = local_name[3:].strip()
+                    results.append((local_name, current_path, True, local_keys))
+                else:
+                    p_name = ts_node_text(src_bytes, child).strip()
+                    results.append((p_name, current_path + [p_name], False, None))
+        elif node_type == "array_pattern":
+            elements = getattr(node, "children", [])
+            idx = 0
+            for child in elements:
+                c_type = getattr(child, "type", "")
+                if c_type == ",":
+                    idx += 1
+                    continue
+                if c_type in {"[", "]"}:
+                    continue
+                actual_child = child
+                if c_type == "assignment_pattern":
+                    left_node = ts_child_by_field_name(child, "left")
+                    if left_node:
+                        actual_child = left_node
+                actual_type = getattr(actual_child, "type", "")
+                if actual_type in {"object_pattern", "array_pattern"}:
+                    results.extend(
+                        self._expand_destructuring(
+                            actual_child, current_path + [idx], src_bytes
+                        )
+                    )
+                elif c_type == "rest_pattern" or actual_type == "rest_pattern":
+                    local_name = ts_node_text(src_bytes, actual_child).strip()
+                    if local_name.startswith("..."):
+                        local_name = local_name[3:].strip()
+                    results.append(
+                        (local_name, current_path + [slice(idx, None)], False, None)
+                    )
+                else:
+                    local_name = ts_node_text(src_bytes, actual_child).strip()
+                    results.append((local_name, current_path + [idx], False, None))
+                idx += 1
+        else:
+            local_name = ts_node_text(src_bytes, node).strip()
+            results.append((local_name, current_path, False, None))
+        return results
+
+    def _get_nested_property_value(
+        self, right_node: Any, path: List[Union[str, int]], src_bytes: bytes
+    ) -> Any:
+        curr = right_node
+        for p in path:
+            if curr is None:
+                return None
+            if isinstance(p, slice):
+                return curr
+            curr_type = getattr(curr, "type", "")
+            if isinstance(p, str):
+                if curr_type == "object":
+                    found = None
+                    for child in getattr(curr, "named_children", []):
+                        if getattr(child, "type", "") == "pair":
+                            key_node = ts_child_by_field_name(child, "key")
+                            if (
+                                key_node
+                                and ts_node_text(src_bytes, key_node).strip() == p
+                            ):
+                                found = ts_child_by_field_name(child, "value")
+                                break
+                    curr = found
+                else:
+                    return None
+            elif isinstance(p, int):
+                if curr_type == "array":
+                    elements = [
+                        c
+                        for c in getattr(curr, "children", [])
+                        if getattr(c, "type", "") not in {",", "[", "]"}
+                    ]
+                    if p < len(elements):
+                        curr = elements[p]
+                    else:
+                        return None
+                else:
+                    return None
+        return curr
+
+    def _is_rest_tainted(
+        self,
+        right_node: Any,
+        excluded_keys: Set[str],
+        tainted_names: Set[str],
+        src_bytes: bytes,
+    ) -> bool:
+        if right_node is None or getattr(right_node, "type", "") != "object":
+            return False
+        for child in getattr(right_node, "named_children", []):
+            if getattr(child, "type", "") == "pair":
+                key_node = ts_child_by_field_name(child, "key")
+                val_node = ts_child_by_field_name(child, "value")
+                if key_node and val_node:
+                    p_name = ts_node_text(src_bytes, key_node).strip()
+                    p_name = self._normalize_static_property_key(p_name)
+                    if p_name not in excluded_keys:
+                        if self._js_has_external_input(
+                            ts_node_text(src_bytes, val_node), tainted_names
+                        ):
+                            return True
+        return False
+
+    def _expand_fallback_destructuring(
+        self, pattern_str: str, current_path: List[Union[str, int]]
+    ) -> List[
+        Tuple[str, List[Union[str, int]], bool, Optional[Set[str]], Optional[str]]
+    ]:
+        pattern_str = pattern_str.strip()
+        results = []
+        if pattern_str.startswith("{") and pattern_str.endswith("}"):
+            inner = pattern_str[1:-1]
+            local_keys = set()
+            for part in self._split_array_literal_elements(inner):
+                part = part.strip()
+                if not part or part.startswith("..."):
+                    continue
+                if "=" in part:
+                    part = part.split("=", 1)[0].strip()
+                if ":" in part:
+                    p_parts = part.split(":")
+                    prop_name = self._normalize_static_property_key(p_parts[0])
+                else:
+                    prop_name = part
+                local_keys.add(prop_name)
+            for part in self._split_array_literal_elements(inner):
+                part = part.strip()
+                if not part:
+                    continue
+                default_val = None
+                if "=" in part:
+                    part, default_val = part.split("=", 1)
+                    part = part.strip()
+                    default_val = default_val.strip()
+                if part.startswith("..."):
+                    local_name = part[3:].strip()
+                    results.append(
+                        (local_name, current_path, True, local_keys, default_val)
+                    )
+                elif ":" in part:
+                    p_parts = part.split(":")
+                    prop_name = self._normalize_static_property_key(p_parts[0])
+                    val_part = p_parts[1].strip()
+                    results.extend(
+                        self._expand_fallback_destructuring(
+                            val_part, current_path + [prop_name]
+                        )
+                    )
+                else:
+                    results.append(
+                        (part, current_path + [part], False, None, default_val)
+                    )
+        elif pattern_str.startswith("[") and pattern_str.endswith("]"):
+            inner = pattern_str[1:-1]
+            idx = 0
+            for part in self._split_array_literal_elements(inner):
+                part = part.strip()
+                if not part:
+                    idx += 1
+                    continue
+                default_val = None
+                if "=" in part:
+                    part, default_val = part.split("=", 1)
+                    part = part.strip()
+                    default_val = default_val.strip()
+                if part.startswith("..."):
+                    local_name = part[3:].strip()
+                    results.append(
+                        (
+                            local_name,
+                            current_path + [slice(idx, None)],
+                            False,
+                            None,
+                            default_val,
+                        )
+                    )
+                elif part.startswith("{") or part.startswith("["):
+                    results.extend(
+                        self._expand_fallback_destructuring(part, current_path + [idx])
+                    )
+                else:
+                    results.append(
+                        (part, current_path + [idx], False, None, default_val)
+                    )
+                idx += 1
+        else:
+            default_val = None
+            if "=" in pattern_str:
+                pattern_str, default_val = pattern_str.split("=", 1)
+                pattern_str = pattern_str.strip()
+                default_val = default_val.strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", pattern_str):
+                results.append((pattern_str, current_path, False, None, default_val))
+        return results
+
+    def _get_nested_fallback_value(
+        self, rhs_str: str, path: List[Union[str, int]]
+    ) -> Optional[str]:
+        curr = rhs_str.strip()
+        for p in path:
+            if not curr:
+                return None
+            if isinstance(p, slice):
+                return curr
+            if isinstance(p, str):
+                if curr.startswith("{") and curr.endswith("}"):
+                    inner = curr[1:-1]
+                    found = None
+                    for part in self._split_array_literal_elements(inner):
+                        part = part.strip()
+                        if ":" in part:
+                            p_parts = part.split(":", 1)
+                            key = self._normalize_static_property_key(p_parts[0])
+                            if key == p:
+                                found = p_parts[1].strip()
+                                break
+                        else:
+                            shorthand = part.strip()
+                            if shorthand == p:
+                                found = shorthand
+                                break
+                    curr = found
+                else:
+                    return None
+            elif isinstance(p, int):
+                if curr.startswith("[") and curr.endswith("]"):
+                    inner = curr[1:-1]
+                    elements = self._split_array_literal_elements(inner)
+                    if p < len(elements):
+                        curr = elements[p].strip()
+                    else:
+                        return None
+                else:
+                    return None
+        return curr
+
+    def _is_fallback_rest_tainted(
+        self, rhs_str: str, excluded_keys: Set[str], tainted_names: Set[str]
+    ) -> bool:
+        rhs_str = rhs_str.strip()
+        if not (rhs_str.startswith("{") and rhs_str.endswith("}")):
+            return False
+        inner = rhs_str[1:-1]
+        for part in self._split_array_literal_elements(inner):
+            part = part.strip()
+            if ":" in part:
+                p_parts = part.split(":", 1)
+                key = self._normalize_static_property_key(p_parts[0])
+                val = p_parts[1].strip()
+                if key not in excluded_keys:
+                    if self._js_has_external_input(val, tainted_names):
+                        return True
+            else:
+                shorthand = part.strip()
+                if shorthand not in excluded_keys:
+                    if self._js_has_external_input(shorthand, tainted_names):
+                        return True
+        return False
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
