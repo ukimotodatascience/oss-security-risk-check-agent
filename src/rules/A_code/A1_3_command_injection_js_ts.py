@@ -549,14 +549,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if callee_node is None:
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
-            callee = callee.replace("?.", ".")
-            callee = re.sub(
-                r"^require\(['\"](?:node:)?child_process['\"]\)(?=\.)",
-                "child_process",
-                callee,
-            )
-            callee = re.sub(r"^\(\s*([A-Za-z_$][\w$]*)\s*\)(?=!?\.)", r"\1", callee)
-            callee = re.sub(r"(?<=[\w$])!(?=\.)", "", callee)
             call_text = text
             sink_node = None
             if callee_node is not None:
@@ -576,42 +568,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             has_external = self._js_has_external_input(call_text, tainted_names)
             if not has_external:
                 continue
-            callee_tail = callee.split(".")[-1]
-            is_known_sink = (
-                callee in child_process_sinks or callee_tail in child_process_sinks
+            resolved_sink = self._is_child_process_sink_call(
+                callee, child_process_sinks
             )
-            if not is_known_sink and callee_tail in self._CHILD_PROCESS_NAMES:
-                if "." in callee:
-                    obj_name = callee.split(".")[0]
-                    if child_process_sinks:
-                        is_valid = obj_name == "child_process" or (
-                            child_process_sinks.get(obj_name) == "child_process"
-                        )
-                    else:
-                        is_valid = obj_name in {"child_process", "cp"}
-                    if is_valid:
-                        is_known_sink = True
-                else:
-                    if not child_process_sinks:
-                        is_known_sink = True
-            if not is_known_sink:
+            if resolved_sink is None:
                 continue
             byte_offset = (
                 getattr(sink_node, "start_byte", 0)
                 if sink_node
                 else getattr(node, "start_byte", 0)
             )
-            if "." in callee:
-                obj_name = callee.split(".")[0]
-                is_cp_module = child_process_sinks.get(
-                    obj_name
-                ) == "child_process" or obj_name in {"child_process", "cp"}
-                if is_cp_module:
-                    resolved_sink = callee_tail
-                else:
-                    resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
-            else:
-                resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
             if resolved_sink in {"exec", "execSync"}:
                 rec = RiskRecord(
                     rule_id=self.rule_id,
@@ -1816,6 +1782,57 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     return text[:idx].strip(), text[idx + 1 :].strip()
         return None
 
+    def _is_child_process_sink_call(
+        self, callee: str, child_process_sinks: Dict[str, str]
+    ) -> Optional[str]:
+        callee_clean = callee.replace("?.", ".")
+        callee_clean = re.sub(
+            r"^require\(['\"](?:node:)?child_process['\"]\)(?=\.)",
+            "child_process",
+            callee_clean,
+        )
+        callee_clean = re.sub(
+            r"^\(\s*([A-Za-z_$][\w$]*)\s*\)(?=!?\.)", r"\1", callee_clean
+        )
+        callee_clean = re.sub(r"(?<=[\w$])!(?=\.)", "", callee_clean)
+
+        callee_tail = callee_clean.split(".")[-1]
+
+        is_known_sink = (
+            callee_clean in child_process_sinks or callee_tail in child_process_sinks
+        )
+        if not is_known_sink and callee_tail in self._CHILD_PROCESS_NAMES:
+            if "." in callee_clean:
+                obj_name = callee_clean.split(".")[0]
+                if child_process_sinks:
+                    is_valid = obj_name == "child_process" or (
+                        child_process_sinks.get(obj_name) == "child_process"
+                    )
+                else:
+                    is_valid = obj_name in {"child_process", "cp"}
+                if is_valid:
+                    is_known_sink = True
+            else:
+                if not child_process_sinks:
+                    is_known_sink = True
+
+        if not is_known_sink:
+            return None
+
+        if "." in callee_clean:
+            obj_name = callee_clean.split(".")[0]
+            is_cp_module = child_process_sinks.get(
+                obj_name
+            ) == "child_process" or obj_name in {"child_process", "cp"}
+            if is_cp_module:
+                resolved_sink = callee_tail
+            else:
+                resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
+        else:
+            resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
+
+        return resolved_sink
+
     def _split_declarations(self, text: str) -> List[Tuple[str, str]]:
         decls = []
         idx = 0
@@ -2992,31 +3009,99 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 function_node = ts_child_by_field_name(node, "function")
                 if function_node:
                     func_text = ts_node_text(src_bytes, function_node).strip()
-                    func_text_norm = self._normalize_property_path(func_text)
-                    if self._is_child_process_sink_call(func_text_norm, local_sinks):
-                        arguments = ts_child_by_field_name(node, "arguments")
-                        if arguments:
-                            arg_nodes = getattr(arguments, "named_children", [])
-                            if arg_nodes:
-                                first_arg = arg_nodes[0]
-                                first_arg_text = ts_node_text(
-                                    src_bytes, first_arg
-                                ).strip()
-                                if self._js_has_external_input(
-                                    first_arg_text, tainted_names
-                                ):
-                                    start_point = getattr(node, "start_point", (0, 0))
-                                    records.append(
-                                        RiskRecord(
-                                            rule_id=self.rule_id,
-                                            category=self.category,
-                                            title=self.title,
-                                            severity=Severity.HIGH,
-                                            file_path=rel_path,
-                                            line=start_point[0] + 1,
-                                            message=f"External input reaches child_process command execution: {func_text_norm}",
-                                        )
+                    resolved_sink = self._is_child_process_sink_call(
+                        func_text, local_sinks
+                    )
+                    if resolved_sink is not None:
+                        call_text = ts_node_text(src_bytes, node)
+                        has_external = self._js_has_external_input(
+                            call_text, tainted_names
+                        )
+                        if has_external:
+                            sink_node = None
+                            if (
+                                getattr(function_node, "type", "")
+                                == "member_expression"
+                            ):
+                                sink_node = ts_child_by_field_name(
+                                    function_node, "property"
+                                )
+                            if sink_node is None:
+                                sink_node = function_node
+
+                            start_point = (
+                                getattr(sink_node, "start_point", (0, 0))
+                                if sink_node
+                                else getattr(node, "start_point", (0, 0))
+                            )
+                            node_start_point = getattr(node, "start_point", (0, 0))
+                            line = node_start_point[0] + 1
+                            col = start_point[1]
+                            byte_offset = (
+                                getattr(sink_node, "start_byte", 0)
+                                if sink_node
+                                else getattr(node, "start_byte", 0)
+                            )
+
+                            if resolved_sink in {"exec", "execSync"}:
+                                rec = RiskRecord(
+                                    rule_id=self.rule_id,
+                                    category=self.category,
+                                    title=self.title,
+                                    severity=Severity.HIGH,
+                                    file_path=rel_path,
+                                    line=line,
+                                    message="External input reaches child_process command execution",
+                                )
+                                rec._column = col
+                                rec._char_offset = len(
+                                    src_bytes[:byte_offset].decode(
+                                        "utf-8", errors="replace"
                                     )
+                                )
+                                records.append(rec)
+                            elif resolved_sink in {"execFile", "execFileSync", "fork"}:
+                                rec = RiskRecord(
+                                    rule_id=self.rule_id,
+                                    category=self.category,
+                                    title=self.title,
+                                    severity=Severity.MEDIUM,
+                                    file_path=rel_path,
+                                    line=line,
+                                    message="External input reaches child_process file execution",
+                                )
+                                rec._column = col
+                                rec._char_offset = len(
+                                    src_bytes[:byte_offset].decode(
+                                        "utf-8", errors="replace"
+                                    )
+                                )
+                                records.append(rec)
+                            elif resolved_sink in {"spawn", "spawnSync"}:
+                                has_shell_true = (
+                                    "shell: true" in call_text
+                                    or "shell:true" in call_text
+                                )
+                                rec = RiskRecord(
+                                    rule_id=self.rule_id,
+                                    category=self.category,
+                                    title=self.title,
+                                    severity=Severity.HIGH
+                                    if has_shell_true
+                                    else Severity.MEDIUM,
+                                    file_path=rel_path,
+                                    line=line,
+                                    message="External input reaches child_process spawn with shell=true"
+                                    if has_shell_true
+                                    else "External input reaches child_process spawn",
+                                )
+                                rec._column = col
+                                rec._char_offset = len(
+                                    src_bytes[:byte_offset].decode(
+                                        "utf-8", errors="replace"
+                                    )
+                                )
+                                records.append(rec)
         return records
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
