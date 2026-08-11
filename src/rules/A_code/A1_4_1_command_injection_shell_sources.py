@@ -102,8 +102,8 @@ class ShellSourceMixin:
             if offset >= len(statement):
                 break
 
-            # { の読み飛ばし
-            m = re.match(r"^(?:\{\s*)+", statement[offset:])
+            # { や ( の読み飛ばし
+            m = re.match(r"^(?:\{\s*|\(\s*)+", statement[offset:])
             if m:
                 offset += m.end()
                 is_after_case_in = False

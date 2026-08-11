@@ -375,6 +375,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 r"[A-Za-z_$][\w$]*", local_name
                             ):
                                 continue
+                            if re.fullmatch(
+                                r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", right_clean
+                            ):
+                                path_str = ".".join(
+                                    str(p) for p in path if isinstance(p, (str, int))
+                                )
+                                joined_name = f"{right_clean}.{path_str}"
+                                if joined_name in child_process_sinks:
+                                    child_process_sinks[local_name] = (
+                                        child_process_sinks[joined_name]
+                                    )
                             target_node = self._get_nested_property_value(
                                 right, path, src_bytes
                             )
@@ -626,6 +637,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             r"[A-Za-z_$][\w$]*", local_name
                         ):
                             continue
+                        if re.fullmatch(
+                            r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", rhs_clean
+                        ):
+                            path_str = ".".join(
+                                str(p) for p in path if isinstance(p, (str, int))
+                            )
+                            joined_name = f"{rhs_clean}.{path_str}"
+                            if joined_name in child_process_sinks:
+                                child_process_sinks[local_name] = child_process_sinks[
+                                    joined_name
+                                ]
+                            if joined_name in third_party_shell_sinks:
+                                third_party_shell_sinks.add(local_name)
 
                         var_name_norm = self._normalize_property_path(local_name)
 
