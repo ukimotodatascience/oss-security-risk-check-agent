@@ -2018,11 +2018,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if isinstance(p, slice):
                 curr_type = getattr(curr, "type", "")
                 if curr_type == "array":
-                    elements = [
-                        c
-                        for c in getattr(curr, "children", [])
-                        if getattr(c, "type", "") not in {",", "[", "]"}
-                    ]
+                    elements = self._get_static_array_elements(curr, src_bytes)
                     start = p.start if p.start is not None else 0
                     curr = elements[start:]
                 else:
@@ -2060,11 +2056,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     return None
             elif isinstance(p, int):
                 if curr_type == "array":
-                    elements = [
-                        c
-                        for c in getattr(curr, "children", [])
-                        if getattr(c, "type", "") not in {",", "[", "]"}
-                    ]
+                    elements = self._get_static_array_elements(curr, src_bytes)
                     if p < len(elements):
                         curr = elements[p]
                     else:
@@ -2072,6 +2064,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     return None
         return curr
+
+    def _get_static_array_elements(
+        self, array_node: Any, src_bytes: bytes
+    ) -> List[Any]:
+        elements = []
+        for child in getattr(array_node, "named_children", []):
+            if getattr(child, "type", "") == "spread_element":
+                argument = ts_child_by_field_name(child, "argument")
+                if argument is not None and getattr(argument, "type", "") == "array":
+                    elements.extend(
+                        self._get_static_array_elements(argument, src_bytes)
+                    )
+                    continue
+            elements.append(child)
+        return elements
 
     def _is_rest_tainted(
         self,
@@ -2226,8 +2233,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 return None
             if isinstance(p, slice):
                 if curr.startswith("[") and curr.endswith("]"):
-                    inner = curr[1:-1]
-                    elements = self._split_array_literal_elements(inner)
+                    elements = self._get_static_fallback_array_elements(curr)
                     start = p.start if p.start is not None else 0
                     curr = [el.strip() for el in elements[start:]]
                 else:
@@ -2264,8 +2270,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     return None
             elif isinstance(p, int):
                 if curr.startswith("[") and curr.endswith("]"):
-                    inner = curr[1:-1]
-                    elements = self._split_array_literal_elements(inner)
+                    elements = self._get_static_fallback_array_elements(curr)
                     if p < len(elements):
                         curr = elements[p].strip()
                     else:
@@ -2273,6 +2278,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 else:
                     return None
         return curr
+
+    def _get_static_fallback_array_elements(self, array_text: str) -> List[str]:
+        elements = []
+        for element in self._split_array_literal_elements(array_text[1:-1]):
+            stripped = element.strip()
+            if stripped.startswith("..."):
+                argument = stripped[3:].strip()
+                if argument.startswith("[") and argument.endswith("]"):
+                    elements.extend(self._get_static_fallback_array_elements(argument))
+                    continue
+            elements.append(element)
+        return elements
 
     def _is_fallback_rest_tainted(
         self, rhs_str: str, excluded_keys: Set[str], tainted_names: Set[str]

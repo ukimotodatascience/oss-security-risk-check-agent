@@ -82,7 +82,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 prefix = self._get_shell_prefix_context(stripped, m.start())
                 is_xargs_find = bool(re.search(r"\b(?:xargs|find)\b", prefix))
 
-                call_text = self._get_shell_statement_context(stripped, m.start())
+                call_text = self._get_shell_pipeline_context(stripped, m.start())
                 if not self._shell_expands_external_input(call_text, tainted_names):
                     continue
 
