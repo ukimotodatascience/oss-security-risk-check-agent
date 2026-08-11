@@ -845,6 +845,26 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             case "$1" in *) CMD="$2"; eval "$CMD"; esac
             """,
         ),
+        (
+            "app.js",
+            """
+            const cp=require("child_process"); const {...cmd}={safe:"date",unsafe:req.query.cmd}; cp.exec(JSON.stringify(cmd));
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            declare +x CMD="$1"; eval "$CMD"
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            case "$1" in a|b) CMD="$2"; eval "$CMD";; esac
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):

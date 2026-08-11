@@ -403,6 +403,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 default_node = ts_child_by_field_name(child, "right")
                             else:
                                 local_name = ts_node_text(src_bytes, child).strip()
+                                if local_name.startswith("..."):
+                                    local_name = local_name[3:].strip()
                                 prop_name = local_name
 
                             if local_name:
@@ -467,6 +469,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     )
                                 else:
                                     local_name = ts_node_text(src_bytes, child).strip()
+                                    if local_name.startswith("..."):
+                                        local_name = local_name[3:].strip()
 
                                 if local_name and re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
@@ -508,6 +512,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     )
                                 else:
                                     local_name = ts_node_text(src_bytes, child).strip()
+                                    if local_name.startswith("..."):
+                                        local_name = local_name[3:].strip()
                                 if local_name and re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
                                 ):
@@ -739,7 +745,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 (local_name, prop_name, default_val)
                             )
                         else:
-                            names_to_register.append((part, part, default_val))
+                            local_name = part
+                            if local_name.startswith("..."):
+                                local_name = local_name[3:].strip()
+                            names_to_register.append(
+                                (local_name, local_name, default_val)
+                            )
                 elif var_names_str.startswith("[") and var_names_str.endswith("]"):
                     inner = var_names_str[1:-1]
                     for part in self._split_array_literal_elements(inner):

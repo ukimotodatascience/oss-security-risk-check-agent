@@ -1,5 +1,5 @@
 import re
-from typing import Set
+from typing import Set, Optional
 
 
 class ShellSourceMixin:
@@ -86,28 +86,45 @@ class ShellSourceMixin:
     @staticmethod
     def _shell_assignment_start_position(statement: str) -> int:
         offset = 0
+        is_after_case_in = False
         while True:
+            # 先頭の空白を読み飛ばす
+            while offset < len(statement) and statement[offset].isspace():
+                offset += 1
+
+            if offset >= len(statement):
+                break
+
             # { の読み飛ばし
             m = re.match(r"^(?:\{\s*)+", statement[offset:])
             if m:
                 offset += m.end()
+                is_after_case_in = False
                 continue
             # then や do の読み飛ばし
             m = re.match(r"^(?:then|do)\b\s*", statement[offset:])
             if m:
                 offset += m.end()
+                is_after_case_in = False
                 continue
             # case ... in の読み飛ばし
             m = re.match(r"^case\b.*?\bin\b\s*", statement[offset:])
             if m:
                 offset += m.end()
+                is_after_case_in = True
                 continue
-            # case のパターン終端 ')' の読み飛ばし。例: '*) ' や 'a) '
-            m = re.match(r"^(?:[A-Za-z0-9_*?-]+)\)\s*", statement[offset:])
-            if m:
-                offset += m.end()
-                continue
+            # case のパターン終端 ')' の読み飛ばし。例: '*) ' や 'a|b) '
+            if is_after_case_in:
+                end_idx = ShellSourceMixin._find_case_pattern_end(statement[offset:])
+                if end_idx is not None:
+                    offset += end_idx
+                    is_after_case_in = False
+                    continue
             break
+
+        # ループを抜けた後も、後続の判定のために先頭の空白をスキップ
+        while offset < len(statement) and statement[offset].isspace():
+            offset += 1
 
         statement_offset = offset
         statement = statement[statement_offset:]
@@ -117,16 +134,74 @@ class ShellSourceMixin:
             statement,
         )
         if env_prefix:
-            return statement_offset + env_prefix.end()
+            env_end = statement_offset + env_prefix.end()
+            while env_end < len(statement) and statement[env_end].isspace():
+                env_end += 1
+            return env_end
+
         declaration_prefix = re.match(
-            r"(?:export|local|declare|typeset|readonly)(?:\s+(?:-[a-zA-Z0-9]+|--[a-zA-Z0-9-]+|--))*\s+",
+            r"(?:export|local|declare|typeset|readonly)(?:\s+(?:[-+][a-zA-Z0-9]+|--[a-zA-Z0-9-]+|--))*\s+",
             statement,
         )
-        return (
-            statement_offset + declaration_prefix.end()
-            if declaration_prefix
-            else statement_offset
-        )
+        if declaration_prefix:
+            dec_end = statement_offset + declaration_prefix.end()
+            while dec_end < len(statement) and statement[dec_end].isspace():
+                dec_end += 1
+            return dec_end
+
+        return statement_offset
+
+    @staticmethod
+    def _find_case_pattern_end(s: str) -> Optional[int]:
+        # sの先頭から、caseパターンの終わりであるクォート外の ')' を探す。
+        # (a|b) のように先頭に '(' がある場合もあるため、ネスト数を数える。
+        # ただし、先頭に '(' がない場合は、最初の ')' で終了する。
+        in_dquote = False
+        in_squote = False
+        escaped = False
+        paren_depth = 0
+        has_leading_paren = s.strip().startswith("(")
+
+        # 先頭のスペースは読み飛ばす
+        start_idx = 0
+        while start_idx < len(s) and s[start_idx].isspace():
+            start_idx += 1
+
+        for idx in range(start_idx, len(s)):
+            char = s[idx]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\" and not in_squote:
+                escaped = True
+                continue
+            if in_dquote:
+                if char == '"':
+                    in_dquote = False
+                continue
+            if in_squote:
+                if char == "'":
+                    in_squote = False
+                continue
+            if char == '"':
+                in_dquote = True
+                continue
+            if char == "'":
+                in_squote = True
+                continue
+            if char == "(":
+                paren_depth += 1
+                continue
+            if char == ")":
+                if has_leading_paren:
+                    paren_depth -= 1
+                    if paren_depth == 0:
+                        return idx + 1
+                else:
+                    if paren_depth == 0:
+                        return idx + 1
+                    paren_depth -= 1
+        return None
 
     @staticmethod
     def _track_shell_case_allowlist_from_text(
