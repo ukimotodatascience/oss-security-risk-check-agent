@@ -709,6 +709,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     outer_assign = self._split_outer_assignment(part)
                     if outer_assign is not None:
                         p_left_raw, p_right_raw = outer_assign
+                        p_left_raw = self._strip_type_annotation(p_left_raw)
                         current_tainted = tainted_names.union(
                             p for p, _ in active_local_taints
                         )
@@ -1832,6 +1833,47 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             resolved_sink = child_process_sinks.get(callee_tail) or callee_tail
 
         return resolved_sink
+
+    @staticmethod
+    def _strip_type_annotation(text: str) -> str:
+        brace_level = 0
+        bracket_level = 0
+        paren_level = 0
+        in_string = None
+        escaped = False
+
+        for idx, char in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if in_string:
+                if char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char == "{":
+                brace_level += 1
+            elif char == "}":
+                if brace_level > 0:
+                    brace_level -= 1
+            elif char == "[":
+                bracket_level += 1
+            elif char == "]":
+                if bracket_level > 0:
+                    bracket_level -= 1
+            elif char == "(":
+                paren_level += 1
+            elif char == ")":
+                if paren_level > 0:
+                    paren_level -= 1
+            elif char == ":":
+                if brace_level == 0 and bracket_level == 0 and paren_level == 0:
+                    return text[:idx].strip()
+        return text.strip()
 
     def _split_declarations(self, text: str) -> List[Tuple[str, str]]:
         decls = []
