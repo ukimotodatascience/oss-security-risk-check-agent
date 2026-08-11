@@ -29,6 +29,13 @@ class ShellSourceMixin:
         )
         for statement in self._split_shell_statements(text):
             statement = statement.strip()
+            printf_match = re.match(
+                r"^printf\s+-v\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$", statement
+            )
+            if printf_match and self._shell_expands_external_input(
+                printf_match.group(2), tainted_names
+            ):
+                tainted_names.add(printf_match.group(1))
             position = self._shell_assignment_start_position(statement)
             while position < len(statement):
                 m = assignment_pattern.match(statement, position)

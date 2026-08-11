@@ -369,8 +369,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             if not has_input and default_node is not None:
                                 default_may_apply = (
                                     target_node is None
-                                    or ts_node_text(src_bytes, target_node).strip()
-                                    == "undefined"
+                                    or self._js_is_static_undefined(
+                                        ts_node_text(src_bytes, target_node)
+                                    )
                                 )
                                 if default_may_apply:
                                     default_text = ts_node_text(src_bytes, default_node)
@@ -644,7 +645,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if not has_input and default_val is not None:
                             default_may_apply = target_val is None or (
                                 isinstance(target_val, str)
-                                and target_val.strip() in {"", "undefined"}
+                                and (
+                                    not target_val.strip()
+                                    or self._js_is_static_undefined(target_val)
+                                )
                             )
                             if default_may_apply:
                                 has_input = self._js_has_external_input(

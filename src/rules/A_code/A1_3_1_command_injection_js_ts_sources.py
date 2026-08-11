@@ -67,6 +67,13 @@ class JsTsSourceMixin:
             return True
         return self._contains_tainted_token(text, tainted_names)
 
+    @staticmethod
+    def _js_is_static_undefined(text: str) -> bool:
+        stripped = text.strip()
+        return stripped == "undefined" or bool(
+            re.fullmatch(r"void(?:\s+.+|\s*\(.+\))", stripped)
+        )
+
     def _js_is_sanitized_expr(self, text: str) -> bool:
         stripped = text.strip().rstrip(";")
         return any(
