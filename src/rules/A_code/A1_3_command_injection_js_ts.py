@@ -717,6 +717,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 rhs = rhs.strip()
                 rhs_clean = rhs.rstrip(";").strip()
                 names_to_register = []
+                array_rest_names = set()
                 if var_names_str.startswith("{") and var_names_str.endswith("}"):
                     inner = var_names_str[1:-1]
                     for part in self._split_array_literal_elements(inner):
@@ -752,6 +753,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             default_val = rhs_part.strip()
                             part = lhs_part
                         local_name = part.strip()
+                        if local_name.startswith("..."):
+                            local_name = local_name[3:].strip()
+                            if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
+                                array_rest_names.add(local_name)
                         if re.fullmatch(r"[A-Za-z_$][\w$]*", local_name):
                             names_to_register.append((local_name, None, default_val))
                         else:
@@ -780,7 +785,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         rhs_clean[1:-1]
                     ):
                         property_match = re.match(
-                            r"\s*((?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)|(?:['\"`](?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)[\"'`]))\s*:\s*(.+)\s*$",
+                            r"\s*((?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)|(?:['\"`](?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)[\"'`])|(?:\[\s*(?:['\"`][A-Za-z_$][\w$]*['\"`]|[0-9]+(?:\.[0-9]+)?)\s*\]))\s*:\s*(.+)\s*$",
                             property_text,
                         )
                         if property_match:
@@ -823,11 +828,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         shell_true_option_names.add(var_name_norm)
 
                     if is_array_destruct and rhs_is_array_literal:
-                        has_input = False
-                        if element_idx < len(rhs_elements):
+                        if var_name_norm in array_rest_names:
+                            has_input = any(
+                                self._js_has_external_input(element, tainted_names)
+                                for element in rhs_elements[element_idx:]
+                            )
+                        elif element_idx < len(rhs_elements):
                             has_input = self._js_has_external_input(
                                 rhs_elements[element_idx], tainted_names
                             )
+                        else:
+                            has_input = False
                     elif (
                         is_object_destruct
                         and rhs_is_object_literal
@@ -1019,6 +1030,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             continue
                         resolved_type = name
                     else:
+                        if name in third_party_shell_sinks:
+                            continue
                         if child_process_sinks and name not in child_process_sinks:
                             continue
                         resolved_type = child_process_sinks.get(name) or name

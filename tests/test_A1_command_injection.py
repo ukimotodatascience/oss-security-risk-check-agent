@@ -196,6 +196,18 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
         (
             "app.js",
             """
+            const cp=require("child_process"); const [safe, ...cmd]=["date", req.query.cmd]; cp.exec(cmd.join(" "));
+            """,
+        ),
+        (
+            "app.js",
+            """
+            const { exec } = require("shelljs"); exec(req.query.cmd);
+            """,
+        ),
+        (
+            "app.js",
+            """
             const cp = require("child_process");
             (cp).exec(req.query.cmd);
             """,
@@ -888,6 +900,14 @@ def test_js_ignores_safe_cases(tmp_path):
             "app16.js": """
                 const cp = require("child_process");
                 const [cmd = req.query.cmd] = ["date"];
+                cp.exec(cmd);
+            """,
+            "app17.js": """
+                const cp = require("child_process");
+                const {safe: cmd} = {
+                    unsafe: req.query.cmd,
+                    ["safe"]: "date",
+                };
                 cp.exec(cmd);
             """,
         },
