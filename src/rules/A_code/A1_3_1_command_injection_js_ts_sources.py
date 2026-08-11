@@ -37,7 +37,9 @@ class JsTsSourceMixin:
     @staticmethod
     def _normalize_static_property_key(key_text: str) -> str:
         normalized = key_text.strip()
-        match = re.fullmatch(r"(['\"`])([A-Za-z_$][\w$]*)\1", normalized)
+        match = re.fullmatch(
+            r"(['\"`])([A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)\1", normalized
+        )
         return match.group(2) if match else normalized
 
     @staticmethod

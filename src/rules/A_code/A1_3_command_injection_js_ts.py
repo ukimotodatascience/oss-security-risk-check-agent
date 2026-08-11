@@ -373,6 +373,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     prop_name = ts_node_text(
                                         src_bytes, key_node
                                     ).strip()
+                                    prop_name = self._normalize_static_property_key(
+                                        prop_name
+                                    )
                                 if val_node:
                                     val_type = getattr(val_node, "type", "")
                                     if val_type == "assignment_pattern":
@@ -728,7 +731,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             part = lhs_part
                         if ":" in part:
                             p_parts = part.split(":")
-                            prop_name = p_parts[0].strip()
+                            prop_name = self._normalize_static_property_key(p_parts[0])
                             local_name = p_parts[1].strip()
                             names_to_register.append(
                                 (local_name, prop_name, default_val)
@@ -777,7 +780,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         rhs_clean[1:-1]
                     ):
                         property_match = re.match(
-                            r"\s*((?:[A-Za-z_$][\w$]*)|(?:['\"`][A-Za-z_$][\w$]*['\"`]))\s*:\s*(.+)\s*$",
+                            r"\s*((?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)|(?:['\"`](?:[A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)[\"'`]))\s*:\s*(.+)\s*$",
                             property_text,
                         )
                         if property_match:
