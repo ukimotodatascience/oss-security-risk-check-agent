@@ -917,6 +917,19 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             const shell = require ( "shelljs" ); shell.exec(req.query.cmd);
             """,
         ),
+        (
+            "app.js",
+            """
+            const cp = require("child_process"); const cmd: string = req.query.cmd; cp.exec(cmd);
+            """,
+        ),
+        (
+            "run.sh",
+            """
+            #!/bin/sh
+            if false; then :; else CMD="$1"; eval "$CMD"; fi
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):

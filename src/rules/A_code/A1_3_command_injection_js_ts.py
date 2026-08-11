@@ -574,6 +574,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
             for var_names_str, rhs in self._split_declarations(stripped):
                 var_names_str = var_names_str.strip()
+                pair = self._split_fallback_pair(var_names_str)
+                if pair:
+                    var_names_str = pair[0].strip()
                 rhs = rhs.strip()
                 rhs_clean = rhs.rstrip(";").strip()
                 is_destruct = (

@@ -101,8 +101,10 @@ class ShellSourceMixin:
                 offset += m.end()
                 is_after_case_in = False
                 continue
-            # then や do の読み飛ばし
-            m = re.match(r"^(?:then|do)\b\s*", statement[offset:])
+            # 制御キーワード（then, do, else, elif, if, while, until）の読み飛ばし
+            m = re.match(
+                r"^(?:then|do|else|elif|if|while|until)\b\s*", statement[offset:]
+            )
             if m:
                 offset += m.end()
                 is_after_case_in = False
