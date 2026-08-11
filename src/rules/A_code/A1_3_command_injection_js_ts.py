@@ -355,6 +355,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     property_name = ts_node_text(
                                         src_bytes, key_node
                                     ).strip()
+                                    property_name = self._normalize_static_property_key(
+                                        property_name
+                                    )
                                     right_properties[property_name] = ts_node_text(
                                         src_bytes, value_node
                                     )
@@ -774,13 +777,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         rhs_clean[1:-1]
                     ):
                         property_match = re.match(
-                            r"\s*([A-Za-z_$][\w$]*)\s*:\s*(.+)\s*$",
+                            r"\s*((?:[A-Za-z_$][\w$]*)|(?:['\"`][A-Za-z_$][\w$]*['\"`]))\s*:\s*(.+)\s*$",
                             property_text,
                         )
                         if property_match:
-                            rhs_properties[property_match.group(1)] = (
-                                property_match.group(2)
+                            property_name = self._normalize_static_property_key(
+                                property_match.group(1)
                             )
+                            rhs_properties[property_name] = property_match.group(2)
                         else:
                             shorthand_name = property_text.strip()
                             if re.fullmatch(r"[A-Za-z_$][\w$]*", shorthand_name):

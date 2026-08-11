@@ -846,6 +846,11 @@ def test_js_ignores_safe_cases(tmp_path):
                 holder.cmd = req.query.cmd;
                 cp.spawn("echo", [other.holder.cmd]);
             """,
+            "app12.js": """
+                const cp = require("child_process");
+                const {safe: cmd} = {"unsafe": req.query.cmd, "safe": "date"};
+                cp.exec(cmd);
+            """,
         },
     )
     assert records == []
@@ -863,6 +868,16 @@ def test_shell_ignores_assignment_text_inside_single_quotes(tmp_path):
     )
 
     assert records == []
+
+
+def test_shell_tracks_tainted_assignment_after_group_prefix(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"run.sh": '{ CMD="$1"; eval "$CMD"; }'},
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
 
 
 def test_preserves_nested_adjacent_exec_aliases(tmp_path):

@@ -35,6 +35,12 @@ class JsTsSourceMixin:
         return normalized
 
     @staticmethod
+    def _normalize_static_property_key(key_text: str) -> str:
+        normalized = key_text.strip()
+        match = re.fullmatch(r"(['\"`])([A-Za-z_$][\w$]*)\1", normalized)
+        return match.group(2) if match else normalized
+
+    @staticmethod
     def _contains_tainted_token(text: str, tainted_names: Set[str]) -> bool:
         normalized_text = JsTsSourceMixin._normalize_property_path(text)
         for name in tainted_names:

@@ -77,16 +77,26 @@ class ShellSourceMixin:
 
     @staticmethod
     def _shell_assignment_start_position(statement: str) -> int:
+        group_prefix = re.match(r"(?:\{\s*)+", statement)
+        if group_prefix:
+            statement_offset = group_prefix.end()
+            statement = statement[statement_offset:]
+        else:
+            statement_offset = 0
         env_prefix = re.match(
             r"env\s+(?:(?:-i|--ignore-environment)\s+|(?:-u|--unset)\s+\S+\s+|--unset=\S+\s+)*",
             statement,
         )
         if env_prefix:
-            return env_prefix.end()
+            return statement_offset + env_prefix.end()
         declaration_prefix = re.match(
             r"(?:export|local|declare|typeset|readonly)\s+", statement
         )
-        return declaration_prefix.end() if declaration_prefix else 0
+        return (
+            statement_offset + declaration_prefix.end()
+            if declaration_prefix
+            else statement_offset
+        )
 
     @staticmethod
     def _track_shell_case_allowlist_from_text(
