@@ -2035,14 +2035,26 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if curr_type == "object":
                     found = None
                     for child in getattr(curr, "named_children", []):
-                        if getattr(child, "type", "") == "pair":
+                        c_type = getattr(child, "type", "")
+                        if c_type == "pair":
                             key_node = ts_child_by_field_name(child, "key")
-                            if (
-                                key_node
-                                and ts_node_text(src_bytes, key_node).strip() == p
-                            ):
-                                found = ts_child_by_field_name(child, "value")
-                                # 重複キーの場合、末尾の定義を採用するため break を削除
+                            if key_node:
+                                key_text = ts_node_text(src_bytes, key_node).strip()
+                                key_norm = self._normalize_static_property_key(key_text)
+                                if key_norm == p:
+                                    found = ts_child_by_field_name(child, "value")
+                        elif c_type == "spread_element":
+                            argument = ts_child_by_field_name(child, "argument")
+                            if argument is not None:
+                                arg_type = getattr(argument, "type", "")
+                                if arg_type == "object":
+                                    val = self._get_nested_property_value(
+                                        argument, [p], src_bytes
+                                    )
+                                    if val is not None:
+                                        found = val
+                                else:
+                                    found = argument
                     curr = found
                 else:
                     return None
@@ -2229,17 +2241,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     found = None
                     for part in self._split_array_literal_elements(inner):
                         part = part.strip()
-                        pair_info = self._split_fallback_pair(part)
-                        if pair_info:
-                            key = self._normalize_static_property_key(pair_info[0])
-                            if key == p:
-                                found = pair_info[1].strip()
-                                # 重複キーの場合、末尾の定義を採用するため break を削除
+                        if part.startswith("..."):
+                            arg = part[3:].strip()
+                            if arg.startswith("{") and arg.endswith("}"):
+                                val = self._get_nested_fallback_value(arg, [p])
+                                if val is not None:
+                                    found = val
+                            else:
+                                found = arg
                         else:
-                            shorthand = part.strip()
-                            if shorthand == p:
-                                found = shorthand
-                                # 重複キーの場合、末尾の定義を採用するため break を削除
+                            pair_info = self._split_fallback_pair(part)
+                            if pair_info:
+                                key = self._normalize_static_property_key(pair_info[0])
+                                if key == p:
+                                    found = pair_info[1].strip()
+                            else:
+                                shorthand = part.strip()
+                                if shorthand == p:
+                                    found = shorthand
                     curr = found
                 else:
                     return None
