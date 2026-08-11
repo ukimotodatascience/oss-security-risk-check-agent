@@ -971,7 +971,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _register_third_party_shell_imports(text: str, sinks: Set[str]) -> None:
         require_match = re.search(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"]shelljs['\"]\)",
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
             text,
         )
         import_match = re.search(
@@ -991,7 +991,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     sinks.add("exec")
 
         namespace_patterns = (
-            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            r"(?<![\w$.])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
             r"import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+['\"]shelljs['\"]",
         )
         for pattern in namespace_patterns:
@@ -1001,7 +1001,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _member_owner_name(text_before_member: str) -> Optional[str]:
         match = re.search(
-            r"(?:(?:\(\s*)?([A-Za-z_$][\w$]*)(?:\s*\))?|require\(['\"]((?:node:)?child_process)['\"]\))\s*!?\s*\??\.\s*$",
+            r"(?:(?:\(\s*)?([A-Za-z_$][\w$]*)(?:\s*\))?|require\s*\(\s*['\"]((?:node:)?child_process)['\"]\s*\))\s*!?\s*\??\.\s*$",
             text_before_member,
         )
         if match is None:
@@ -2039,7 +2039,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 and ts_node_text(src_bytes, key_node).strip() == p
                             ):
                                 found = ts_child_by_field_name(child, "value")
-                                break
+                                # 重複キーの場合、末尾の定義を採用するため break を削除
                     curr = found
                 else:
                     return None
@@ -2068,7 +2068,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if right_node is None or getattr(right_node, "type", "") != "object":
             return False
         for child in getattr(right_node, "named_children", []):
-            if getattr(child, "type", "") == "pair":
+            c_type = getattr(child, "type", "")
+            if c_type == "pair":
                 key_node = ts_child_by_field_name(child, "key")
                 val_node = ts_child_by_field_name(child, "value")
                 if key_node and val_node:
@@ -2079,6 +2080,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             ts_node_text(src_bytes, val_node), tainted_names
                         ):
                             return True
+            elif c_type == "spread_element":
+                argument = ts_child_by_field_name(child, "argument")
+                if argument is not None:
+                    arg_type = getattr(argument, "type", "")
+                    if arg_type == "object":
+                        if self._is_rest_tainted(
+                            argument, excluded_keys, tainted_names, src_bytes
+                        ):
+                            return True
+                    else:
+                        arg_text = ts_node_text(src_bytes, argument).strip()
+                        if self._js_has_external_input(arg_text, tainted_names):
+                            return True
+            else:
+                p_name = ts_node_text(src_bytes, child).strip()
+                if p_name not in excluded_keys:
+                    if self._js_has_external_input(p_name, tainted_names):
+                        return True
         return False
 
     def _expand_fallback_destructuring(
@@ -2212,12 +2231,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             key = self._normalize_static_property_key(pair_info[0])
                             if key == p:
                                 found = pair_info[1].strip()
-                                break
+                                # 重複キーの場合、末尾の定義を採用するため break を削除
                         else:
                             shorthand = part.strip()
                             if shorthand == p:
                                 found = shorthand
-                                break
+                                # 重複キーの場合、末尾の定義を採用するため break を削除
                     curr = found
                 else:
                     return None
@@ -2242,18 +2261,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         inner = rhs_str[1:-1]
         for part in self._split_array_literal_elements(inner):
             part = part.strip()
-            pair_info = self._split_fallback_pair(part)
-            if pair_info:
-                key = self._normalize_static_property_key(pair_info[0])
-                val = pair_info[1].strip()
-                if key not in excluded_keys:
-                    if self._js_has_external_input(val, tainted_names):
+            if part.startswith("..."):
+                arg = part[3:].strip()
+                if arg.startswith("{") and arg.endswith("}"):
+                    if self._is_fallback_rest_tainted(
+                        arg, excluded_keys, tainted_names
+                    ):
+                        return True
+                else:
+                    if self._js_has_external_input(arg, tainted_names):
                         return True
             else:
-                shorthand = part.strip()
-                if shorthand not in excluded_keys:
-                    if self._js_has_external_input(shorthand, tainted_names):
-                        return True
+                pair_info = self._split_fallback_pair(part)
+                if pair_info:
+                    key = self._normalize_static_property_key(pair_info[0])
+                    val = pair_info[1].strip()
+                    if key not in excluded_keys:
+                        if self._js_has_external_input(val, tainted_names):
+                            return True
+                else:
+                    shorthand = part.strip()
+                    if shorthand not in excluded_keys:
+                        if self._js_has_external_input(shorthand, tainted_names):
+                            return True
         return False
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
