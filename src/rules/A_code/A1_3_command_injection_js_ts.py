@@ -253,6 +253,49 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for node in iter_ts_nodes(root):
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
+
+            # 関数定義のパラメータにおけるデフォルト値の評価 (P2 round 11)
+            if node_type in {
+                "function_declaration",
+                "generator_function_declaration",
+                "method_definition",
+                "arrow_function",
+                "function_expression",
+            }:
+                params_node = ts_child_by_field_name(node, "parameters")
+                if not params_node:
+                    for c in getattr(node, "named_children", []):
+                        if getattr(c, "type", "") == "formal_parameters":
+                            params_node = c
+                            break
+                if params_node:
+                    for param in getattr(params_node, "named_children", []):
+                        if getattr(param, "type", "") == "assignment_pattern":
+                            p_left = ts_child_by_field_name(param, "left")
+                            p_right = ts_child_by_field_name(param, "right")
+                            if p_left and p_right:
+                                p_right_text = ts_node_text(src_bytes, p_right)
+                                if self._js_has_external_input(
+                                    p_right_text, tainted_names
+                                ):
+                                    p_left_type = getattr(p_left, "type", "")
+                                    if p_left_type == "identifier":
+                                        p_left_text = ts_node_text(
+                                            src_bytes, p_left
+                                        ).strip()
+                                        tainted_names.add(p_left_text)
+                                    elif p_left_type in {
+                                        "object_pattern",
+                                        "array_pattern",
+                                    }:
+                                        expanded = self._expand_destructuring(
+                                            p_left, [], src_bytes
+                                        )
+                                        for local_name, _, _, _, _ in expanded:
+                                            if local_name and re.fullmatch(
+                                                r"[A-Za-z_$][\w$]*", local_name
+                                            ):
+                                                tainted_names.add(local_name)
             if node_type in {
                 "import_statement",
                 "lexical_declaration",
@@ -614,6 +657,39 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for i, stripped, raw_stmt, stmt_start_offset in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
+
+            # 関数引数のデフォルト値汚染伝播 (P2 round 11)
+            for m in re.finditer(r"\(([^)]+)\)", stripped):
+                params_str = m.group(1)
+                for part in self._split_array_literal_elements(params_str):
+                    part = part.strip()
+                    if "=" in part:
+                        p_left_raw, p_right_raw = part.split("=", 1)
+                        p_left_raw = p_left_raw.strip()
+                        p_right_raw = p_right_raw.strip()
+                        if self._js_has_external_input(p_right_raw, tainted_names):
+                            is_dest_param = (
+                                p_left_raw.startswith("{") and p_left_raw.endswith("}")
+                            ) or (
+                                p_left_raw.startswith("[") and p_left_raw.endswith("]")
+                            )
+                            if is_dest_param:
+                                expanded = self._expand_fallback_destructuring(
+                                    p_left_raw, []
+                                )
+                                for local_name, _, _, _, _ in expanded:
+                                    if local_name and re.fullmatch(
+                                        r"[A-Za-z_$][\w$]*", local_name
+                                    ):
+                                        tainted_names.add(
+                                            self._normalize_property_path(local_name)
+                                        )
+                            else:
+                                if re.fullmatch(r"[A-Za-z_$][\w$]*", p_left_raw):
+                                    tainted_names.add(
+                                        self._normalize_property_path(p_left_raw)
+                                    )
+
             for var_names_str, rhs in self._split_declarations(stripped):
                 var_names_str = var_names_str.strip()
                 pair = self._split_fallback_pair(var_names_str)
@@ -2109,13 +2185,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if isinstance(p, slice):
                 curr_type = getattr(curr, "type", "")
                 if curr_type == "array":
-                    elements = [
-                        c
-                        for c in getattr(curr, "children", [])
-                        if getattr(c, "type", "") not in {",", "[", "]"}
-                    ]
+                    flat_elements = []
+                    for child in getattr(curr, "children", []):
+                        c_type = getattr(child, "type", "")
+                        if c_type in {",", "[", "]"}:
+                            continue
+                        if c_type == "spread_element":
+                            argument = ts_child_by_field_name(child, "argument")
+                            if (
+                                argument is not None
+                                and getattr(argument, "type", "") == "array"
+                            ):
+                                sub_elements = [
+                                    sc
+                                    for sc in getattr(argument, "children", [])
+                                    if getattr(sc, "type", "") not in {",", "[", "]"}
+                                ]
+                                flat_elements.extend(sub_elements)
+                            else:
+                                flat_elements.append(child)
+                        else:
+                            flat_elements.append(child)
                     start = p.start if p.start is not None else 0
-                    curr = elements[start:]
+                    curr = flat_elements[start:]
                 else:
                     return None
                 continue
@@ -2339,8 +2431,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if curr.startswith("[") and curr.endswith("]"):
                     inner = curr[1:-1]
                     elements = self._split_array_literal_elements(inner)
+                    flat_elements = []
+                    for el in elements:
+                        el = el.strip()
+                        if el.startswith("..."):
+                            arg = el[3:].strip()
+                            if arg.startswith("[") and arg.endswith("]"):
+                                sub_inner = arg[1:-1]
+                                sub_elements = self._split_array_literal_elements(
+                                    sub_inner
+                                )
+                                flat_elements.extend(
+                                    [se.strip() for se in sub_elements]
+                                )
+                            else:
+                                flat_elements.append(el)
+                        else:
+                            flat_elements.append(el)
                     start = p.start if p.start is not None else 0
-                    curr = [el.strip() for el in elements[start:]]
+                    curr = [el.strip() for el in flat_elements[start:]]
                 else:
                     return None
                 continue
