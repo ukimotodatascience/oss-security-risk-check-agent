@@ -2030,7 +2030,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if isinstance(p, slice):
                 curr_type = getattr(curr, "type", "")
                 if curr_type == "array":
-                    elements = self._get_static_array_elements(curr, src_bytes)
+                    elements = [
+                        c
+                        for c in getattr(curr, "children", [])
+                        if getattr(c, "type", "") not in {",", "[", "]"}
+                    ]
                     start = p.start if p.start is not None else 0
                     curr = elements[start:]
                 else:
@@ -2068,29 +2072,38 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     return None
             elif isinstance(p, int):
                 if curr_type == "array":
-                    elements = self._get_static_array_elements(curr, src_bytes)
-                    if p < len(elements):
-                        curr = elements[p]
+                    flat_elements = []
+                    for child in getattr(curr, "children", []):
+                        c_type = getattr(child, "type", "")
+                        if c_type in {",", "[", "]"}:
+                            continue
+                        if c_type == "spread_element":
+                            argument = ts_child_by_field_name(child, "argument")
+                            if (
+                                argument is not None
+                                and getattr(argument, "type", "") == "array"
+                            ):
+                                sub_elements = [
+                                    sc
+                                    for sc in getattr(argument, "children", [])
+                                    if getattr(sc, "type", "") not in {",", "[", "]"}
+                                ]
+                                flat_elements.extend(sub_elements)
+                            else:
+                                flat_elements.append(child)
+                        else:
+                            flat_elements.append(child)
+
+                    if p < len(flat_elements):
+                        curr = flat_elements[p]
+                        if getattr(curr, "type", "") == "spread_element":
+                            argument = ts_child_by_field_name(curr, "argument")
+                            curr = argument if argument is not None else curr
                     else:
                         return None
                 else:
                     return None
         return curr
-
-    def _get_static_array_elements(
-        self, array_node: Any, src_bytes: bytes
-    ) -> List[Any]:
-        elements = []
-        for child in getattr(array_node, "named_children", []):
-            if getattr(child, "type", "") == "spread_element":
-                argument = ts_child_by_field_name(child, "argument")
-                if argument is not None and getattr(argument, "type", "") == "array":
-                    elements.extend(
-                        self._get_static_array_elements(argument, src_bytes)
-                    )
-                    continue
-            elements.append(child)
-        return elements
 
     def _is_rest_tainted(
         self,
@@ -2245,7 +2258,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 return None
             if isinstance(p, slice):
                 if curr.startswith("[") and curr.endswith("]"):
-                    elements = self._get_static_fallback_array_elements(curr)
+                    inner = curr[1:-1]
+                    elements = self._split_array_literal_elements(inner)
                     start = p.start if p.start is not None else 0
                     curr = [el.strip() for el in elements[start:]]
                 else:
@@ -2282,26 +2296,38 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     return None
             elif isinstance(p, int):
                 if curr.startswith("[") and curr.endswith("]"):
-                    elements = self._get_static_fallback_array_elements(curr)
-                    if p < len(elements):
-                        curr = elements[p].strip()
+                    inner = curr[1:-1]
+                    elements = self._split_array_literal_elements(inner)
+
+                    flat_elements = []
+                    for el in elements:
+                        el = el.strip()
+                        if el.startswith("..."):
+                            arg = el[3:].strip()
+                            if arg.startswith("[") and arg.endswith("]"):
+                                sub_inner = arg[1:-1]
+                                sub_elements = self._split_array_literal_elements(
+                                    sub_inner
+                                )
+                                flat_elements.extend(
+                                    [se.strip() for se in sub_elements]
+                                )
+                            else:
+                                flat_elements.append(el)
+                        else:
+                            flat_elements.append(el)
+
+                    if p < len(flat_elements):
+                        target = flat_elements[p]
+                        if target.startswith("..."):
+                            curr = target[3:].strip()
+                        else:
+                            curr = target
                     else:
                         return None
                 else:
                     return None
         return curr
-
-    def _get_static_fallback_array_elements(self, array_text: str) -> List[str]:
-        elements = []
-        for element in self._split_array_literal_elements(array_text[1:-1]):
-            stripped = element.strip()
-            if stripped.startswith("..."):
-                argument = stripped[3:].strip()
-                if argument.startswith("[") and argument.endswith("]"):
-                    elements.extend(self._get_static_fallback_array_elements(argument))
-                    continue
-            elements.append(element)
-        return elements
 
     def _is_fallback_rest_tainted(
         self, rhs_str: str, excluded_keys: Set[str], tainted_names: Set[str]

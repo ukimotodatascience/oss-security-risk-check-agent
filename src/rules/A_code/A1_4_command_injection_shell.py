@@ -259,7 +259,8 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             self._track_shell_taint_from_text(text, tainted_names)
             self._track_shell_case_allowlist_from_text(text, tainted_names)
             byte_offset = getattr(node, "start_byte", 0)
-            if not self._shell_expands_external_input(text, tainted_names):
+            context_text = self._get_ts_pipeline_text(node, src_bytes)
+            if not self._shell_expands_external_input(context_text, tainted_names):
                 continue
             if re.search("\\beval\\b", text):
                 eval_match = re.search(r"\beval\b", text)
@@ -426,6 +427,15 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                     continue
             idx += 1
         return text[segment_start:]
+
+    @staticmethod
+    def _get_ts_pipeline_text(node, src_bytes: bytes) -> str:
+        curr = node
+        while (
+            curr.parent is not None and getattr(curr.parent, "type", "") == "pipeline"
+        ):
+            curr = curr.parent
+        return ts_node_text(src_bytes, curr).strip()
 
     @staticmethod
     def _get_shell_prefix_context(text: str, match_start: int) -> str:
