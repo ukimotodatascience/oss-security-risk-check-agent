@@ -3,8 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from src.models import Severity
+from src.models import RiskRecord, Severity
 from src.rules.A_code.A1_command_injection import A1CommandInjectionRule
+from src.rules.A_code.A1_3_command_injection_js_ts import (
+    JsTsCommandInjectionDetector,
+)
+from src.rules.A_code.A1_4_command_injection_shell import ShellCommandInjectionDetector
 
 
 def write_files(root: Path, files: dict[str, str]) -> None:
@@ -202,6 +206,103 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
     records = scan_files(tmp_path, {filename: source})
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+        ),
+    ],
+)
+def test_script_detectors_return_tree_sitter_findings_without_fallback(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    expected = RiskRecord(
+        rule_id=detector.rule_id,
+        category=detector.category,
+        title=detector.title,
+        severity=Severity.HIGH,
+        file_path=filename,
+        line=1,
+        message="tree-sitter finding",
+    )
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: [expected])
+
+    records = detector.evaluate(tmp_path)
+
+    assert records == [expected]
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+        ),
+    ],
+)
+def test_script_detectors_treat_empty_tree_sitter_result_as_success(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: [])
+
+    records = detector.evaluate(tmp_path)
+
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+        ),
+    ],
+)
+def test_script_detectors_fall_back_when_tree_sitter_is_unavailable(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: None)
+
+    records = detector.evaluate(tmp_path)
 
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH

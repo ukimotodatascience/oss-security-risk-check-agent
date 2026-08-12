@@ -158,7 +158,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             file_path, target, src
         )
         if tree_sitter_records is not None:
-            records.extend(tree_sitter_records)
+            return tree_sitter_records
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
