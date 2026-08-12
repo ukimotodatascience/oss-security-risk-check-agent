@@ -24,33 +24,18 @@ class ShellSourceMixin:
         if read_match:
             tainted_names.add(read_match.group(1))
 
-        # local, declare, typeset のパース
-        local_match = re.search(
-            r"^\s*(?:local|declare|typeset)(?:\s+-[a-zA-Z]+)*\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(.+))?",
-            text,
-        )
-        if local_match:
-            var_name = local_match.group(1)
-            rhs = local_match.group(2)
-            if rhs is None or self._shell_expands_external_input(rhs, tainted_names):
-                was_tainted = var_name in tainted_names
-                tainted_names.add(var_name)
-                if active_local_taints is not None:
-                    active_local_taints.append(
-                        (var_name, current_brace_level, was_tainted)
-                    )
-
-        assign_match = re.search(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", text)
-        if assign_match:
-            var_name, rhs = assign_match.group(1), assign_match.group(2)
-            if self._shell_expands_external_input(rhs, tainted_names):
-                tainted_names.add(var_name)
-
         assignment_pattern = re.compile(
             r"([A-Za-z_][A-Za-z0-9_]*)=((?:\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`|[^\s;'\"`])+)(?:\s+|;\s*|$)"
         )
+        decl_pattern = re.compile(
+            r"([A-Za-z_][A-Za-z0-9_]*)(?:=([^ \t;'\"`\$\(]+|\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`))?"
+        )
+
         for statement in self._split_shell_statements(text):
             statement = statement.strip()
+            if not statement:
+                continue
+
             printf_match = re.match(
                 r"^printf\s+-v\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$", statement
             )
@@ -58,6 +43,37 @@ class ShellSourceMixin:
                 printf_match.group(2), tainted_names
             ):
                 tainted_names.add(printf_match.group(1))
+
+            local_prefix = re.match(
+                r"^\s*(?:local|declare|typeset)\b(?:\s+[-+][a-zA-Z]+)*\s+", statement
+            )
+            if local_prefix:
+                rest = statement[local_prefix.end() :]
+                position = 0
+                while position < len(rest):
+                    while position < len(rest) and rest[position].isspace():
+                        position += 1
+                    if position >= len(rest):
+                        break
+                    m = decl_pattern.match(rest, position)
+                    if not m:
+                        break
+                    var_name = m.group(1)
+                    rhs = m.group(2)
+                    was_tainted = var_name in tainted_names
+                    if rhs is not None and self._shell_expands_external_input(
+                        rhs, tainted_names
+                    ):
+                        tainted_names.add(var_name)
+                    else:
+                        tainted_names.discard(var_name)
+                    if active_local_taints is not None:
+                        active_local_taints.append(
+                            (var_name, current_brace_level, was_tainted)
+                        )
+                    position = m.end()
+                continue
+
             position = self._shell_assignment_start_position(statement)
             while position < len(statement):
                 m = assignment_pattern.match(statement, position)
