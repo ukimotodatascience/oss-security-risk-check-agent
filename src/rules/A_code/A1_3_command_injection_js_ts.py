@@ -660,16 +660,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                             if has_input:
                                 tainted_names.add(local_name)
-                            else:
-                                tainted_names.discard(local_name)
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
-                        ):
-                            if self._js_has_external_input(right_text, tainted_names):
-                                tainted_names.add(left_text_norm)
-                            else:
-                                tainted_names.discard(left_text_norm)
+                        ) and self._js_has_external_input(right_text, tainted_names):
+                            tainted_names.add(left_text_norm)
             if node_type != "call_expression":
                 continue
             callee_node = ts_child_by_field_name(node, "function")
@@ -1095,13 +1090,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                         if has_input:
                             tainted_names.add(var_name_norm)
-                        else:
-                            tainted_names.discard(var_name_norm)
-                            active_local_taints = [
-                                (p, lvl)
-                                for p, lvl in active_local_taints
-                                if p != var_name_norm
-                            ]
                 else:
                     var_name = var_names_str
                     var_name_norm = self._normalize_property_path(var_name)
@@ -1152,13 +1140,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     has_input = self._js_has_external_input(rhs, current_taints)
                     if has_input:
                         tainted_names.add(var_name_norm)
-                    else:
-                        tainted_names.discard(var_name_norm)
-                        active_local_taints = [
-                            (p, lvl)
-                            for p, lvl in active_local_taints
-                            if p != var_name_norm
-                        ]
 
             current_taints = tainted_names.union(p for p, _ in active_local_taints)
             if not self._js_has_external_input(stripped, current_taints):
@@ -2680,27 +2661,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if isinstance(p, slice):
                 curr_type = getattr(curr, "type", "")
                 if curr_type == "array":
-                    flat_elements = []
-                    for child in getattr(curr, "children", []):
-                        c_type = getattr(child, "type", "")
-                        if c_type in {",", "[", "]"}:
-                            continue
-                        if c_type == "spread_element":
-                            argument = self._get_spread_argument(child)
-                            if (
-                                argument is not None
-                                and getattr(argument, "type", "") == "array"
-                            ):
-                                sub_elements = [
-                                    sc
-                                    for sc in getattr(argument, "children", [])
-                                    if getattr(sc, "type", "") not in {",", "[", "]"}
-                                ]
-                                flat_elements.extend(sub_elements)
+
+                    def _flatten_array_node(node):
+                        result = []
+                        for child in getattr(node, "children", []):
+                            c_type = getattr(child, "type", "")
+                            if c_type in {",", "[", "]"}:
+                                continue
+                            if c_type == "spread_element":
+                                arg = self._get_spread_argument(child)
+                                if (
+                                    arg is not None
+                                    and getattr(arg, "type", "") == "array"
+                                ):
+                                    result.extend(_flatten_array_node(arg))
+                                else:
+                                    result.append(child)
                             else:
-                                flat_elements.append(child)
-                        else:
-                            flat_elements.append(child)
+                                result.append(child)
+                        return result
+
+                    flat_elements = _flatten_array_node(curr)
                     start = p.start if p.start is not None else 0
                     curr = flat_elements[start:]
                 else:
@@ -2821,7 +2802,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             elif isinstance(p, int):
                 if curr.startswith("[") and curr.endswith("]"):
                     inner = curr[1:-1]
-                    elements = self._split_array_literal_elements(inner)
+
+                    def _flatten_fallback_array_elements(text_inner: str) -> List[str]:
+                        result = []
+                        for part in self._split_array_literal_elements(text_inner):
+                            part = part.strip()
+                            if part.startswith("..."):
+                                spread_arg = part[3:].strip()
+                                if spread_arg.startswith("[") and spread_arg.endswith(
+                                    "]"
+                                ):
+                                    sub_inner = spread_arg[1:-1]
+                                    result.extend(
+                                        _flatten_fallback_array_elements(sub_inner)
+                                    )
+                                else:
+                                    result.append(part)
+                            else:
+                                result.append(part)
+                        return result
+
+                    elements = _flatten_fallback_array_elements(inner)
                     if p < len(elements):
                         curr = elements[p].strip()
                         if not curr:
