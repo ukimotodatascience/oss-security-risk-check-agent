@@ -554,7 +554,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     child_process_sinks[left_text_norm] = orig_name
                             elif getattr(right, "type", "") == "object":
                                 for child in getattr(right, "named_children", []):
-                                    if getattr(child, "type", "") == "pair":
+                                    c_type = getattr(child, "type", "")
+                                    k_name = None
+                                    v_text = None
+                                    if c_type == "pair":
                                         key_node = ts_child_by_field_name(child, "key")
                                         val_node = ts_child_by_field_name(
                                             child, "value"
@@ -571,17 +574,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                             v_text = ts_node_text(
                                                 src_bytes, val_node
                                             ).strip()
-                                            if self._is_child_process_alias_assignment(
-                                                v_text, child_process_sinks
-                                            ):
-                                                orig_name = self._get_child_process_original_name(
+                                    else:
+                                        prop_name = ts_node_text(
+                                            src_bytes, child
+                                        ).strip()
+                                        if prop_name and re.fullmatch(
+                                            r"[A-Za-z_$][\w$]*", prop_name
+                                        ):
+                                            k_name = prop_name
+                                            v_text = prop_name
+
+                                    if k_name and v_text:
+                                        if self._is_child_process_alias_assignment(
+                                            v_text, child_process_sinks
+                                        ):
+                                            orig_name = (
+                                                self._get_child_process_original_name(
                                                     v_text, child_process_sinks
                                                 )
-                                                if orig_name:
-                                                    child_process_sinks[
-                                                        f"{left_text_norm}.{k_name}"
-                                                    ] = orig_name
-
+                                            )
+                                            if orig_name:
+                                                child_process_sinks[
+                                                    f"{left_text_norm}.{k_name}"
+                                                ] = orig_name
                     if left_type in {"object_pattern", "array_pattern"}:
                         rhs_tainted = self._js_has_external_input(
                             right_text, tainted_names
@@ -645,11 +660,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                             if has_input:
                                 tainted_names.add(local_name)
+                            else:
+                                tainted_names.discard(local_name)
                     else:
                         if re.fullmatch(
                             r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*", left_text_norm
-                        ) and self._js_has_external_input(right_text, tainted_names):
-                            tainted_names.add(left_text_norm)
+                        ):
+                            if self._js_has_external_input(right_text, tainted_names):
+                                tainted_names.add(left_text_norm)
+                            else:
+                                tainted_names.discard(left_text_norm)
             if node_type != "call_expression":
                 continue
             callee_node = ts_child_by_field_name(node, "function")
@@ -1075,6 +1095,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                         if has_input:
                             tainted_names.add(var_name_norm)
+                        else:
+                            tainted_names.discard(var_name_norm)
+                            active_local_taints = [
+                                (p, lvl)
+                                for p, lvl in active_local_taints
+                                if p != var_name_norm
+                            ]
                 else:
                     var_name = var_names_str
                     var_name_norm = self._normalize_property_path(var_name)
@@ -1083,11 +1110,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         for part in self._split_array_literal_elements(inner):
                             part = part.strip()
                             pair_info = self._split_fallback_pair(part)
+                            k_name = None
+                            v_text = None
                             if pair_info:
                                 k_name = self._normalize_static_property_key(
                                     pair_info[0]
                                 )
                                 v_text = pair_info[1].strip()
+                            else:
+                                if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+                                    k_name = part
+                                    v_text = part
+
+                            if k_name and v_text:
                                 if self._is_child_process_alias_assignment(
                                     v_text, child_process_sinks
                                 ):
@@ -1117,6 +1152,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     has_input = self._js_has_external_input(rhs, current_taints)
                     if has_input:
                         tainted_names.add(var_name_norm)
+                    else:
+                        tainted_names.discard(var_name_norm)
+                        active_local_taints = [
+                            (p, lvl)
+                            for p, lvl in active_local_taints
+                            if p != var_name_norm
+                        ]
 
             current_taints = tainted_names.union(p for p, _ in active_local_taints)
             if not self._js_has_external_input(stripped, current_taints):
