@@ -18,6 +18,13 @@ class JsTsSinkMixin:
 
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+        import_equals_match = re.search(
+            r"import\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            text,
+        )
+        if import_equals_match:
+            sinks.add(f"{import_equals_match.group(1)}.exec")
+
         default_import_match = re.search(
             r"import\s+([A-Za-z_$][\w$]*)\s+from\s*['\"]shelljs['\"]", text
         )

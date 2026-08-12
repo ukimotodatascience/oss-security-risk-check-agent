@@ -239,6 +239,47 @@ def test_js_detects_imported_shelljs_exec_with_child_process_sinks(
     assert records[0].message == "External input reaches shell command execution helper"
 
 
+def test_js_dedupes_shelljs_module_exec_across_ast_and_fallback(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const sh = require("shelljs");
+                sh.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_ts_fallback_detects_shelljs_import_equals_with_child_process_sinks(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.ts"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import sh = require("shelljs");
+            import { spawn } from "child_process";
+            sh.exec(req.query.cmd);
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
 @pytest.mark.parametrize(
     "detector, tree_sitter_method, filename, source",
     [

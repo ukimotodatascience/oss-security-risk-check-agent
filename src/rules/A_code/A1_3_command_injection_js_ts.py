@@ -52,6 +52,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
+        shelljs_sinks: Set[str] = set()
         for node in iter_ts_nodes(root):
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
@@ -61,6 +62,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 "variable_declaration",
             }:
                 self._register_child_process_imports(text, child_process_sinks)
+                self._register_shelljs_imports(text, shelljs_sinks)
             if node_type in {"variable_declarator", "assignment_expression"}:
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
@@ -95,6 +97,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             line = getattr(node, "start_point", (0, 0))[0] + 1
             has_external = self._js_has_external_input(call_text, tainted_names)
             if not has_external:
+                continue
+            if callee in shelljs_sinks:
+                records.append(
+                    RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=line,
+                        message="External input reaches shell command execution helper",
+                    )
+                )
                 continue
             callee_tail = callee.split(".")[-1]
             is_known_sink = (
