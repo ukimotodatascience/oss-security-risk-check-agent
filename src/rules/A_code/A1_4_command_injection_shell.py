@@ -73,15 +73,26 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         tainted_names: Set[str] = set()
         active_local_taints: List[Tuple[str, int, bool]] = []
         current_brace_level = 0
+        # local はブロックスコープではなく関数スコープ
+        # 関数定義ごとの波括弧レベルをスタックで管理する
+        func_brace_stack: List[int] = []
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
 
+            # 関数定義の検出: name() または function name
+            if re.match(r"(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)", stripped):
+                func_brace_stack.append(current_brace_level)
+
             current_brace_level += self._count_unescaped_braces(stripped)
             if current_brace_level < 0:
                 current_brace_level = 0
+
+            # 関数スコープを抜けた場合、スタックからポップ
+            while func_brace_stack and current_brace_level <= func_brace_stack[-1]:
+                func_brace_stack.pop()
 
             expired_locals = [
                 (param, was_tainted)
@@ -105,8 +116,12 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if stmt_start_idx == -1:
                 stmt_start_idx = len(line) - len(line.lstrip())
 
+            # local 変数のスコープは関数レベルで管理する
+            func_level = (
+                func_brace_stack[-1] + 1 if func_brace_stack else current_brace_level
+            )
             self._track_shell_taint_from_text(
-                stripped, tainted_names, active_local_taints, current_brace_level
+                stripped, tainted_names, active_local_taints, func_level
             )
             self._track_shell_case_allowlist_from_text(stripped, tainted_names)
             has_external = self._shell_expands_external_input(stripped, tainted_names)

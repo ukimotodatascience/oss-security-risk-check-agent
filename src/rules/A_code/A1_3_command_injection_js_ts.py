@@ -869,8 +869,48 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_third_party_shell_imports(stripped, third_party_shell_sinks)
 
-            # 波括弧レベルの更新
-            current_brace_level += stripped.count("{") - stripped.count("}")
+            # 波括弧レベルの更新（文字列・テンプレート・コメント内を除外）
+            brace_delta = 0
+            _in_str: Optional[str] = None
+            _escaped = False
+            _tmpl_depth = 0
+            _idx = 0
+            while _idx < len(stripped):
+                _ch = stripped[_idx]
+                if _escaped:
+                    _escaped = False
+                    _idx += 1
+                    continue
+                if _ch == "\\":
+                    _escaped = True
+                    _idx += 1
+                    continue
+                if _in_str:
+                    if _ch == _in_str:
+                        _in_str = None
+                    _idx += 1
+                    continue
+                # 行コメント
+                if (
+                    _ch == "/"
+                    and _idx + 1 < len(stripped)
+                    and stripped[_idx + 1] == "/"
+                ):
+                    break
+                if _ch in {"'", '"'}:
+                    _in_str = _ch
+                    _idx += 1
+                    continue
+                if _ch == "`":
+                    _in_str = "`"
+                    _idx += 1
+                    continue
+                if _ch == "{":
+                    brace_delta += 1
+                elif _ch == "}":
+                    brace_delta -= 1
+                _idx += 1
+            current_brace_level += brace_delta
             if current_brace_level < 0:
                 current_brace_level = 0
 
@@ -3257,41 +3297,62 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 r"[A-Za-z_$][\w$]*", local_name
                                             ):
                                                 continue
-                                            target_node = self._get_nested_property_value(
-                                                p_right, path, src_bytes
+                                            target_node = (
+                                                self._get_nested_property_value(
+                                                    p_right, path, src_bytes
+                                                )
                                             )
                                             if is_rest and excluded_keys:
                                                 has_taint = self._is_rest_tainted(
-                                                    target_node, excluded_keys, tainted_names, src_bytes
+                                                    target_node,
+                                                    excluded_keys,
+                                                    tainted_names,
+                                                    src_bytes,
                                                 )
                                             elif isinstance(target_node, list):
                                                 has_taint = any(
                                                     self._js_has_external_input(
-                                                        ts_node_text(src_bytes, item), tainted_names
+                                                        ts_node_text(src_bytes, item),
+                                                        tainted_names,
                                                     )
                                                     for item in target_node
                                                 )
                                             elif target_node is not None:
                                                 has_taint = self._js_has_external_input(
-                                                    ts_node_text(src_bytes, target_node), tainted_names
+                                                    ts_node_text(
+                                                        src_bytes, target_node
+                                                    ),
+                                                    tainted_names,
                                                 )
                                             else:
-                                                if getattr(p_right, "type", "") in {"object", "array"}:
+                                                if getattr(p_right, "type", "") in {
+                                                    "object",
+                                                    "array",
+                                                }:
                                                     has_taint = False
                                                 else:
                                                     has_taint = rhs_tainted
 
-                                            if not has_taint and default_node is not None:
+                                            if (
+                                                not has_taint
+                                                and default_node is not None
+                                            ):
                                                 default_may_apply = (
                                                     target_node is None
                                                     or self._js_is_static_undefined(
-                                                        ts_node_text(src_bytes, target_node)
+                                                        ts_node_text(
+                                                            src_bytes, target_node
+                                                        )
                                                     )
                                                 )
                                                 if default_may_apply:
-                                                    def_text = ts_node_text(src_bytes, default_node)
-                                                    has_taint = self._js_has_external_input(
-                                                        def_text, tainted_names
+                                                    def_text = ts_node_text(
+                                                        src_bytes, default_node
+                                                    )
+                                                    has_taint = (
+                                                        self._js_has_external_input(
+                                                            def_text, tainted_names
+                                                        )
                                                     )
 
                                             if has_taint:
