@@ -584,9 +584,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 )
                                             )
                                             if orig_name:
-                                                child_process_sinks[left_text_norm] = (
-                                                    orig_name
-                                                )
+                                                # Spread all known dangerous methods
+                                                for m in [
+                                                    "exec",
+                                                    "spawn",
+                                                    "fork",
+                                                    "execFile",
+                                                    "execSync",
+                                                    "spawnSync",
+                                                    "execFileSync",
+                                                ]:
+                                                    child_process_sinks[
+                                                        f"{left_text_norm}.{m}"
+                                                    ] = f"{orig_name}.{m}"
                                         continue
                                     elif c_type == "pair":
                                         key_node = ts_child_by_field_name(child, "key")
@@ -628,6 +638,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 child_process_sinks[
                                                     f"{left_text_norm}.{k_name}"
                                                 ] = orig_name
+                                        else:
+                                            child_process_sinks.pop(
+                                                f"{left_text_norm}.{k_name}", None
+                                            )
                     if left_type in {"object_pattern", "array_pattern"}:
                         rhs_tainted = self._js_has_external_input(
                             right_text, tainted_names
@@ -1153,9 +1167,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     arg, child_process_sinks
                                 )
                                 if orig_name:
-                                    child_process_sinks[var_name_norm] = orig_name
+                                    # Spread all known dangerous methods
+                                    for m in [
+                                        "exec",
+                                        "spawn",
+                                        "fork",
+                                        "execFile",
+                                        "execSync",
+                                        "spawnSync",
+                                        "execFileSync",
+                                    ]:
+                                        child_process_sinks[f"{var_name_norm}.{m}"] = (
+                                            f"{orig_name}.{m}"
+                                        )
                                 if arg in third_party_shell_sinks:
-                                    third_party_shell_sinks[var_name_norm] = True
+                                    third_party_shell_sinks.add(var_name_norm)
                                 continue
 
                             pair_info = self._split_fallback_pair(part)
@@ -1182,6 +1208,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                         child_process_sinks[
                                             f"{var_name_norm}.{k_name}"
                                         ] = orig_name
+                                else:
+                                    child_process_sinks.pop(
+                                        f"{var_name_norm}.{k_name}", None
+                                    )
                                 if v_text in third_party_shell_sinks:
                                     third_party_shell_sinks.add(
                                         f"{var_name_norm}.{k_name}"
