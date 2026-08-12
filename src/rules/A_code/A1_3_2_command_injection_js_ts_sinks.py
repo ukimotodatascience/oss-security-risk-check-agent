@@ -53,15 +53,25 @@ class JsTsSinkMixin:
                     if name == "exec" or alias_match:
                         sinks.add(alias_match.group(1) if alias_match else name)
 
-        module_match = re.search(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+        direct_exec_match = re.fullmatch(
+            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"require\(['\"]shelljs['\"]\)\.exec\s*;?\s*",
+            text,
+        )
+        if direct_exec_match:
+            sinks.add(direct_exec_match.group(1))
+
+        module_match = re.fullmatch(
+            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"require\(['\"]shelljs['\"]\)\s*;?\s*",
             text,
         )
         if module_match:
             sinks.add(f"{module_match.group(1)}.exec")
 
-        require_match = re.search(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"]shelljs['\"]\)",
+        require_match = re.fullmatch(
+            r"\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*"
+            r"require\(['\"]shelljs['\"]\)\s*;?\s*",
             text,
         )
         if require_match:

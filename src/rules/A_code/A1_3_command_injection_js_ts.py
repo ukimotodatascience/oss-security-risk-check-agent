@@ -188,6 +188,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         statements: List[Tuple[int, str]] = []
         buffer = ""
         start_line = 1
+        in_template_literal = False
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("//"):
@@ -197,16 +198,22 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 r"\brequire\(['\"][^'\"]+['\"]\)\s*$",
                 buffer,
             )
-            if buffer and (
-                stripped.startswith("import ")
-                or (buffer.startswith("import ") and complete_import)
+            if (
+                buffer
+                and not in_template_literal
+                and (
+                    stripped.startswith("import ")
+                    or (buffer.startswith("import ") and complete_import)
+                )
             ):
                 statements.append((start_line, buffer))
                 buffer = ""
             if not buffer:
                 start_line = i
             buffer = f"{buffer} {stripped}".strip()
-            if stripped.endswith((";", "}", ")")):
+            if len(re.findall(r"(?<!\\)`", line)) % 2:
+                in_template_literal = not in_template_literal
+            if not in_template_literal and stripped.endswith((";", "}", ")")):
                 statements.append((start_line, buffer))
                 buffer = ""
         if buffer:

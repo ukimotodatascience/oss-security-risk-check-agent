@@ -216,6 +216,7 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
     [
         ('const { exec } = require("shelljs");', "exec(req.query.cmd);"),
         ('const sh = require("shelljs");', "sh.exec(req.query.cmd);"),
+        ('const run = require("shelljs").exec;', "run(req.query.cmd);"),
         ('import sh from "shelljs";', "sh.exec(req.query.cmd);"),
         ('import * as sh from "shelljs";', "sh.exec(req.query.cmd);"),
         ('import sh, { exec as run } from "shelljs";', "run(req.query.cmd);"),
@@ -280,6 +281,28 @@ def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
             "app.js": """
                 import { spawn } from "child_process";
                 const example = "import { exec as run } from 'shelljs'";
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "\"const { exec: run } = require('shelljs')\"",
+        '`\nimport { exec as run } from "shelljs"\n`',
+    ],
+)
+def test_js_ignores_shelljs_declaration_examples(tmp_path, example):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f"""
+                import {{ spawn }} from "child_process";
+                const example = {example};
                 run(req.query.cmd);
             """
         },
