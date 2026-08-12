@@ -1065,6 +1065,28 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             }
             """,
         ),
+        (
+            "heredoc-brace.sh",
+            """
+            f() {
+                local CMD=$1
+                cat <<EOF
+            }
+            EOF
+                eval "$CMD"
+            }
+            """,
+        ),
+        (
+            "split-function-brace.sh",
+            """
+            f()
+            {
+                { local CMD=$1; }
+                eval "$CMD"
+            }
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):

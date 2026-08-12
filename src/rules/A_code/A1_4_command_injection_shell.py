@@ -95,21 +95,50 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         # local はブロックスコープではなく関数スコープ
         # 関数定義ごとの波括弧レベルをスタックで管理する
         func_brace_stack: List[int] = []
+        pending_function_level: Optional[int] = None
+        heredoc_delimiters: List[Tuple[str, bool]] = []
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
+
+            if heredoc_delimiters:
+                delimiter, strip_tabs = heredoc_delimiters[0]
+                terminator = line.lstrip("\t") if strip_tabs else line
+                if terminator.strip() == delimiter:
+                    heredoc_delimiters.pop(0)
+                continue
+
             if not stripped or stripped.startswith("#"):
                 continue
 
             # 関数定義の検出: name() / function name() / function name {
-            if re.match(
-                r"(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)", stripped
-            ) or re.match(r"function\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", stripped):
-                func_brace_stack.append(current_brace_level)
+            function_match = re.match(
+                r"(?:(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)"
+                r"|function\s+[A-Za-z_][A-Za-z0-9_]*)",
+                stripped,
+            )
+            if pending_function_level is not None and stripped.startswith("{"):
+                func_brace_stack.append(pending_function_level)
+                pending_function_level = None
+            elif function_match:
+                remainder = stripped[function_match.end() :]
+                if "{" in remainder:
+                    func_brace_stack.append(current_brace_level)
+                else:
+                    pending_function_level = current_brace_level
 
             current_brace_level += self._count_unescaped_braces(stripped)
             if current_brace_level < 0:
                 current_brace_level = 0
+
+            for heredoc_match in re.finditer(
+                r"<<(-)?\s*(?:'([^']+)'|\"([^\"]+)\"|([A-Za-z_][A-Za-z0-9_]*))",
+                stripped,
+            ):
+                delimiter = next(
+                    group for group in heredoc_match.groups()[1:] if group is not None
+                )
+                heredoc_delimiters.append((delimiter, heredoc_match.group(1) == "-"))
 
             # 関数スコープを抜けた場合、スタックからポップ
             while func_brace_stack and current_brace_level <= func_brace_stack[-1]:
