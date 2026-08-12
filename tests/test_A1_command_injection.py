@@ -220,6 +220,7 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
         ('import * as sh from "shelljs";', "sh.exec(req.query.cmd);"),
         ('import sh, { exec as run } from "shelljs";', "run(req.query.cmd);"),
         ('import sh, * as shell from "shelljs";', "shell.exec(req.query.cmd);"),
+        ('import { default as sh } from "shelljs";', "sh.exec(req.query.cmd);"),
     ],
 )
 def test_js_detects_imported_shelljs_exec_with_child_process_sinks(
@@ -254,6 +255,37 @@ def test_js_dedupes_shelljs_module_exec_across_ast_and_fallback(tmp_path):
 
     assert len(records) == 1
     assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_collects_static_shelljs_imports_before_calls(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                exec(req.query.cmd);
+                import { exec } from "shelljs";
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                const example = "import { exec as run } from 'shelljs'";
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
 
 
 def test_ts_fallback_detects_shelljs_import_equals_with_child_process_sinks(

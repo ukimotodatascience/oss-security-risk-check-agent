@@ -53,7 +53,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shelljs_sinks: Set[str] = set()
-        for node in iter_ts_nodes(root):
+        nodes = list(iter_ts_nodes(root))
+        for node in nodes:
+            if getattr(node, "type", "") == "import_statement":
+                text = ts_node_text(src_bytes, node)
+                self._register_child_process_imports(text, child_process_sinks)
+                self._register_shelljs_imports(text, shelljs_sinks)
+        for node in nodes:
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
             if node_type in {
@@ -186,6 +192,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             stripped = line.strip()
             if not stripped or stripped.startswith("//"):
                 continue
+            complete_import = re.search(
+                r"\bfrom\s*['\"][^'\"]+['\"]\s*$|"
+                r"\brequire\(['\"][^'\"]+['\"]\)\s*$",
+                buffer,
+            )
+            if buffer and (
+                stripped.startswith("import ")
+                or (buffer.startswith("import ") and complete_import)
+            ):
+                statements.append((start_line, buffer))
+                buffer = ""
             if not buffer:
                 start_line = i
             buffer = f"{buffer} {stripped}".strip()
@@ -194,6 +211,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 buffer = ""
         if buffer:
             statements.append((start_line, buffer))
+        for _, statement in statements:
+            if re.match(r"^\s*import\b", statement):
+                self._register_child_process_imports(statement, child_process_sinks)
+                self._register_shelljs_imports(statement, shelljs_sinks)
         for i, stripped in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)

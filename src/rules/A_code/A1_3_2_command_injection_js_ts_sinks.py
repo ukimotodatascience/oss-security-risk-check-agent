@@ -19,14 +19,14 @@ class JsTsSinkMixin:
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
         import_equals_match = re.search(
-            r"import\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
             text,
         )
         if import_equals_match:
             sinks.add(f"{import_equals_match.group(1)}.exec")
 
         import_matches = re.finditer(
-            r"\bimport\s+((?:(?!\bimport\b).)*?)\s+from\s*['\"]shelljs['\"]",
+            r"^\s*import\s+((?:(?!\bimport\b).)*?)\s+from\s*['\"]shelljs['\"]",
             text,
         )
         for import_match in import_matches:
@@ -43,6 +43,12 @@ class JsTsSinkMixin:
             if named_match:
                 for name in named_match.group(1).split(","):
                     name = name.strip()
+                    default_alias_match = re.fullmatch(
+                        r"default\s+as\s+([A-Za-z_$][\w$]*)", name
+                    )
+                    if default_alias_match:
+                        sinks.add(f"{default_alias_match.group(1)}.exec")
+                        continue
                     alias_match = re.match(r"exec\s+as\s+([A-Za-z_$][\w$]*)", name)
                     if name == "exec" or alias_match:
                         sinks.add(alias_match.group(1) if alias_match else name)
