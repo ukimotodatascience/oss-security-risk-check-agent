@@ -43,7 +43,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
         tainted_names: Set[str] = set()
-        active_local_taints: List[Tuple[str, int]] = []
+        active_local_taints: List[Tuple[str, int, bool]] = []
         current_brace_level = 0
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
@@ -56,14 +56,17 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 current_brace_level = 0
 
             expired_locals = [
-                param for param, lvl in active_local_taints if current_brace_level < lvl
+                (param, was_tainted)
+                for param, lvl, was_tainted in active_local_taints
+                if current_brace_level < lvl
             ]
-            for param in expired_locals:
-                tainted_names.discard(param)
+            for param, was_tainted in expired_locals:
+                if not was_tainted:
+                    tainted_names.discard(param)
 
             active_local_taints = [
-                (param, lvl)
-                for param, lvl in active_local_taints
+                (param, lvl, was_tainted)
+                for param, lvl, was_tainted in active_local_taints
                 if current_brace_level >= lvl
             ]
 
@@ -255,7 +258,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
-        active_local_taints: List[Tuple[str, int]] = []
+        active_local_taints: List[Tuple[str, int, bool]] = []
         current_brace_level = 0
         last_byte = 0
         interesting_types = {
@@ -283,15 +286,16 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 if current_brace_level < 0:
                     current_brace_level = 0
                 expired_locals = [
-                    param
-                    for param, lvl in active_local_taints
+                    (param, was_tainted)
+                    for param, lvl, was_tainted in active_local_taints
                     if current_brace_level < lvl
                 ]
-                for param in expired_locals:
-                    tainted_names.discard(param)
+                for param, was_tainted in expired_locals:
+                    if not was_tainted:
+                        tainted_names.discard(param)
                 active_local_taints = [
-                    (param, lvl)
-                    for param, lvl in active_local_taints
+                    (param, lvl, was_tainted)
+                    for param, lvl, was_tainted in active_local_taints
                     if current_brace_level >= lvl
                 ]
             last_byte = getattr(node, "end_byte", start_byte)

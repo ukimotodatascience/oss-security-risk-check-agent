@@ -33,9 +33,12 @@ class ShellSourceMixin:
             var_name = local_match.group(1)
             rhs = local_match.group(2)
             if rhs is None or self._shell_expands_external_input(rhs, tainted_names):
+                was_tainted = var_name in tainted_names
                 tainted_names.add(var_name)
                 if active_local_taints is not None:
-                    active_local_taints.append((var_name, current_brace_level))
+                    active_local_taints.append(
+                        (var_name, current_brace_level, was_tainted)
+                    )
 
         assign_match = re.search(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", text)
         if assign_match:

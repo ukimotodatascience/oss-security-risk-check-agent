@@ -572,7 +572,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     c_type = getattr(child, "type", "")
                                     k_name = None
                                     v_text = None
-                                    if c_type == "pair":
+                                    if c_type == "spread_element":
+                                        arg = self._get_spread_argument(child)
+                                        if arg:
+                                            arg_text = ts_node_text(
+                                                src_bytes, arg
+                                            ).strip()
+                                            orig_name = (
+                                                self._get_child_process_original_name(
+                                                    arg_text, child_process_sinks
+                                                )
+                                            )
+                                            if orig_name:
+                                                child_process_sinks[left_text_norm] = (
+                                                    orig_name
+                                                )
+                                        continue
+                                    elif c_type == "pair":
                                         key_node = ts_child_by_field_name(child, "key")
                                         val_node = ts_child_by_field_name(
                                             child, "value"
@@ -1131,6 +1147,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         inner = rhs_clean[1:-1]
                         for part in self._split_array_literal_elements(inner):
                             part = part.strip()
+                            if part.startswith("..."):
+                                arg = part[3:].strip()
+                                orig_name = self._get_child_process_original_name(
+                                    arg, child_process_sinks
+                                )
+                                if orig_name:
+                                    child_process_sinks[var_name_norm] = orig_name
+                                if arg in third_party_shell_sinks:
+                                    third_party_shell_sinks[var_name_norm] = True
+                                continue
+
                             pair_info = self._split_fallback_pair(part)
                             k_name = None
                             v_text = None
