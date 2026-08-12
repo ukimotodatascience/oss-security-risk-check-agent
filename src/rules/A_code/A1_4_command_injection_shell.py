@@ -23,19 +23,37 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         count = 0
         in_string = None
         escaped = False
-        for char in text:
+        in_expansion = 0  # ${...} のネスト深度
+        i = 0
+        while i < len(text):
+            char = text[i]
             if escaped:
                 escaped = False
+                i += 1
                 continue
             if char == "\\" and in_string != "'":
                 escaped = True
+                i += 1
                 continue
             if in_string:
                 if char == in_string:
                     in_string = None
+                i += 1
                 continue
             if char in {"'", '"', "`"}:
                 in_string = char
+                i += 1
+                continue
+            # ${...} パラメータ展開の追跡
+            if char == "$" and i + 1 < len(text) and text[i + 1] == "{":
+                in_expansion += 1
+                i += 2  # ${ をスキップ
+                continue
+            if in_expansion > 0:
+                if char == "}":
+                    in_expansion -= 1
+                # 展開内の # はコメントではないので無視
+                i += 1
                 continue
             # シェルコメント以降の波括弧は無視する
             if char == "#":
@@ -44,6 +62,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 count += 1
             elif char == "}":
                 count -= 1
+            i += 1
         return count
 
     rule_id = RULE_ID
@@ -82,8 +101,10 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if not stripped or stripped.startswith("#"):
                 continue
 
-            # 関数定義の検出: name() または function name
-            if re.match(r"(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)", stripped):
+            # 関数定義の検出: name() / function name() / function name {
+            if re.match(
+                r"(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)", stripped
+            ) or re.match(r"function\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", stripped):
                 func_brace_stack.append(current_brace_level)
 
             current_brace_level += self._count_unescaped_braces(stripped)

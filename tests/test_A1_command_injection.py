@@ -1048,6 +1048,23 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             f() { local CMD=$1; eval "$CMD"; }
             """,
         ),
+        (
+            "spread-child-process.js",
+            """
+            const cp = require("child_process");
+            const holder = {...cp};
+            holder.exec(req.query.cmd);
+            """,
+        ),
+        (
+            "function-keyword.sh",
+            """
+            function f {
+                { local CMD=$1; }
+                eval "$CMD"
+            }
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
@@ -1222,6 +1239,23 @@ def test_shell_ignores_assignment_text_inside_single_quotes(tmp_path):
         {
             "run.sh": """
                 echo 'CMD=$1'
+                eval "$CMD"
+            """,
+        },
+    )
+
+    assert records == []
+
+
+def test_shell_does_not_leak_local_taint_after_parameter_expansion(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "run.sh": """
+                f() {
+                    local CMD=$1
+                    echo ${CMD#prefix}
+                }
                 eval "$CMD"
             """,
         },

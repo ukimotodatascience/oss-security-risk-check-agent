@@ -9,7 +9,9 @@ class ShellSourceMixin:
             return True
 
         for name in tainted_names:
-            if re.search(rf"\$(?:\{{)?{re.escape(name)}(?:[:#%=\+\-\?][^}}]*)?(?:\}})?\b", line):
+            if re.search(
+                rf"\$(?:\{{)?{re.escape(name)}(?:[:#%=\+\-\?][^}}]*)?(?:\}})?\b", line
+            ):
                 return True
         return False
 

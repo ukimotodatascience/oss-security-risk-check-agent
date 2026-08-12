@@ -596,7 +596,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 ]:
                                                     child_process_sinks[
                                                         f"{left_text_norm}.{m}"
-                                                    ] = f"{orig_name}.{m}"
+                                                    ] = m
                                         continue
                                     elif c_type == "pair":
                                         key_node = ts_child_by_field_name(child, "key")
@@ -1217,9 +1217,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                         "spawnSync",
                                         "execFileSync",
                                     ]:
-                                        child_process_sinks[f"{var_name_norm}.{m}"] = (
-                                            f"{orig_name}.{m}"
-                                        )
+                                        child_process_sinks[f"{var_name_norm}.{m}"] = m
                                 if arg in third_party_shell_sinks:
                                     third_party_shell_sinks.add(var_name_norm)
                                 continue
