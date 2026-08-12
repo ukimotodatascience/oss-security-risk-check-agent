@@ -3248,26 +3248,52 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                         )
                                         for (
                                             local_name,
-                                            _,
-                                            _,
-                                            _,
+                                            path,
+                                            is_rest,
+                                            excluded_keys,
                                             default_node,
                                         ) in expanded:
                                             if not local_name or not re.fullmatch(
                                                 r"[A-Za-z_$][\w$]*", local_name
                                             ):
                                                 continue
-                                            has_taint = rhs_tainted
-                                            if (
-                                                not has_taint
-                                                and default_node is not None
-                                            ):
-                                                def_text = ts_node_text(
-                                                    src_bytes, default_node
+                                            target_node = self._get_nested_property_value(
+                                                p_right, path, src_bytes
+                                            )
+                                            if is_rest and excluded_keys:
+                                                has_taint = self._is_rest_tainted(
+                                                    target_node, excluded_keys, tainted_names, src_bytes
                                                 )
+                                            elif isinstance(target_node, list):
+                                                has_taint = any(
+                                                    self._js_has_external_input(
+                                                        ts_node_text(src_bytes, item), tainted_names
+                                                    )
+                                                    for item in target_node
+                                                )
+                                            elif target_node is not None:
                                                 has_taint = self._js_has_external_input(
-                                                    def_text, tainted_names
+                                                    ts_node_text(src_bytes, target_node), tainted_names
                                                 )
+                                            else:
+                                                if getattr(p_right, "type", "") in {"object", "array"}:
+                                                    has_taint = False
+                                                else:
+                                                    has_taint = rhs_tainted
+
+                                            if not has_taint and default_node is not None:
+                                                default_may_apply = (
+                                                    target_node is None
+                                                    or self._js_is_static_undefined(
+                                                        ts_node_text(src_bytes, target_node)
+                                                    )
+                                                )
+                                                if default_may_apply:
+                                                    def_text = ts_node_text(src_bytes, default_node)
+                                                    has_taint = self._js_has_external_input(
+                                                        def_text, tainted_names
+                                                    )
+
                                             if has_taint:
                                                 local_taints.add(local_name)
                             elif p_type in {"object_pattern", "array_pattern"}:

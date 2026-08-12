@@ -1042,6 +1042,12 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             const cp = require("child_process"); function run(cmd: string = req.query.cmd) { cp.exec(cmd); }
             """,
         ),
+        (
+            "run.sh",
+            """
+            f() { local CMD=$1; eval "$CMD"; }
+            """,
+        ),
     ],
 )
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
