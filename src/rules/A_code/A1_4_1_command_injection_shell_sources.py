@@ -5,11 +5,11 @@ from typing import Set, Optional
 class ShellSourceMixin:
     @staticmethod
     def _shell_expands_external_input(line: str, tainted_names: Set[str]) -> bool:
-        if re.search(r"\$[0-9@*]", line) or re.search(r"\$\{[0-9]+\}", line):
+        if re.search(r"\$[0-9@*]", line) or re.search(r"\$\{[0-9@*][^}]*\}", line):
             return True
 
         for name in tainted_names:
-            if re.search(rf"\$(?:\{{)?{re.escape(name)}(?:\}})?\b", line):
+            if re.search(rf"\$(?:\{{)?{re.escape(name)}(?:[:#%=\+\-\?][^}}]*)?(?:\}})?\b", line):
                 return True
         return False
 
