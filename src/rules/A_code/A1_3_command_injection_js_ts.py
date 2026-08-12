@@ -366,6 +366,65 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             records.extend(local_records)
                         skip_body_node = body_node
                         continue
+
+            if node_type == "for_in_statement":
+                left = ts_child_by_field_name(node, "left")
+                right = ts_child_by_field_name(node, "right")
+                body_node = ts_child_by_field_name(node, "body")
+                if left and right and body_node:
+                    right_text = ts_node_text(src_bytes, right)
+                    rhs_tainted = self._js_has_external_input(right_text, tainted_names)
+                    local_taints = set()
+
+                    left_type = getattr(left, "type", "")
+                    if left_type in {"lexical_declaration", "variable_declaration"}:
+                        for decl in getattr(left, "named_children", []):
+                            if getattr(decl, "type", "") == "variable_declarator":
+                                left = ts_child_by_field_name(decl, "name") or decl
+                                left_type = getattr(left, "type", "")
+                                break
+
+                    if left_type == "identifier":
+                        if rhs_tainted:
+                            left_text = ts_node_text(src_bytes, left).strip()
+                            local_taints.add(left_text)
+                    elif left_type in {"object_pattern", "array_pattern"}:
+                        expanded = self._expand_destructuring(left, [], src_bytes)
+                        for (
+                            local_name,
+                            _,
+                            _,
+                            _,
+                            default_node,
+                        ) in expanded:
+                            if not local_name or not re.fullmatch(
+                                r"[A-Za-z_$][\w$]*", local_name
+                            ):
+                                continue
+                            has_taint = rhs_tainted
+                            if not has_taint and default_node is not None:
+                                def_text = ts_node_text(src_bytes, default_node)
+                                has_taint = self._js_has_external_input(
+                                    def_text, tainted_names
+                                )
+                            if has_taint:
+                                local_taints.add(local_name)
+
+                    if local_taints:
+                        local_tainted = tainted_names.union(local_taints)
+                        local_records = self._evaluate_js_ts_subtree(
+                            body_node,
+                            target,
+                            src_bytes,
+                            local_tainted,
+                            child_process_sinks,
+                            file_path,
+                        )
+                        if local_records:
+                            records.extend(local_records)
+                        skip_body_node = body_node
+                        continue
+
             if node_type in {
                 "import_statement",
                 "lexical_declaration",
@@ -2430,6 +2489,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             results.append((local_name, current_path, False, None, None))
         return results
 
+    def _get_spread_argument(self, node: Any) -> Optional[Any]:
+        arg = ts_child_by_field_name(node, "argument")
+        if arg is None:
+            named = getattr(node, "named_children", [])
+            if named:
+                arg = named[0]
+        return arg
+
     def _get_nested_property_value(
         self, right_node: Any, path: List[Union[str, int, slice]], src_bytes: bytes
     ) -> Any:
@@ -2446,7 +2513,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if c_type in {",", "[", "]"}:
                             continue
                         if c_type == "spread_element":
-                            argument = ts_child_by_field_name(child, "argument")
+                            argument = self._get_spread_argument(child)
                             if (
                                 argument is not None
                                 and getattr(argument, "type", "") == "array"
@@ -2482,7 +2549,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 if key_norm == p:
                                     found = ts_child_by_field_name(child, "value")
                         elif c_type == "spread_element":
-                            argument = ts_child_by_field_name(child, "argument")
+                            argument = self._get_spread_argument(child)
                             if argument is not None:
                                 arg_type = getattr(argument, "type", "")
                                 if arg_type == "object":
@@ -2504,7 +2571,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if c_type in {",", "[", "]"}:
                             continue
                         if c_type == "spread_element":
-                            argument = ts_child_by_field_name(child, "argument")
+                            argument = self._get_spread_argument(child)
                             if (
                                 argument is not None
                                 and getattr(argument, "type", "") == "array"
@@ -2523,7 +2590,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     if p < len(flat_elements):
                         curr = flat_elements[p]
                         if getattr(curr, "type", "") == "spread_element":
-                            argument = ts_child_by_field_name(curr, "argument")
+                            argument = self._get_spread_argument(curr)
                             curr = argument if argument is not None else curr
                     else:
                         return None
@@ -2554,7 +2621,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         ):
                             return True
             elif c_type == "spread_element":
-                argument = ts_child_by_field_name(child, "argument")
+                argument = self._get_spread_argument(child)
                 if argument is not None:
                     arg_type = getattr(argument, "type", "")
                     if arg_type == "object":

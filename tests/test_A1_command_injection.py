@@ -1247,3 +1247,34 @@ def test_preserves_nested_adjacent_exec_aliases(tmp_path):
     )
 
     assert len(records) == 2
+
+
+def test_js_tracks_for_of_and_for_in_loop_variables(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app1.js": """
+                const cp = require("child_process");
+                for (const cmd of [req.query.cmd]) {
+                    cp.exec(cmd);
+                }
+            """,
+            "app2.js": """
+                const cp = require("child_process");
+                for (const [cmd] of [[req.query.cmd]]) {
+                    cp.exec(cmd);
+                }
+            """,
+            "app3.js": """
+                const cp = require("child_process");
+                for (const {cmd} of [{cmd: req.query.cmd}]) {
+                    cp.exec(cmd);
+                }
+            """,
+        },
+    )
+
+    # 3つのファイルそれぞれで1件ずつ、計3件のCommand Injectionが検出されるはず
+    assert len(records) == 3
+    for r in records:
+        assert r.severity == Severity.HIGH
