@@ -18,6 +18,19 @@ class JsTsSinkMixin:
 
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+        default_import_match = re.search(
+            r"import\s+([A-Za-z_$][\w$]*)\s+from\s*['\"]shelljs['\"]", text
+        )
+        if default_import_match:
+            sinks.add(f"{default_import_match.group(1)}.exec")
+
+        namespace_import_match = re.search(
+            r"import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*['\"]shelljs['\"]",
+            text,
+        )
+        if namespace_import_match:
+            sinks.add(f"{namespace_import_match.group(1)}.exec")
+
         import_match = re.search(
             r"import\s*\{([^}]+)\}\s*from\s*['\"]shelljs['\"]", text
         )
@@ -27,6 +40,13 @@ class JsTsSinkMixin:
                 alias_match = re.match(r"exec\s+as\s+([A-Za-z_$][\w$]*)", name)
                 if name == "exec" or alias_match:
                     sinks.add(alias_match.group(1) if alias_match else name)
+
+        module_match = re.search(
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            text,
+        )
+        if module_match:
+            sinks.add(f"{module_match.group(1)}.exec")
 
         require_match = re.search(
             r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"]shelljs['\"]\)",

@@ -211,14 +211,25 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
     assert records[0].severity == Severity.HIGH
 
 
-def test_js_detects_destructured_shelljs_exec_with_child_process_sinks(tmp_path):
+@pytest.mark.parametrize(
+    "shelljs_import, call",
+    [
+        ('const { exec } = require("shelljs");', "exec(req.query.cmd);"),
+        ('const sh = require("shelljs");', "sh.exec(req.query.cmd);"),
+        ('import sh from "shelljs";', "sh.exec(req.query.cmd);"),
+        ('import * as sh from "shelljs";', "sh.exec(req.query.cmd);"),
+    ],
+)
+def test_js_detects_imported_shelljs_exec_with_child_process_sinks(
+    tmp_path, shelljs_import, call
+):
     records = scan_files(
         tmp_path,
         {
-            "app.js": """
-                const { spawn } = require("child_process");
-                const { exec } = require("shelljs");
-                exec(req.query.cmd);
+            "app.js": f"""
+                const {{ spawn }} = require("child_process");
+                {shelljs_import}
+                {call}
             """
         },
     )
