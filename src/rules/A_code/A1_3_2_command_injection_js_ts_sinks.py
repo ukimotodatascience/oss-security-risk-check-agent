@@ -25,28 +25,25 @@ class JsTsSinkMixin:
         if import_equals_match:
             sinks.add(f"{import_equals_match.group(1)}.exec")
 
-        default_import_match = re.search(
-            r"import\s+([A-Za-z_$][\w$]*)\s+from\s*['\"]shelljs['\"]", text
-        )
-        if default_import_match:
-            sinks.add(f"{default_import_match.group(1)}.exec")
-
-        namespace_import_match = re.search(
-            r"import\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*['\"]shelljs['\"]",
-            text,
-        )
-        if namespace_import_match:
-            sinks.add(f"{namespace_import_match.group(1)}.exec")
-
-        import_match = re.search(
-            r"import\s*\{([^}]+)\}\s*from\s*['\"]shelljs['\"]", text
-        )
+        import_match = re.search(r"import\s+(.+?)\s+from\s*['\"]shelljs['\"]", text)
         if import_match:
-            for name in import_match.group(1).split(","):
-                name = name.strip()
-                alias_match = re.match(r"exec\s+as\s+([A-Za-z_$][\w$]*)", name)
-                if name == "exec" or alias_match:
-                    sinks.add(alias_match.group(1) if alias_match else name)
+            import_clause = import_match.group(1).strip()
+            namespace_match = re.fullmatch(
+                r"\*\s*as\s+([A-Za-z_$][\w$]*)", import_clause
+            )
+            if namespace_match:
+                sinks.add(f"{namespace_match.group(1)}.exec")
+            else:
+                default_binding = import_clause.split("{", 1)[0].rstrip(", ").strip()
+                if re.fullmatch(r"[A-Za-z_$][\w$]*", default_binding):
+                    sinks.add(f"{default_binding}.exec")
+                named_match = re.search(r"\{([^}]+)\}", import_clause)
+                if named_match:
+                    for name in named_match.group(1).split(","):
+                        name = name.strip()
+                        alias_match = re.match(r"exec\s+as\s+([A-Za-z_$][\w$]*)", name)
+                        if name == "exec" or alias_match:
+                            sinks.add(alias_match.group(1) if alias_match else name)
 
         module_match = re.search(
             r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
