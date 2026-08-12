@@ -643,7 +643,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                     ts_node_text(src_bytes, target_node), tainted_names
                                 )
                             else:
-                                has_input = rhs_tainted
+                                if getattr(right, "type", "") in {"object", "array"}:
+                                    has_input = False
+                                else:
+                                    has_input = rhs_tainted
 
                             if not has_input and default_node is not None:
                                 default_may_apply = (
@@ -1073,7 +1076,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 target_val, current_taints
                             )
                         else:
-                            has_input = self._js_has_external_input(rhs, current_taints)
+                            if (
+                                rhs_clean.startswith("{") and rhs_clean.endswith("}")
+                            ) or (
+                                rhs_clean.startswith("[") and rhs_clean.endswith("]")
+                            ):
+                                has_input = False
+                            else:
+                                has_input = self._js_has_external_input(
+                                    rhs, current_taints
+                                )
 
                         if not has_input and default_val is not None:
                             default_may_apply = target_val is None or (
@@ -2281,12 +2293,30 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             word_match = re.match(r"\b(const|let|var)\b", text[idx:])
             assign_match = None
             if not word_match:
-                if current_var_name is None and paren_level > 0:
-                    is_assign_candidate = False
-                else:
-                    is_assign_candidate = (current_var_name is None) or (
-                        brace_level > 0 or paren_level > 0 or bracket_level > 0
+                if (
+                    (paren_level == 0 and brace_level == 0 and bracket_level == 0)
+                    or (
+                        char == "("
+                        and paren_level == 1
+                        and brace_level == 0
+                        and bracket_level == 0
                     )
+                    or (
+                        char == "{"
+                        and paren_level == 0
+                        and brace_level == 1
+                        and bracket_level == 0
+                    )
+                    or (
+                        char == "["
+                        and paren_level == 0
+                        and brace_level == 0
+                        and bracket_level == 1
+                    )
+                ):
+                    is_assign_candidate = True
+                else:
+                    is_assign_candidate = False
                 if is_assign_candidate:
                     assign_match = re.match(
                         r"(\(\s*(?:\{[^;]*?\}|\[[^;]*?\])\s*\)|(?:\{[^;]*?\}|\[[^;]*?\])|[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[\s*(?:\"[^\"]*\"|'[^']*'|`[^`]*`)\s*\])*)\s*(?:\+|-|\*|/|%|&|\||\^|<<|>>>?|\?\?|\|\||&&)?=(?!=)",
