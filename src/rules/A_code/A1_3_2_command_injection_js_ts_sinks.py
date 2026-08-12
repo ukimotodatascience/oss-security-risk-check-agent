@@ -16,6 +16,29 @@ CHILD_PROCESS_NAMES = {
 class JsTsSinkMixin:
     _CHILD_PROCESS_NAMES = CHILD_PROCESS_NAMES
 
+    @staticmethod
+    def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+        import_match = re.search(
+            r"import\s*\{([^}]+)\}\s*from\s*['\"]shelljs['\"]", text
+        )
+        if import_match:
+            for name in import_match.group(1).split(","):
+                name = name.strip()
+                alias_match = re.match(r"exec\s+as\s+([A-Za-z_$][\w$]*)", name)
+                if name == "exec" or alias_match:
+                    sinks.add(alias_match.group(1) if alias_match else name)
+
+        require_match = re.search(
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"]shelljs['\"]\)",
+            text,
+        )
+        if require_match:
+            for name in require_match.group(1).split(","):
+                name = name.strip()
+                alias_match = re.match(r"exec\s*:\s*([A-Za-z_$][\w$]*)", name)
+                if name == "exec" or alias_match:
+                    sinks.add(alias_match.group(1) if alias_match else name)
+
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
         import_match = re.search(
             r"import\s*\{([^}]+)\}\s*from\s*['\"](?:node:)?child_process['\"]",

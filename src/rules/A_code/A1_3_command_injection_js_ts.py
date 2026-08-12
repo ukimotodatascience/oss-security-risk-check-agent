@@ -161,6 +161,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             records.extend(tree_sitter_records)
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
+        shelljs_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
         lines = src.splitlines()
         statements: List[Tuple[int, str]] = []
@@ -180,6 +181,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             statements.append((start_line, buffer))
         for i, stripped in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
+            self._register_shelljs_imports(stripped, shelljs_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
             )
@@ -208,7 +210,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         )
                     )
                 continue
-            if self._is_known_third_party_shell_sink(stripped):
+            if self._is_known_third_party_shell_sink(stripped, shelljs_sinks):
                 if self._js_has_external_input(stripped, tainted_names):
                     records.append(
                         RiskRecord(
@@ -290,10 +292,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
 
     @staticmethod
-    def _is_known_third_party_shell_sink(text: str) -> bool:
+    def _is_known_third_party_shell_sink(text: str, shelljs_sinks: Set[str]) -> bool:
         return bool(
             re.search(r"\bshelljs\.exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
+            or any(
+                re.search(rf"(?<![\w$]){re.escape(name)}\s*\(", text)
+                for name in shelljs_sinks
+            )
         )
 
     def evaluate(self, target: Path) -> List[RiskRecord]:

@@ -211,6 +211,23 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
     assert records[0].severity == Severity.HIGH
 
 
+def test_js_detects_destructured_shelljs_exec_with_child_process_sinks(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                const { exec } = require("shelljs");
+                exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
 @pytest.mark.parametrize(
     "detector, tree_sitter_method, filename, source",
     [
