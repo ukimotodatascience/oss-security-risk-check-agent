@@ -339,8 +339,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                     has_taint = self._is_rest_tainted(
                                                         p_right,
                                                         dest_path,
-                                                        src_bytes,
                                                         tainted_names,
+                                                        src_bytes,
                                                     )
                                                 else:
                                                     val_node = (
@@ -452,7 +452,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             if dest_path:
                                 if is_rest:
                                     has_taint = self._is_rest_tainted(
-                                        right, dest_path, src_bytes, tainted_names
+                                        right, dest_path, tainted_names, src_bytes
                                     )
                                 else:
                                     val_node = self._get_nested_property_value(

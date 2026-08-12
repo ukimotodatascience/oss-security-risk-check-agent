@@ -18,6 +18,31 @@ from src.rules.A_code.A1_4_1_command_injection_shell_sources import ShellSourceM
 
 
 class ShellCommandInjectionDetector(ShellSourceMixin):
+    @staticmethod
+    def _count_unescaped_braces(text: str) -> int:
+        count = 0
+        in_string = None
+        escaped = False
+        for char in text:
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\" and in_string != "'":
+                escaped = True
+                continue
+            if in_string:
+                if char == in_string:
+                    in_string = None
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+                continue
+            if char == "{":
+                count += 1
+            elif char == "}":
+                count -= 1
+        return count
+
     rule_id = RULE_ID
     category = CATEGORY
     title = TITLE
@@ -51,7 +76,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if not stripped or stripped.startswith("#"):
                 continue
 
-            current_brace_level += stripped.count("{") - stripped.count("}")
+            current_brace_level += self._count_unescaped_braces(stripped)
             if current_brace_level < 0:
                 current_brace_level = 0
 
@@ -282,7 +307,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 between_text = src_bytes[last_byte:start_byte].decode(
                     "utf-8", errors="replace"
                 )
-                current_brace_level += between_text.count("{") - between_text.count("}")
+                current_brace_level += self._count_unescaped_braces(between_text)
                 if current_brace_level < 0:
                     current_brace_level = 0
                 expired_locals = [
