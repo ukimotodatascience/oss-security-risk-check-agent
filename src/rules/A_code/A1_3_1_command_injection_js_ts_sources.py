@@ -25,38 +25,9 @@ class JsTsSourceMixin:
     }
 
     @staticmethod
-    def _normalize_property_path(path_text: str) -> str:
-        # Normalize bracket property notation to dot notation
-        # e.g., holder["cmd"] -> holder.cmd
-        normalized = path_text.strip()
-        normalized = re.sub(r"\[\s*\"([A-Za-z_$][\w$]*)\"\s*\]", r".\1", normalized)
-        normalized = re.sub(r"\[\s*'([A-Za-z_$][\w$]*)'\s*\]", r".\1", normalized)
-        normalized = re.sub(r"\[\s*`([A-Za-z_$][\w$]*)`\s*\]", r".\1", normalized)
-        return normalized
-
-    @staticmethod
-    def _normalize_static_property_key(key_text: str) -> str:
-        normalized = key_text.strip()
-        bracket_match = re.fullmatch(
-            r"\[\s*((?:['\"`][A-Za-z_$][\w$]*['\"`])|(?:[0-9]+(?:\.[0-9]+)?))\s*\]",
-            normalized,
-        )
-        if bracket_match:
-            normalized = bracket_match.group(1)
-        match = re.fullmatch(
-            r"(['\"`])([A-Za-z_$][\w$]*|[0-9]+(?:\.[0-9]+)?)\1", normalized
-        )
-        return match.group(2) if match else normalized
-
-    @staticmethod
     def _contains_tainted_token(text: str, tainted_names: Set[str]) -> bool:
-        normalized_text = JsTsSourceMixin._normalize_property_path(text)
         for name in tainted_names:
-            normalized_name = JsTsSourceMixin._normalize_property_path(name)
-            pattern = (
-                rf"(?<![a-zA-Z0-9_$.]){re.escape(normalized_name)}(?![a-zA-Z0-9_$])"
-            )
-            if re.search(pattern, normalized_text):
+            if re.search(rf"\b{re.escape(name)}\b", text):
                 return True
         return False
 
@@ -66,13 +37,6 @@ class JsTsSourceMixin:
         if any(token in text for token in self._JS_EXTERNAL_SOURCE_TOKENS):
             return True
         return self._contains_tainted_token(text, tainted_names)
-
-    @staticmethod
-    def _js_is_static_undefined(text: str) -> bool:
-        stripped = text.strip()
-        return stripped == "undefined" or bool(
-            re.fullmatch(r"void(?:\s+.+|\s*\(.+\))", stripped)
-        )
 
     def _js_is_sanitized_expr(self, text: str) -> bool:
         stripped = text.strip().rstrip(";")
