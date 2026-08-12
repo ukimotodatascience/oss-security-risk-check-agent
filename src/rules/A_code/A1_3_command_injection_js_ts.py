@@ -760,6 +760,54 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if current_brace_level < 0:
                 current_brace_level = 0
 
+            # for...of / for...in ループの汚染伝播 (P2 round 13)
+            for for_match in re.finditer(
+                r"\bfor\s*\(\s*(?:(const|let|var)\s+)?(.*?)\s+(of|in)\s+(.*?)\)",
+                stripped,
+            ):
+                _, loop_var, _, loop_src = for_match.groups()
+                if loop_var and loop_src:
+                    loop_var = loop_var.strip()
+                    loop_src = loop_src.strip()
+
+                    current_tainted = tainted_names.union(
+                        p for p, _ in active_local_taints
+                    )
+                    rhs_tainted = self._js_has_external_input(loop_src, current_tainted)
+
+                    is_destruct = (
+                        loop_var.startswith("{") and loop_var.endswith("}")
+                    ) or (loop_var.startswith("[") and loop_var.endswith("]"))
+
+                    lvl_offset = 1 if stripped.count("{") <= stripped.count("}") else 0
+
+                    if is_destruct:
+                        expanded = self._expand_fallback_destructuring(loop_var, [])
+                        for local_name, _, _, _, default_val in expanded:
+                            if not local_name or not re.fullmatch(
+                                r"[A-Za-z_$][\w$]*", local_name
+                            ):
+                                continue
+                            has_taint = rhs_tainted
+                            if not has_taint and default_val is not None:
+                                has_taint = self._js_has_external_input(
+                                    default_val, current_tainted
+                                )
+                            if has_taint:
+                                norm_name = self._normalize_property_path(local_name)
+                                active_local_taints.append(
+                                    (
+                                        norm_name,
+                                        current_brace_level + lvl_offset,
+                                    )
+                                )
+                    else:
+                        if rhs_tainted and re.fullmatch(r"[A-Za-z_$][\w$]*", loop_var):
+                            norm_name = self._normalize_property_path(loop_var)
+                            active_local_taints.append(
+                                (norm_name, current_brace_level + lvl_offset)
+                            )
+
             # 関数引数のデフォルト値汚染伝播 (P2 round 11/12)
             for m in re.finditer(r"\(([^)]+)\)", stripped):
                 params_str = m.group(1)

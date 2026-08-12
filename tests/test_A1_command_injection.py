@@ -1250,11 +1250,6 @@ def test_preserves_nested_adjacent_exec_aliases(tmp_path):
 
 
 def test_js_tracks_for_of_and_for_in_loop_variables(tmp_path):
-    from src.rules.A_code.A1_1_command_injection_common import get_tree_sitter_parser
-
-    if get_tree_sitter_parser(".js") is None:
-        pytest.skip("tree-sitter parser for javascript is not available")
-
     records = scan_files(
         tmp_path,
         {
