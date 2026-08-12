@@ -37,6 +37,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if char in {"'", '"', "`"}:
                 in_string = char
                 continue
+            # シェルコメント以降の波括弧は無視する
+            if char == "#":
+                break
             if char == "{":
                 count += 1
             elif char == "}":
@@ -86,7 +89,10 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 if current_brace_level < lvl
             ]
             for param, was_tainted in expired_locals:
-                if not was_tainted:
+                if was_tainted:
+                    # 外側スコープで汚染されていた状態を復元する
+                    tainted_names.add(param)
+                else:
                     tainted_names.discard(param)
 
             active_local_taints = [
