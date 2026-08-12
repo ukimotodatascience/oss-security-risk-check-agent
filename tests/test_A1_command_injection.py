@@ -219,6 +219,7 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
         ('import sh from "shelljs";', "sh.exec(req.query.cmd);"),
         ('import * as sh from "shelljs";', "sh.exec(req.query.cmd);"),
         ('import sh, { exec as run } from "shelljs";', "run(req.query.cmd);"),
+        ('import sh, * as shell from "shelljs";', "shell.exec(req.query.cmd);"),
     ],
 )
 def test_js_detects_imported_shelljs_exec_with_child_process_sinks(
@@ -269,6 +270,30 @@ def test_ts_fallback_detects_shelljs_import_equals_with_child_process_sinks(
             import sh = require("shelljs");
             import { spawn } from "child_process";
             sh.exec(req.query.cmd);
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_fallback_parses_semicolonless_imports_independently(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import { spawn } from "child_process"
+            import sh from "shelljs"
+            sh.exec(req.query.cmd)
             """
         ).strip()
         + "\n",
