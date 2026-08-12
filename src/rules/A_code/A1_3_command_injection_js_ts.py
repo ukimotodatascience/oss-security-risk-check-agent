@@ -829,6 +829,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if current_brace_level < 0:
                 current_brace_level = 0
 
+            # ステートメント処理開始時点で、現在の波括弧レベルが宣言時より下がった項目をクリアする
+            active_local_taints = [
+                (param, lvl)
+                for param, lvl in active_local_taints
+                if current_brace_level >= lvl
+            ]
+
             # for...of / for...in ループの汚染伝播 (P2 round 13)
             for for_match in re.finditer(
                 r"\bfor\s*\(\s*(?:(const|let|var)\s+)?(.*?)\s+(of|in)\s+(.*?)\)",
@@ -1430,12 +1437,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     rec._char_offset = char_offset
                     records.append(rec)
 
-            # 各ステートメント評価の最後で、現在の波括弧レベルが関数開始レベル未満になった項目をクリアする
-            active_local_taints = [
-                (param, lvl)
-                for param, lvl in active_local_taints
-                if current_brace_level >= lvl
-            ]
         return dedupe_records(records)
 
     @staticmethod
