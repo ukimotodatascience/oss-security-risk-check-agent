@@ -1049,6 +1049,13 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
             """,
         ),
         (
+            "escaped-space-assignment.sh",
+            """
+            CMD=echo\\ $1
+            eval "$CMD"
+            """,
+        ),
+        (
             "spread-child-process.js",
             """
             const cp = require("child_process");

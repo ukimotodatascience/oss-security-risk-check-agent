@@ -27,10 +27,10 @@ class ShellSourceMixin:
             tainted_names.add(read_match.group(1))
 
         assignment_pattern = re.compile(
-            r"([A-Za-z_][A-Za-z0-9_]*)=((?:\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`|[^\s;'\"`])+)(?:\s+|;\s*|$)"
+            r"([A-Za-z_][A-Za-z0-9_]*)=((?:\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`|\\.|[^\s;'\"`])+)(?:\s+|;\s*|$)"
         )
         decl_pattern = re.compile(
-            r"([A-Za-z_][A-Za-z0-9_]*)(?:=([^\s;'\"`]+|\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`))?"
+            r"([A-Za-z_][A-Za-z0-9_]*)(?:=((?:\$\([^)]*\)|'[^']*'|\"[^\"]*\"|`[^`]*`|\\.|[^\s;'\"`])+))?"
         )
 
         for statement in self._split_shell_statements(text):
