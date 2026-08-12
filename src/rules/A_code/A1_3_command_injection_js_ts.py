@@ -158,7 +158,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             file_path, target, src
         )
         if tree_sitter_records is not None:
-            return tree_sitter_records
+            records.extend(tree_sitter_records)
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
@@ -292,7 +292,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _is_known_third_party_shell_sink(text: str) -> bool:
         return bool(
-            re.search(r"\b(?:shelljs\.)?exec\s*\(", text)
+            re.search(r"\bshelljs\.exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
         )
 

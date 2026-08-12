@@ -218,17 +218,17 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
             JsTsCommandInjectionDetector(),
             "_evaluate_js_ts_file_with_tree_sitter",
             "app.js",
-            'const { exec } = require("child_process"); exec(req.query.cmd);',
+            'execa.command("cat " + req.query.target);',
         ),
         (
             ShellCommandInjectionDetector(),
             "_evaluate_shell_file_with_tree_sitter",
             "run.sh",
-            'eval "$1"',
+            'source "$1"',
         ),
     ],
 )
-def test_script_detectors_return_tree_sitter_findings_without_fallback(
+def test_script_detectors_merge_tree_sitter_and_fallback_findings(
     tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
 ):
     file_path = tmp_path / filename
@@ -246,7 +246,8 @@ def test_script_detectors_return_tree_sitter_findings_without_fallback(
 
     records = detector.evaluate(tmp_path)
 
-    assert records == [expected]
+    assert expected in records
+    assert len(records) == 2
 
 
 @pytest.mark.parametrize(
@@ -266,7 +267,7 @@ def test_script_detectors_return_tree_sitter_findings_without_fallback(
         ),
     ],
 )
-def test_script_detectors_treat_empty_tree_sitter_result_as_success(
+def test_script_detectors_keep_fallback_only_findings_after_tree_sitter_success(
     tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
 ):
     file_path = tmp_path / filename
@@ -275,7 +276,8 @@ def test_script_detectors_treat_empty_tree_sitter_result_as_success(
 
     records = detector.evaluate(tmp_path)
 
-    assert records == []
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
 
 
 @pytest.mark.parametrize(
@@ -306,3 +308,45 @@ def test_script_detectors_fall_back_when_tree_sitter_is_unavailable(
 
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source, message",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+            "External input reaches child_process command execution",
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+            "External input reaches shell eval",
+        ),
+    ],
+)
+def test_script_detectors_dedupe_matching_tree_sitter_and_fallback_findings(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source, message
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    tree_sitter_record = RiskRecord(
+        rule_id=detector.rule_id,
+        category=detector.category,
+        title=detector.title,
+        severity=Severity.HIGH,
+        file_path=filename,
+        line=1,
+        message=message,
+    )
+    monkeypatch.setattr(
+        detector, tree_sitter_method, lambda *_args: [tree_sitter_record]
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert records == [tree_sitter_record]
