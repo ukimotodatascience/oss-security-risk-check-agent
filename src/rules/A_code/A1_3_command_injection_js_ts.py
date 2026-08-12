@@ -308,8 +308,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                         )
                                         for (
                                             local_name,
-                                            _,
-                                            _,
+                                            dest_path,
+                                            is_rest,
                                             _,
                                             default_node,
                                         ) in expanded:
@@ -317,7 +317,38 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                                 r"[A-Za-z_$][\w$]*", local_name
                                             ):
                                                 continue
-                                            has_taint = rhs_tainted
+
+                                            has_taint = False
+                                            if dest_path:
+                                                if is_rest:
+                                                    has_taint = self._is_rest_tainted(
+                                                        p_right,
+                                                        dest_path,
+                                                        src_bytes,
+                                                        tainted_names,
+                                                    )
+                                                else:
+                                                    val_node = (
+                                                        self._get_nested_property_value(
+                                                            p_right,
+                                                            dest_path,
+                                                            src_bytes,
+                                                        )
+                                                    )
+                                                    if val_node is not None:
+                                                        has_taint = (
+                                                            self._js_has_external_input(
+                                                                ts_node_text(
+                                                                    src_bytes, val_node
+                                                                ),
+                                                                tainted_names,
+                                                            )
+                                                        )
+                                                    else:
+                                                        has_taint = rhs_tainted
+                                            else:
+                                                has_taint = rhs_tainted
+
                                             if (
                                                 not has_taint
                                                 and default_node is not None
@@ -392,8 +423,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         expanded = self._expand_destructuring(left, [], src_bytes)
                         for (
                             local_name,
-                            _,
-                            _,
+                            dest_path,
+                            is_rest,
                             _,
                             default_node,
                         ) in expanded:
@@ -401,7 +432,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 r"[A-Za-z_$][\w$]*", local_name
                             ):
                                 continue
-                            has_taint = rhs_tainted
+
+                            has_taint = False
+                            if dest_path:
+                                if is_rest:
+                                    has_taint = self._is_rest_tainted(
+                                        right, dest_path, src_bytes, tainted_names
+                                    )
+                                else:
+                                    val_node = self._get_nested_property_value(
+                                        right, dest_path, src_bytes
+                                    )
+                                    if val_node is not None:
+                                        has_taint = self._js_has_external_input(
+                                            ts_node_text(src_bytes, val_node),
+                                            tainted_names,
+                                        )
+                                    else:
+                                        has_taint = rhs_tainted
+                            else:
+                                has_taint = rhs_tainted
+
                             if not has_taint and default_node is not None:
                                 def_text = ts_node_text(src_bytes, default_node)
                                 has_taint = self._js_has_external_input(
@@ -783,12 +834,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
                     if is_destruct:
                         expanded = self._expand_fallback_destructuring(loop_var, [])
-                        for local_name, _, _, _, default_val in expanded:
+                        for local_name, dest_path, _, _, default_val in expanded:
                             if not local_name or not re.fullmatch(
                                 r"[A-Za-z_$][\w$]*", local_name
                             ):
                                 continue
-                            has_taint = rhs_tainted
+
+                            has_taint = False
+                            if dest_path:
+                                val_text = (
+                                    self._get_fallback_nested_property_value_text(
+                                        loop_src, dest_path
+                                    )
+                                )
+                                if val_text is not None:
+                                    has_taint = self._js_has_external_input(
+                                        val_text, current_tainted
+                                    )
+                                else:
+                                    has_taint = rhs_tainted
+                            else:
+                                has_taint = rhs_tainted
+
                             if not has_taint and default_val is not None:
                                 has_taint = self._js_has_external_input(
                                     default_val, current_tainted
@@ -833,12 +900,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             expanded = self._expand_fallback_destructuring(
                                 p_left_raw, []
                             )
-                            for local_name, _, _, _, default_val in expanded:
+                            for local_name, dest_path, _, _, default_val in expanded:
                                 if not local_name or not re.fullmatch(
                                     r"[A-Za-z_$][\w$]*", local_name
                                 ):
                                     continue
-                                has_taint = rhs_tainted
+
+                                has_taint = False
+                                if dest_path:
+                                    val_text = (
+                                        self._get_fallback_nested_property_value_text(
+                                            p_right_raw, dest_path
+                                        )
+                                    )
+                                    if val_text is not None:
+                                        has_taint = self._js_has_external_input(
+                                            val_text, current_tainted
+                                        )
+                                    else:
+                                        has_taint = rhs_tainted
+                                else:
+                                    has_taint = rhs_tainted
+
                                 if not has_taint and default_val is not None:
                                     has_taint = self._js_has_external_input(
                                         default_val, current_tainted
@@ -2614,32 +2697,93 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             elif isinstance(p, int):
                 if curr_type == "array":
                     flat_elements = []
+                    expect_element = True
                     for child in getattr(curr, "children", []):
                         c_type = getattr(child, "type", "")
-                        if c_type in {",", "[", "]"}:
+                        if c_type in {"[", "]"}:
                             continue
+                        if c_type == ",":
+                            if expect_element:
+                                flat_elements.append(None)
+                            expect_element = True
+                            continue
+
                         if c_type == "spread_element":
                             argument = self._get_spread_argument(child)
                             if (
                                 argument is not None
                                 and getattr(argument, "type", "") == "array"
                             ):
-                                sub_elements = [
-                                    sc
-                                    for sc in getattr(argument, "children", [])
-                                    if getattr(sc, "type", "") not in {",", "[", "]"}
-                                ]
+                                sub_expect = True
+                                sub_elements = []
+                                for sc in getattr(argument, "children", []):
+                                    sc_type = getattr(sc, "type", "")
+                                    if sc_type in {"[", "]"}:
+                                        continue
+                                    if sc_type == ",":
+                                        if sub_expect:
+                                            sub_elements.append(None)
+                                        sub_expect = True
+                                        continue
+                                    sub_elements.append(sc)
+                                    sub_expect = False
                                 flat_elements.extend(sub_elements)
                             else:
                                 flat_elements.append(child)
                         else:
                             flat_elements.append(child)
+                        expect_element = False
 
                     if p < len(flat_elements):
                         curr = flat_elements[p]
                         if getattr(curr, "type", "") == "spread_element":
                             argument = self._get_spread_argument(curr)
                             curr = argument if argument is not None else curr
+                    else:
+                        return None
+                else:
+                    return None
+        return curr
+
+    def _get_fallback_nested_property_value_text(
+        self, text: str, path: List[Union[str, int]]
+    ) -> Optional[str]:
+        curr = text.strip()
+        for p in path:
+            if isinstance(p, str):
+                if curr.startswith("{") and curr.endswith("}"):
+                    inner = curr[1:-1]
+                    found = False
+                    for part in self._split_array_literal_elements(inner):
+                        part = part.strip()
+                        if not part or part.startswith("..."):
+                            continue
+                        if "=" in part:
+                            part = part.split("=", 1)[0].strip()
+                        pair_info = self._split_fallback_pair(part)
+                        if pair_info:
+                            key = self._normalize_static_property_key(pair_info[0])
+                            if key == p:
+                                curr = pair_info[1]
+                                found = True
+                                break
+                        else:
+                            if part == p:
+                                curr = part
+                                found = True
+                                break
+                    if not found:
+                        return None
+                else:
+                    return None
+            elif isinstance(p, int):
+                if curr.startswith("[") and curr.endswith("]"):
+                    inner = curr[1:-1]
+                    elements = self._split_array_literal_elements(inner)
+                    if p < len(elements):
+                        curr = elements[p].strip()
+                        if not curr:
+                            return None
                     else:
                         return None
                 else:
