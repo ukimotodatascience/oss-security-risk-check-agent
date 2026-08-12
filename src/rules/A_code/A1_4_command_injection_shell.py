@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 from src.models import RiskRecord, Severity
 from src.rules.A_code.A1_1_command_injection_common import (
     CATEGORY,
@@ -43,16 +43,37 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
         tainted_names: Set[str] = set()
+        active_local_taints: List[Tuple[str, int]] = []
+        current_brace_level = 0
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+
+            current_brace_level += stripped.count("{") - stripped.count("}")
+            if current_brace_level < 0:
+                current_brace_level = 0
+
+            expired_locals = [
+                param for param, lvl in active_local_taints if current_brace_level < lvl
+            ]
+            for param in expired_locals:
+                tainted_names.discard(param)
+
+            active_local_taints = [
+                (param, lvl)
+                for param, lvl in active_local_taints
+                if current_brace_level >= lvl
+            ]
+
             stmt_start_idx = line.find(stripped)
             if stmt_start_idx == -1:
                 stmt_start_idx = len(line) - len(line.lstrip())
 
-            self._track_shell_taint_from_text(stripped, tainted_names)
+            self._track_shell_taint_from_text(
+                stripped, tainted_names, active_local_taints, current_brace_level
+            )
             self._track_shell_case_allowlist_from_text(stripped, tainted_names)
             has_external = self._shell_expands_external_input(stripped, tainted_names)
             if not has_external:
@@ -234,6 +255,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
+        active_local_taints: List[Tuple[str, int]] = []
+        current_brace_level = 0
+        last_byte = 0
         interesting_types = {
             "command",
             "command_substitution",
@@ -250,13 +274,37 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             key=lambda n: (getattr(n, "start_byte", 0), getattr(n, "end_byte", 0)),
         )
         for node in nodes:
+            start_byte = getattr(node, "start_byte", 0)
+            if start_byte > last_byte:
+                between_text = src_bytes[last_byte:start_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                current_brace_level += between_text.count("{") - between_text.count("}")
+                if current_brace_level < 0:
+                    current_brace_level = 0
+                expired_locals = [
+                    param
+                    for param, lvl in active_local_taints
+                    if current_brace_level < lvl
+                ]
+                for param in expired_locals:
+                    tainted_names.discard(param)
+                active_local_taints = [
+                    (param, lvl)
+                    for param, lvl in active_local_taints
+                    if current_brace_level >= lvl
+                ]
+            last_byte = getattr(node, "end_byte", start_byte)
+
             text = ts_node_text(src_bytes, node).strip()
             if not text or text.startswith("#"):
                 continue
             start_point = getattr(node, "start_point", (0, 0))
             line = start_point[0] + 1
             col = start_point[1]
-            self._track_shell_taint_from_text(text, tainted_names)
+            self._track_shell_taint_from_text(
+                text, tainted_names, active_local_taints, current_brace_level
+            )
             self._track_shell_case_allowlist_from_text(text, tainted_names)
             byte_offset = getattr(node, "start_byte", 0)
             context_text = self._get_ts_pipeline_text(node, src_bytes)

@@ -13,10 +13,29 @@ class ShellSourceMixin:
                 return True
         return False
 
-    def _track_shell_taint_from_text(self, text: str, tainted_names: Set[str]) -> None:
+    def _track_shell_taint_from_text(
+        self,
+        text: str,
+        tainted_names: Set[str],
+        active_local_taints: Optional[list] = None,
+        current_brace_level: int = 0,
+    ) -> None:
         read_match = re.search(r"\bread\b(?:\s+-\w+)*\s+([A-Za-z_][A-Za-z0-9_]*)", text)
         if read_match:
             tainted_names.add(read_match.group(1))
+
+        # local, declare, typeset のパース
+        local_match = re.search(
+            r"^\s*(?:local|declare|typeset)(?:\s+-[a-zA-Z]+)*\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(.+))?",
+            text,
+        )
+        if local_match:
+            var_name = local_match.group(1)
+            rhs = local_match.group(2)
+            if rhs is None or self._shell_expands_external_input(rhs, tainted_names):
+                tainted_names.add(var_name)
+                if active_local_taints is not None:
+                    active_local_taints.append((var_name, current_brace_level))
 
         assign_match = re.search(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$", text)
         if assign_match:

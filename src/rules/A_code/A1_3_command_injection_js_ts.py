@@ -217,6 +217,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         parts.append("".join(current).strip())
         return parts
 
+    def _split_and_flatten_array_elements(self, text: str) -> List[str]:
+        result = []
+        for part in self._split_array_literal_elements(text):
+            part = part.strip()
+            if part.startswith("..."):
+                spread_arg = part[3:].strip()
+                if spread_arg.startswith("[") and spread_arg.endswith("]"):
+                    sub_inner = spread_arg[1:-1]
+                    result.extend(self._split_and_flatten_array_elements(sub_inner))
+                else:
+                    result.append(part)
+            else:
+                result.append(part)
+        return result
+
     def _iter_js_ts_files(self, target: Path) -> Iterable[Path]:
         """対象ディレクトリ配下の JavaScript / TypeScript ファイルを列挙する。"""
         for p in target.rglob("*"):
@@ -2968,7 +2983,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         elif pattern_str.startswith("[") and pattern_str.endswith("]"):
             inner = pattern_str[1:-1]
             idx = 0
-            for part in self._split_array_literal_elements(inner):
+            for part in self._split_and_flatten_array_elements(inner):
                 part = part.strip()
                 if not part:
                     idx += 1
@@ -3018,24 +3033,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if isinstance(p, slice):
                 if curr.startswith("[") and curr.endswith("]"):
                     inner = curr[1:-1]
-                    elements = self._split_array_literal_elements(inner)
-                    flat_elements = []
-                    for el in elements:
-                        el = el.strip()
-                        if el.startswith("..."):
-                            arg = el[3:].strip()
-                            if arg.startswith("[") and arg.endswith("]"):
-                                sub_inner = arg[1:-1]
-                                sub_elements = self._split_array_literal_elements(
-                                    sub_inner
-                                )
-                                flat_elements.extend(
-                                    [se.strip() for se in sub_elements]
-                                )
-                            else:
-                                flat_elements.append(el)
-                        else:
-                            flat_elements.append(el)
+                    flat_elements = self._split_and_flatten_array_elements(inner)
                     start = p.start if p.start is not None else 0
                     curr = [el.strip() for el in flat_elements[start:]]
                 else:
@@ -3073,25 +3071,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             elif isinstance(p, int):
                 if curr.startswith("[") and curr.endswith("]"):
                     inner = curr[1:-1]
-                    elements = self._split_array_literal_elements(inner)
-
-                    flat_elements = []
-                    for el in elements:
-                        el = el.strip()
-                        if el.startswith("..."):
-                            arg = el[3:].strip()
-                            if arg.startswith("[") and arg.endswith("]"):
-                                sub_inner = arg[1:-1]
-                                sub_elements = self._split_array_literal_elements(
-                                    sub_inner
-                                )
-                                flat_elements.extend(
-                                    [se.strip() for se in sub_elements]
-                                )
-                            else:
-                                flat_elements.append(el)
-                        else:
-                            flat_elements.append(el)
+                    flat_elements = self._split_and_flatten_array_elements(inner)
 
                     if p < len(flat_elements):
                         target = flat_elements[p]
