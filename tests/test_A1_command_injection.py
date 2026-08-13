@@ -1809,3 +1809,48 @@ def test_js_detects_dynamic_shelljs_default_import(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_dynamic_child_process_namespace_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'async function f(req) { const cp = await import("node:child_process"); cp.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_ts_fallback_detects_typed_child_process_binding(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.ts").write_text(
+        'const cp: typeof import("child_process") = require("child_process"); cp.exec(req.query.cmd);',
+        encoding="utf-8",
+    )
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_parenthesized_direct_child_process_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": '(require("child_process")).exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_resolves_child_process_alias_api_per_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function command(req) { const { exec: run } = require("child_process"); run(req.query.cmd); } function process(req) { const { spawn: run } = require("child_process"); run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 2
+    assert {record.severity for record in records} == {Severity.HIGH, Severity.MEDIUM}

@@ -64,6 +64,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             text = ts_node_text(src_bytes, node)
             if node_type in {"variable_declarator", "assignment_expression"}:
                 self._register_shelljs_imports(text, shelljs_sinks)
+                self._reset_child_process_local_bindings(text, child_process_sinks)
+                self._register_child_process_imports(text, child_process_sinks)
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
                 )
@@ -115,6 +117,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if callee_node is None:
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
+            callee = re.sub(
+                r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
+                r"\1",
+                callee,
+            )
             normalized_callee = re.sub(r"\s*(?:\?\.)\s*", ".", callee)
             normalized_callee = re.sub(r"\s*\.\s*", ".", normalized_callee)
             direct_shelljs_call = bool(
@@ -283,6 +290,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_shelljs_imports(statement, shelljs_sinks)
         for i, stripped in statements:
             code_text = self._mask_js_noncode_for_detection(stripped)
+            code_text = re.sub(
+                r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
+                r"\1",
+                code_text,
+            )
+            self._reset_child_process_local_bindings(stripped, child_process_sinks)
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
             self._register_embedded_shelljs_declarations(stripped, shelljs_sinks)
@@ -507,6 +520,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             re.search(
                 rf"\b(?:const|let|var)\s+{re.escape(name)}\b[^;=]*=\s*"
                 r"(?:require\s*\(\s*['\"](?:node:)?child_process['\"]|"
+                r"\(*\s*await\s+import\s*\(\s*['\"](?:node:)?child_process['\"]|"
                 r"[A-Za-z_$][\w$]*\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync|fork))",
                 text,
             )
@@ -1207,6 +1221,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 depth += 1
             elif char in ")}]":
                 depth = max(0, depth - 1)
+                if depth == 0 and re.match(
+                    r"\s*(?:async\s+)?function\b", masked[index + 1 :]
+                ):
+                    part = text[start : index + 1].strip()
+                    if part:
+                        parts.append((start_line + text[:start].count("\n"), part))
+                    start = index + 1
             elif char == ";" and depth == 0:
                 part = text[start : index + 1].strip()
                 if part:

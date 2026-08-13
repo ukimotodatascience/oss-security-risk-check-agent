@@ -111,6 +111,11 @@ class JsTsSinkMixin:
             sinks.add(f"{dynamic_import_match.group(1)}.exec")
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
+        text = re.sub(
+            r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
+            r"\1",
+            text,
+        )
         import_equals_match = re.search(
             r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
             r"['\"](?:node:)?child_process['\"]\s*\)",
@@ -176,7 +181,8 @@ class JsTsSinkMixin:
                     sinks.add(f"{name}.{name}")
 
         require_match = re.search(
-            r"\b(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+            r"(?:\b(?:const|let|var)\s*\{|^\s*\{)([^}]+)\}\s*=\s*"
+            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if require_match:
@@ -192,7 +198,8 @@ class JsTsSinkMixin:
                     sinks.add(f"{name}.{name}")
 
         direct_alias_match = re.search(
-            r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\."
             r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\b",
             text,
@@ -201,11 +208,23 @@ class JsTsSinkMixin:
             sinks.add(f"{direct_alias_match.group(1)}.{direct_alias_match.group(2)}")
 
         module_match = re.search(
-            r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)(?!\s*\.)",
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*require\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]\s*\)(?!\s*\.)",
             text,
         )
         if module_match:
             module_name = module_match.group(1)
+            sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
+        dynamic_import_match = re.search(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*\(*\s*await\s+import\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]\s*\)\s*\)*\s*;?",
+            text,
+        )
+        if dynamic_import_match:
+            module_name = dynamic_import_match.group(1)
             sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
 
         alias_destructuring = re.search(
@@ -222,6 +241,33 @@ class JsTsSinkMixin:
                 target = alias.strip() or source
                 if source in self._CHILD_PROCESS_NAMES:
                     sinks.add(f"{target}.{source}")
+
+    def _reset_child_process_local_bindings(self, text: str, sinks: Set[str]) -> None:
+        bindings = set()
+        destructuring = re.search(
+            r"(?:\b(?:const|let|var)\s*\{|^\s*\{)([^}]+)\}\s*=\s*require\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]\s*\)",
+            text,
+        )
+        if destructuring:
+            for entry in destructuring.group(1).split(","):
+                entry = entry.split("=", 1)[0].strip()
+                source, _, alias = entry.partition(":")
+                bindings.add(alias.strip() or source.strip())
+        simple_binding = re.search(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*(?:require\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]|\(*\s*await\s+import\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"])",
+            text,
+        )
+        if simple_binding:
+            bindings.add(simple_binding.group(1))
+        if bindings:
+            replaced_sinks = {
+                sink for sink in sinks if sink.rpartition(".")[0] in bindings
+            }
+            sinks.difference_update(replaced_sinks)
 
     def _is_child_process_alias_assignment(
         self, rhs_clean: str, sinks: Set[str]
