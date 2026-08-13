@@ -204,7 +204,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_block_comment = False
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
-            if not stripped or (stripped.startswith("//") and not in_template_literal):
+            if not stripped or (
+                stripped.startswith("//")
+                and not in_template_literal
+                and not in_block_comment
+            ):
                 continue
             complete_import = re.search(
                 r"\bfrom\s*['\"][^'\"]+['\"]\s*$|"
@@ -398,9 +402,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         scopes: List[Set[str]] = [set()]
         for current_line in lines[:line_number]:
             stripped = current_line.strip()
-            for _ in range(stripped.count("}")):
-                if len(scopes) > 1:
-                    scopes.pop()
+            if stripped.startswith("}") and len(scopes) > 1:
+                scopes.pop()
             opens_block = bool(
                 re.search(
                     r"(?:\bfunction\b|=>|\b(?:if|for|while|switch|try|catch|else|do)\b)[^{]*\{",
@@ -485,14 +488,62 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _register_embedded_shelljs_declarations(
         self, text: str, shelljs_sinks: Set[str]
     ) -> None:
+        searchable_text = self._mask_js_strings_and_comments(text)
         for match in re.finditer(
             r"(?:const|let|var)\s+(?:[A-Za-z_$][\w$]*|\{[^}]+\})\s*=\s*"
             r"require\(['\"]shelljs['\"]\)(?:\.exec)?\s*;?",
             text,
         ):
+            if searchable_text[match.start()].isspace():
+                continue
             if not re.search(r"\bfunction\b[^{}]*\{", text[: match.start()]):
                 continue
-            self._register_shelljs_imports(match.group(0), shelljs_sinks)
+            self._register_shelljs_imports(
+                text[match.start() : match.end()], shelljs_sinks
+            )
+
+    @staticmethod
+    def _mask_js_strings_and_comments(text: str) -> str:
+        masked = list(text)
+        quote = None
+        in_block_comment = False
+        escaped = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            next_char = text[index + 1] if index + 1 < len(text) else ""
+            if in_block_comment:
+                masked[index] = " "
+                if char == "*" and next_char == "/":
+                    masked[index + 1] = " "
+                    in_block_comment = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if quote is not None:
+                masked[index] = " "
+                if char == quote and not escaped:
+                    quote = None
+                escaped = char == "\\" and not escaped
+                if char != "\\":
+                    escaped = False
+                index += 1
+                continue
+            if char == "/" and next_char == "/":
+                for position in range(index, len(text)):
+                    masked[position] = " "
+                break
+            if char == "/" and next_char == "*":
+                masked[index] = masked[index + 1] = " "
+                in_block_comment = True
+                index += 2
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                masked[index] = " "
+            index += 1
+        return "".join(masked)
 
     def _shelljs_call_line(
         self, lines: List[str], start_line: int, shelljs_sinks: Set[str]

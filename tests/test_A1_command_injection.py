@@ -499,6 +499,63 @@ exec(req.query.cmd);
     assert records[0].message == "External input reaches shell command execution helper"
 
 
+def test_js_ignores_function_string_with_shelljs_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function handler(req) {
+                    const example = "const { exec: run } = require('shelljs')";
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_keeps_parameter_scope_across_object_literal(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                function handler(run, req) {
+                    const options = { safe: true };
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_updates_block_comment_state_on_slash_comment_line(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """/* comment
+// */
+const { spawn } = require("child_process");
+const { exec } = require("shelljs");
+exec(req.query.cmd);
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,
