@@ -132,6 +132,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             is_known_sink = (
                 normalized_callee in child_process_sinks
                 or callee_tail in child_process_sinks
+                or direct_child_process_call is not None
             )
             if not is_known_sink and (not child_process_sinks):
                 is_known_sink = (
@@ -333,7 +334,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
-            if any(
+            if re.search(
+                r"require\(['\"](?:node:)?child_process['\"]\)\??\.spawn(?:Sync)?\s*\(",
+                stripped,
+            ) or any(
                 (
                     self._contains_js_sink_call(stripped, name)
                     for name in spawn_names
@@ -714,6 +718,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             if masked[match.start()] != " ":
                 masked[match.start() : match.end()] = text[match.start() : match.end()]
+        template_start = None
+        escaped = False
+        for index, char in enumerate(text):
+            if char == "`" and not escaped:
+                if template_start is None:
+                    template_start = index
+                else:
+                    for interpolation in re.finditer(
+                        r"\$\{([^{}]*)\}", text[template_start : index + 1]
+                    ):
+                        expression_start = template_start + interpolation.start(1)
+                        expression_end = template_start + interpolation.end(1)
+                        masked[expression_start:expression_end] = text[
+                            expression_start:expression_end
+                        ]
+                    template_start = None
+            escaped = char == "\\" and not escaped
+            if char != "\\":
+                escaped = False
         return "".join(masked)
 
     @staticmethod

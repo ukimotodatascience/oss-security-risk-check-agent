@@ -841,6 +841,47 @@ def test_js_ignores_shelljs_calls_in_noncode_text(tmp_path, example):
     assert records == []
 
 
+@pytest.mark.parametrize("disable_tree_sitter", [False, True])
+def test_js_detects_direct_child_process_spawn(
+    tmp_path, monkeypatch, disable_tree_sitter
+):
+    detector = JsTsCommandInjectionDetector()
+    if disable_tree_sitter:
+        monkeypatch.setattr(
+            detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+        )
+    (tmp_path / "app.js").write_text(
+        'require("child_process").spawn(req.query.cmd, [], { shell: true });',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "execa.command(`echo ${req.query.cmd}`);",
+        'require("shelljs").exec(`echo ${req.query.cmd}`);',
+    ],
+)
+def test_js_fallback_preserves_taint_in_template_interpolation(
+    tmp_path, monkeypatch, call
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(call, encoding="utf-8")
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,
