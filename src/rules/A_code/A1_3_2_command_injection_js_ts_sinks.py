@@ -76,7 +76,7 @@ class JsTsSinkMixin:
         )
         if require_match:
             for name in require_match.group(1).split(","):
-                name = name.strip()
+                name = name.split("=", 1)[0].strip()
                 alias_match = re.match(r"exec\s*:\s*([A-Za-z_$][\w$]*)", name)
                 if name == "exec" or alias_match:
                     sinks.add(alias_match.group(1) if alias_match else name)

@@ -103,12 +103,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if callee_node is None:
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
+            normalized_callee = callee.replace("?.", ".")
             call_text = text
             line = getattr(node, "start_point", (0, 0))[0] + 1
             has_external = self._js_has_external_input(call_text, tainted_names)
             if not has_external:
                 continue
-            if callee in shelljs_sinks:
+            if (
+                normalized_callee in shelljs_sinks
+                and not self._is_shadowed_shelljs_sink(
+                    node, normalized_callee, src_bytes
+                )
+            ):
                 records.append(
                     RiskRecord(
                         rule_id=self.rule_id,
@@ -193,6 +199,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         buffer = ""
         start_line = 1
         in_template_literal = False
+        in_block_comment = False
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("//"):
@@ -215,8 +222,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not buffer:
                 start_line = i
             buffer = f"{buffer} {stripped}".strip()
-            if len(re.findall(r"(?<!\\)`", line)) % 2:
-                in_template_literal = not in_template_literal
+            in_template_literal, in_block_comment = self._scan_js_lexical_state(
+                line, in_template_literal, in_block_comment
+            )
             if not in_template_literal and stripped.endswith((";", "}", ")")):
                 statements.append((start_line, buffer))
                 buffer = ""
@@ -256,7 +264,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         )
                     )
                 continue
-            if self._is_known_third_party_shell_sink(stripped, shelljs_sinks):
+            if self._is_known_third_party_shell_sink(
+                stripped, shelljs_sinks
+            ) and not self._line_has_shadowed_shelljs_call(
+                lines, i, stripped, shelljs_sinks
+            ):
                 if self._js_has_external_input(stripped, tainted_names):
                     records.append(
                         RiskRecord(
@@ -343,10 +355,128 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             re.search(r"\bshelljs\.exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
             or any(
-                re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", text)
+                JsTsCommandInjectionDetector._contains_unshadowed_shelljs_call(
+                    text, name
+                )
                 for name in shelljs_sinks
             )
         )
+
+    @staticmethod
+    def _contains_unshadowed_shelljs_call(text: str, name: str) -> bool:
+        sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
+        call_match = re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text)
+        if call_match is None or "." in name:
+            return call_match is not None
+        prefix = text[: call_match.start()]
+        return not re.search(
+            rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b", prefix
+        )
+
+    @staticmethod
+    def _line_has_shadowed_shelljs_call(
+        lines: List[str], line_number: int, text: str, shelljs_sinks: Set[str]
+    ) -> bool:
+        bare_sinks = {name for name in shelljs_sinks if "." not in name}
+        called_sinks = {
+            name
+            for name in bare_sinks
+            if re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", text)
+        }
+        if not called_sinks:
+            return False
+        scopes: List[Set[str]] = [set()]
+        for current_line in lines[:line_number]:
+            stripped = current_line.strip()
+            for _ in range(stripped.count("}")):
+                if len(scopes) > 1:
+                    scopes.pop()
+            opens_block = bool(
+                re.search(
+                    r"(?:\bfunction\b|=>|\b(?:if|for|while|switch|try|catch|else|do)\b)[^{]*\{",
+                    stripped,
+                )
+                or stripped == "{"
+            )
+            if opens_block:
+                scopes.append(set())
+            for name in called_sinks:
+                if re.search(
+                    rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b",
+                    stripped,
+                ):
+                    scopes[-1].add(name)
+        return any(called_sinks & scope for scope in scopes[1:])
+
+    @staticmethod
+    def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
+        if "." in callee:
+            return False
+        scope = getattr(node, "parent", None)
+        while scope is not None and getattr(scope, "type", "") not in {
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+        }:
+            scope = getattr(scope, "parent", None)
+        if scope is None:
+            return False
+        prefix = src_bytes[scope.start_byte : node.start_byte].decode(
+            "utf-8", errors="ignore"
+        )
+        return bool(
+            re.search(
+                rf"\b(?:const|let|var|function|class)\s+{re.escape(callee)}\b",
+                prefix,
+            )
+        )
+
+    @staticmethod
+    def _scan_js_lexical_state(
+        line: str, in_template: bool, in_block_comment: bool
+    ) -> Tuple[bool, bool]:
+        quote = None
+        escaped = False
+        index = 0
+        while index < len(line):
+            char = line[index]
+            next_char = line[index + 1] if index + 1 < len(line) else ""
+            if in_block_comment:
+                if char == "*" and next_char == "/":
+                    in_block_comment = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if in_template:
+                if char == "`" and not escaped:
+                    in_template = False
+                escaped = char == "\\" and not escaped
+                if char != "\\":
+                    escaped = False
+                index += 1
+                continue
+            if quote is not None:
+                if char == quote and not escaped:
+                    quote = None
+                escaped = char == "\\" and not escaped
+                if char != "\\":
+                    escaped = False
+                index += 1
+                continue
+            if char == "/" and next_char == "/":
+                break
+            if char == "/" and next_char == "*":
+                in_block_comment = True
+                index += 2
+                continue
+            if char in {"'", '"'}:
+                quote = char
+            elif char == "`":
+                in_template = True
+            index += 1
+        return in_template, in_block_comment
 
     def evaluate(self, target: Path) -> List[RiskRecord]:
         records: List[RiskRecord] = []
