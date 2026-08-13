@@ -228,7 +228,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 buffer = ""
             if not buffer:
                 start_line = i
-            buffer = f"{buffer} {stripped}".strip()
+            buffer = f"{buffer}\n{stripped}".strip()
             in_template_literal, in_block_comment = self._scan_js_lexical_state(
                 line, in_template_literal, in_block_comment
             )
@@ -419,6 +419,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>",
                         stripped,
                     )
+                if parameters_match is None:
+                    parameters_match = re.search(r"\bcatch\s*\(([^)]*)\)", stripped)
                 if parameters_match:
                     parameter_text = parameters_match.group(
                         1
@@ -448,6 +450,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             "function_expression",
             "arrow_function",
             "method_definition",
+            "catch_clause",
         }:
             scope = getattr(scope, "parent", None)
         if scope is None:
@@ -467,6 +470,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
         parameters_match = re.search(r"^[^{]*\(([^)]*)\)", scope_header)
         parameter_text = parameters_match.group(1) if parameters_match else None
+        if getattr(scope, "type", "") == "catch_clause":
+            catch_match = re.search(r"\bcatch\s*\(([^)]*)\)", scope_header)
+            if catch_match:
+                parameter_text = catch_match.group(1)
         if getattr(scope, "type", "") == "arrow_function":
             arrow_match = re.search(
                 r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>", scope_header
@@ -531,9 +538,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 index += 1
                 continue
             if char == "/" and next_char == "/":
-                for position in range(index, len(text)):
+                line_end = text.find("\n", index)
+                if line_end == -1:
+                    line_end = len(text)
+                for position in range(index, line_end):
                     masked[position] = " "
-                break
+                index = line_end
+                continue
             if char == "/" and next_char == "*":
                 masked[index] = masked[index + 1] = " "
                 in_block_comment = True
