@@ -1767,3 +1767,45 @@ def test_js_fallback_detects_reviewed_child_process_bindings(
     records = detector.evaluate(tmp_path)
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_does_not_taint_constant_shelljs_call_from_sibling_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function handler(req) { audit(req.query.cmd); sh.exec("uptime"); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_updates_shell_option_after_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const { spawn } = require("child_process"); let opts = { shell: true }; opts = { shell: false }; spawn(req.query.cmd, [], opts);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_jsx_does_not_detect_shelljs_call_in_text(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.jsx": 'import { exec as run } from "shelljs"; const Demo = () => <code>run(req.query.cmd)</code>;'
+        },
+    )
+    assert records == []
+
+
+def test_js_detects_dynamic_shelljs_default_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'async function handler(req) { const sh = (await import("shelljs")).default; sh.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH

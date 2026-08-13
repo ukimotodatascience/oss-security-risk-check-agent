@@ -63,6 +63,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
             if node_type in {"variable_declarator", "assignment_expression"}:
+                self._register_shelljs_imports(text, shelljs_sinks)
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
                 )
@@ -301,8 +302,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         child_process_sinks.add(f"{var_name}.{api}")
                 if self._js_options_enable_shell(rhs_clean):
                     shell_true_option_names.add(var_name)
+                else:
+                    shell_true_option_names.discard(var_name)
                 if self._js_has_external_input(rhs, tainted_names):
                     tainted_names.add(var_name)
+            assignment = re.match(
+                r"\s*([A-Za-z_$][\w$]*)\s*(?<![=!<>])=(?!=|>)\s*(.+)$",
+                stripped,
+            )
+            if assignment:
+                option_name, option_rhs = assignment.groups()
+                if self._js_options_enable_shell(option_rhs):
+                    shell_true_option_names.add(option_name)
+                else:
+                    shell_true_option_names.discard(option_name)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", code_text):
                 if self._js_has_external_input(code_text, tainted_names):
                     records.append(
@@ -325,7 +338,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 code_text,
                 shelljs_sinks,
             ):
-                if self._js_has_external_input(code_text, tainted_names):
+                shell_call_arguments = self._shelljs_call_arguments(
+                    code_text, shelljs_sinks
+                )
+                if shell_call_arguments is not None and self._js_has_external_input(
+                    shell_call_arguments, tainted_names
+                ):
                     records.append(
                         RiskRecord(
                             rule_id=self.rule_id,
@@ -535,6 +553,44 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
 
     @staticmethod
+    def _shelljs_call_arguments(text: str, shelljs_sinks: Set[str]) -> Optional[str]:
+        patterns = [
+            r"\bshelljs\s*(?:\.|\?\.)\s*exec\s*\(",
+            r"\brequire\s*\(\s*['\"]shelljs['\"]\s*\)\s*(?:\.|\?\.)\s*exec\s*\(",
+            r"\bexeca\s*(?:\.|\?\.)\s*command(?:Sync)?\s*\(",
+        ]
+        for name in shelljs_sinks:
+            sink_pattern = re.escape(name).replace(r"\.", r"\s*(?:\.|\?\.)\s*")
+            patterns.append(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(")
+        matches = [
+            match
+            for pattern in patterns
+            for match in re.finditer(pattern, text)
+            if not re.search(r"\bfunction\s*$", text[: match.start()])
+        ]
+        if not matches:
+            return None
+        argument_ranges = []
+        seen_offsets = set()
+        for call_match in sorted(matches, key=lambda match: match.start()):
+            opening_paren = call_match.end() - 1
+            if opening_paren in seen_offsets:
+                continue
+            seen_offsets.add(opening_paren)
+            depth = 1
+            for index in range(opening_paren + 1, len(text)):
+                if text[index] == "(":
+                    depth += 1
+                elif text[index] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        argument_ranges.append(text[opening_paren + 1 : index])
+                        break
+            else:
+                argument_ranges.append(text[opening_paren + 1 :])
+        return "\n".join(argument_ranges)
+
+    @staticmethod
     def _contains_unshadowed_shelljs_call(text: str, name: str) -> bool:
         sink_pattern = re.escape(name).replace(r"\.", r"\s*(?:\.|\?\.)\s*")
         call_match = re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text)
@@ -543,9 +599,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         binding_name = name.split(".", 1)[0]
         prefix = text[: call_match.start()]
         prefix = JsTsCommandInjectionDetector._remove_completed_inner_blocks(prefix)
-        return not re.search(
+        has_local_declaration = re.search(
             rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
             prefix,
+        )
+        return not has_local_declaration or (
+            JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
+                prefix, binding_name
+            )
         )
 
     @staticmethod
@@ -891,8 +952,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     ) -> None:
         searchable_text = self._mask_js_strings_and_comments(text)
         for match in re.finditer(
-            r"(?:const|let|var)\s+(?:[A-Za-z_$][\w$]*|\{[^}]+\})\s*=\s*"
-            r"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?\s*;?",
+            r"(?:const|let|var)\s+(?:[A-Za-z_$][\w$]*|\{[^}]+\})\s*=\s*(?:"
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?|"
+            r"\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?:\s*\.\s*default)?)\s*;?",
             text,
         ):
             if searchable_text[match.start()].isspace():
@@ -1088,8 +1151,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _is_shelljs_declaration_binding(text: str, name: str) -> bool:
         for match in re.finditer(
             r"\b(?:const|let|var)\s+(.+?)\s*=\s*"
-            r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
-            r"(?:\.exec)?(?:\s+(?:as|satisfies)\s+[^;]+)?",
+            r"(?:\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?:\.exec)?(?:\s+(?:as|satisfies)\s+[^;]+)?|"
+            r"\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?:\s*\.\s*default)?)",
             text,
             re.DOTALL,
         ):
@@ -1155,8 +1220,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @classmethod
     def _mask_js_noncode_for_detection(cls, text: str) -> str:
         masked = list(cls._mask_js_strings_and_comments(text))
+        for element in re.finditer(
+            r"<([A-Za-z][\w:.-]*)\b[^>]*>([^<{}]*)</\1\s*>", text
+        ):
+            content_start, content_end = element.span(2)
+            masked[content_start:content_end] = " " * (content_end - content_start)
         for match in re.finditer(
-            r"require\s*\(\s*['\"](?:shelljs|(?:node:)?child_process)['\"]\s*\)",
+            r"(?:require|import)\s*\(\s*['\"](?:shelljs|(?:node:)?child_process)['\"]\s*\)",
             text,
         ):
             if masked[match.start()] != " ":

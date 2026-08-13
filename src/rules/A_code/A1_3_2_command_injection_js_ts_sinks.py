@@ -101,6 +101,15 @@ class JsTsSinkMixin:
                 if name == "exec" or alias_match:
                     sinks.add(alias_match.group(1) if alias_match else name)
 
+        dynamic_import_match = re.search(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)\s*=\s*"
+            r"\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?:\s*\.\s*default)?\s*;?\s*$",
+            text,
+        )
+        if dynamic_import_match:
+            sinks.add(f"{dynamic_import_match.group(1)}.exec")
+
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
         import_equals_match = re.search(
             r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
