@@ -55,11 +55,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         shelljs_sinks: Set[str] = set()
         nodes = list(iter_ts_nodes(root))
         for node in getattr(root, "named_children", []):
-            if getattr(node, "type", "") in {
-                "import_statement",
-                "lexical_declaration",
-                "variable_declaration",
-            }:
+            if getattr(node, "type", "") == "import_statement":
                 text = ts_node_text(src_bytes, node)
                 self._register_child_process_imports(text, child_process_sinks)
                 self._register_shelljs_imports(text, shelljs_sinks)
@@ -317,7 +313,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             exec_names = self._child_process_call_names(
                 child_process_sinks, {"exec", "execSync"}
-            ) or {"exec", "execSync"}
+            )
+            if not child_process_sinks:
+                exec_names = {"exec", "execSync"}
             if re.search(
                 r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.exec(?:Sync)?\s*\(",
                 code_text,
@@ -339,7 +337,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             spawn_names = self._child_process_call_names(
                 child_process_sinks, {"spawn", "spawnSync"}
-            ) or {"spawn", "spawnSync"}
+            )
+            if not child_process_sinks:
+                spawn_names = {"spawn", "spawnSync"}
             if re.search(
                 r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.spawn(?:Sync)?\s*\(",
                 code_text,
@@ -451,6 +451,31 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 called_bindings.add(name.split(".", 1)[0])
         if not called_bindings:
             return False
+        full_source = "\n".join(lines)
+        line_offset = sum(len(line) + 1 for line in lines[: line_number - 1])
+        source_tail = full_source[line_offset:]
+        call_offsets = []
+        for name in shelljs_sinks:
+            sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
+            if match := re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", source_tail):
+                call_offsets.append(line_offset + match.start())
+        call_offset = min(call_offsets, default=line_offset)
+        brace_depth = 0
+        for char in JsTsCommandInjectionDetector._mask_js_noncode_for_detection(
+            full_source[:call_offset]
+        ):
+            if char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth = max(0, brace_depth - 1)
+        if brace_depth == 0 and any(
+            re.search(
+                rf"\b(?:const|let)\s+{re.escape(name)}\b",
+                full_source[call_offset:],
+            )
+            for name in called_bindings
+        ):
+            return True
         statement_parameter_text = (
             JsTsCommandInjectionDetector._function_parameter_text(text)
         )
@@ -897,6 +922,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 .rstrip("?")
                 .strip()
             )
+            parameter = re.sub(
+                r"^(?:(?:public|private|protected|readonly|override)\s+)+",
+                "",
+                parameter,
+            )
             if re.fullmatch(r"[A-Za-z_$][\w$]*", parameter):
                 bindings.add(parameter)
         return bindings
@@ -1033,6 +1063,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             elif char in {"'", '"'}:
                 quote = char
+            elif char == "/":
+                prefix = text[start:index].rstrip()
+                if JsTsCommandInjectionDetector._starts_regex_literal(prefix):
+                    index += 1
+                    regex_escaped = False
+                    in_character_class = False
+                    while index < len(text):
+                        regex_char = text[index]
+                        if regex_char == "[" and not regex_escaped:
+                            in_character_class = True
+                        elif regex_char == "]" and not regex_escaped:
+                            in_character_class = False
+                        elif (
+                            regex_char == "/"
+                            and not regex_escaped
+                            and not in_character_class
+                        ):
+                            break
+                        regex_escaped = regex_char == "\\" and not regex_escaped
+                        if regex_char != "\\":
+                            regex_escaped = False
+                        index += 1
             elif char == "{":
                 depth += 1
             elif char == "}":

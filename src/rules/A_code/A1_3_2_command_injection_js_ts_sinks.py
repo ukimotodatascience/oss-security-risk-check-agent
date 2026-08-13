@@ -55,7 +55,8 @@ class JsTsSinkMixin:
                         sinks.add(alias_match.group(1) if alias_match else name)
 
         direct_exec_match = re.fullmatch(
-            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"require\s*\(\s*['\"]shelljs['\"]\s*\)\.exec\s*;?\s*",
             text,
         )
@@ -63,7 +64,8 @@ class JsTsSinkMixin:
             sinks.add(direct_exec_match.group(1))
 
         module_match = re.fullmatch(
-            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*;?\s*",
             text,
         )
