@@ -98,10 +98,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             callee = ts_node_text(src_bytes, callee_node).strip()
             normalized_callee = callee.replace("?.", ".")
             direct_shelljs_call = bool(
-                re.fullmatch(r"require\(['\"]shelljs['\"]\)\.exec", normalized_callee)
+                re.fullmatch(
+                    r"require\s*\(\s*['\"]shelljs['\"]\s*\)\.exec",
+                    normalized_callee,
+                )
             )
             direct_child_process_call = re.fullmatch(
-                r"require\(['\"](?:node:)?child_process['\"]\)\.([A-Za-z_$][\w$]*)",
+                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\.([A-Za-z_$][\w$]*)",
                 normalized_callee,
             )
             if direct_child_process_call:
@@ -309,7 +312,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             exec_names = child_process_sinks or {"exec", "execSync"}
             if re.search(
-                r"require\(['\"](?:node:)?child_process['\"]\)\.exec(?:Sync)?\s*\(",
+                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.exec(?:Sync)?\s*\(",
                 stripped,
             ) or any(
                 (
@@ -389,7 +392,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _is_known_third_party_shell_sink(text: str, shelljs_sinks: Set[str]) -> bool:
         return bool(
             re.search(r"\bshelljs\.exec\s*\(", text)
-            or re.search(r"\brequire\(['\"]shelljs['\"]\)\??\.exec\s*\(", text)
+            or re.search(
+                r"\brequire\s*\(\s*['\"]shelljs['\"]\s*\)\??\.exec\s*\(",
+                text,
+            )
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
             or any(
                 JsTsCommandInjectionDetector._contains_unshadowed_shelljs_call(
@@ -424,8 +430,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 called_bindings.add(name.split(".", 1)[0])
         if not called_bindings:
             return False
+        visible_call_scope = (
+            JsTsCommandInjectionDetector._remove_completed_inner_blocks(text)
+        )
         if any(
-            re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", text)
+            re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", visible_call_scope)
             for name in called_bindings
         ):
             return True
@@ -496,9 +505,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         prefix = src_bytes[scope.start_byte : node.start_byte].decode(
             "utf-8", errors="ignore"
         )
-        scope_text = src_bytes[scope.start_byte : scope.end_byte].decode(
-            "utf-8", errors="ignore"
-        )
         shelljs_declaration = re.search(
             rf"\b(?:const|let|var)\s+{re.escape(binding_name)}\s*=\s*"
             rf"require\(['\"]shelljs['\"]\)(?:\.exec)?\b",
@@ -528,7 +534,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
         if binding_name in parameters:
             return True
-        if re.search(rf"\bfunction\s+{re.escape(binding_name)}\s*\(", scope_text):
+        scope_body = ts_child_by_field_name(scope, "body")
+        has_hoisted_binding = (
+            any(
+                getattr(candidate, "type", "") == "function_declaration"
+                and getattr(candidate, "parent", None) is scope_body
+                and re.search(
+                    rf"\bfunction\s+{re.escape(binding_name)}\s*\(",
+                    ts_node_text(src_bytes, candidate),
+                )
+                for candidate in iter_ts_nodes(scope_body)
+            )
+            if scope_body is not None
+            else False
+        )
+        if has_hoisted_binding:
             return True
         prefix = JsTsCommandInjectionDetector._remove_completed_inner_blocks(prefix)
         return bool(
@@ -714,40 +734,60 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _mask_js_noncode_for_detection(cls, text: str) -> str:
         masked = list(cls._mask_js_strings_and_comments(text))
         for match in re.finditer(
-            r"require\(['\"](?:shelljs|(?:node:)?child_process)['\"]\)", text
+            r"require\s*\(\s*['\"](?:shelljs|(?:node:)?child_process)['\"]\s*\)",
+            text,
         ):
             if masked[match.start()] != " ":
                 masked[match.start() : match.end()] = text[match.start() : match.end()]
         template_start = None
         escaped = False
-        for index, char in enumerate(text):
+        index = 0
+        while index < len(text):
+            char = text[index]
             if char == "`" and not escaped:
                 if template_start is None:
                     template_start = index
                 else:
-                    for interpolation in re.finditer(
-                        r"\$\{([^{}]*)\}", text[template_start : index + 1]
-                    ):
-                        expression_start = template_start + interpolation.start(1)
-                        expression_end = template_start + interpolation.end(1)
-                        masked[expression_start:expression_end] = text[
-                            expression_start:expression_end
-                        ]
                     template_start = None
+            elif template_start is not None and text.startswith("${", index):
+                expression_start = index + 2
+                cursor = expression_start
+                depth = 1
+                while cursor < len(text) and depth:
+                    if text[cursor] == "{":
+                        depth += 1
+                    elif text[cursor] == "}":
+                        depth -= 1
+                    cursor += 1
+                if depth == 0:
+                    expression_end = cursor - 1
+                    masked[expression_start:expression_end] = text[
+                        expression_start:expression_end
+                    ]
+                    index = cursor - 1
             escaped = char == "\\" and not escaped
             if char != "\\":
                 escaped = False
+            index += 1
         return "".join(masked)
 
     @staticmethod
     def _remove_completed_inner_blocks(text: str) -> str:
-        block_pattern = re.compile(
-            r"\b(?:if|for|while|switch|try|catch|else|do)\b[^{}]*\{[^{}]*\}"
+        control_pattern = re.compile(
+            r"\b(?:if|for|while|switch|try|catch|else|do)\b[^{}]*\{"
         )
-        previous = None
-        while previous != text:
-            previous = text
-            text = block_pattern.sub("", text)
+        while match := control_pattern.search(text):
+            depth = 1
+            cursor = match.end()
+            while cursor < len(text) and depth:
+                if text[cursor] == "{":
+                    depth += 1
+                elif text[cursor] == "}":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                break
+            text = text[: match.start()] + text[cursor:]
         return text
 
     @staticmethod

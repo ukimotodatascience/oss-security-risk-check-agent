@@ -882,6 +882,64 @@ def test_js_fallback_preserves_taint_in_template_interpolation(
     assert len(records) == 1
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        'require ("shelljs").exec(req.query.cmd);',
+        'require( "shelljs" ).exec(req.query.cmd);',
+    ],
+)
+def test_js_detects_direct_shelljs_require_with_whitespace(tmp_path, call):
+    records = scan_files(tmp_path, {"app.js": call})
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize("api", ["exec", "execSync"])
+def test_js_fallback_detects_optional_direct_child_process_exec(
+    tmp_path, monkeypatch, api
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        f'require("child_process")?.{api}(req.query.cmd);', encoding="utf-8"
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_detects_shelljs_alias_after_inner_function_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function handler(req) { if (false) { function run() {} } run(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_preserves_nested_template_interpolation_taint(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require("shelljs").exec(`echo ${{ value: req.query.cmd }.value}`);',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,
