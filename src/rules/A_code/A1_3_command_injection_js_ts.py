@@ -255,7 +255,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for _, statement in statements:
             self._register_child_process_imports(statement, child_process_sinks)
             self._register_shelljs_imports(statement, shelljs_sinks)
-            self._register_embedded_shelljs_declarations(statement, shelljs_sinks)
         for i, stripped in statements:
             code_text = self._mask_js_noncode_for_detection(stripped)
             self._register_child_process_imports(stripped, child_process_sinks)
@@ -338,7 +337,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if re.search(
-                r"require\(['\"](?:node:)?child_process['\"]\)\??\.spawn(?:Sync)?\s*\(",
+                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.spawn(?:Sync)?\s*\(",
                 stripped,
             ) or any(
                 (
@@ -452,7 +451,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for current_line in lines[:line_number]:
             stripped = current_line.strip()
             visible_text = JsTsCommandInjectionDetector._remove_completed_inner_blocks(
-                stripped
+                JsTsCommandInjectionDetector._mask_js_noncode_for_detection(stripped)
             )
             if stripped.startswith("}") and len(scopes) > 1:
                 scopes.pop()

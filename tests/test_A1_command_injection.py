@@ -1011,6 +1011,61 @@ def test_js_detects_child_process_binding_with_require_whitespace(tmp_path):
     assert len(records) == 1
 
 
+@pytest.mark.parametrize("binding", ["exec", "exec: run"])
+def test_js_detects_child_process_namespace_destructuring(tmp_path, binding):
+    call = "run" if ":" in binding else "exec"
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import * as cp from "node:child_process"; const {{ {binding} }} = cp; {call}(req.query.cmd);'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_does_not_pre_register_later_local_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { run } from "./helpers.js"; run(req.query.cmd); function setup() { const run = require("shelljs").exec; }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_ignores_shadow_declaration_in_comment(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'import sh from "shelljs";\nfunction f(req) {\n// const sh = safe\nsh.exec(req.query.cmd);\n}',
+        encoding="utf-8",
+    )
+
+    assert len(detector.evaluate(tmp_path)) == 1
+
+
+def test_js_fallback_detects_direct_spawn_with_require_whitespace(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require ( "child_process" ).spawn(req.query.cmd, [], { shell: true });',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,

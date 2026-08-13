@@ -150,6 +150,18 @@ class JsTsSinkMixin:
             sinks.add(module_name)
             sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
 
+        alias_destructuring = re.search(
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*([A-Za-z_$][\w$]*)",
+            text,
+        )
+        if alias_destructuring and alias_destructuring.group(2) in sinks:
+            for entry in alias_destructuring.group(1).split(","):
+                source, _, alias = entry.strip().partition(":")
+                source = source.strip()
+                target = alias.strip() or source
+                if source in self._CHILD_PROCESS_NAMES:
+                    sinks.add(target)
+
     def _is_child_process_alias_assignment(
         self, rhs_clean: str, sinks: Set[str]
     ) -> bool:
