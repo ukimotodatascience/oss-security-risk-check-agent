@@ -97,6 +97,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
             normalized_callee = callee.replace("?.", ".")
+            direct_shelljs_call = bool(
+                re.fullmatch(r"require\(['\"]shelljs['\"]\)\.exec", normalized_callee)
+            )
             direct_child_process_call = re.fullmatch(
                 r"require\(['\"](?:node:)?child_process['\"]\)\.([A-Za-z_$][\w$]*)",
                 normalized_callee,
@@ -109,10 +112,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not has_external:
                 continue
             if (
-                normalized_callee in shelljs_sinks
-                and not self._is_shadowed_shelljs_sink(
-                    node, normalized_callee, src_bytes
-                )
+                normalized_callee in shelljs_sinks or direct_shelljs_call
+            ) and not self._is_shadowed_shelljs_sink(
+                node, normalized_callee, src_bytes
             ):
                 records.append(
                     RiskRecord(
@@ -377,6 +379,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _is_known_third_party_shell_sink(text: str, shelljs_sinks: Set[str]) -> bool:
         return bool(
             re.search(r"\bshelljs\.exec\s*\(", text)
+            or re.search(r"\brequire\(['\"]shelljs['\"]\)\??\.exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
             or any(
                 JsTsCommandInjectionDetector._contains_unshadowed_shelljs_call(
@@ -394,6 +397,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             return False
         binding_name = name.split(".", 1)[0]
         prefix = text[: call_match.start()]
+        prefix = JsTsCommandInjectionDetector._remove_completed_inner_blocks(prefix)
         return not re.search(
             rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
             prefix,
@@ -410,9 +414,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 called_bindings.add(name.split(".", 1)[0])
         if not called_bindings:
             return False
+        if any(
+            re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", text)
+            for name in called_bindings
+        ):
+            return True
         scopes: List[Set[str]] = [set()]
         for current_line in lines[:line_number]:
             stripped = current_line.strip()
+            visible_text = JsTsCommandInjectionDetector._remove_completed_inner_blocks(
+                stripped
+            )
             if stripped.startswith("}") and len(scopes) > 1:
                 scopes.pop()
             opens_block = bool(
@@ -441,19 +453,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     parameter_text = parameters_match.group(1)
                     if parameters_match.lastindex and parameters_match.lastindex > 1:
                         parameter_text = parameter_text or parameters_match.group(2)
-                    parameters = {
-                        JsTsCommandInjectionDetector._parameter_binding(parameter)
-                        for parameter in parameter_text.split(",")
-                    }
+                    parameters = JsTsCommandInjectionDetector._parameter_bindings(
+                        parameter_text
+                    )
                     scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
                 if re.search(
                     rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b",
-                    stripped,
+                    visible_text,
                 ) and not re.search(
                     rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*"
                     rf"require\(['\"]shelljs['\"]\)(?:\.exec)?",
-                    stripped,
+                    visible_text,
                 ):
                     scopes[-1].add(name)
         return any(called_bindings & scope for scope in scopes)
@@ -473,6 +484,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if scope is None:
             return False
         prefix = src_bytes[scope.start_byte : node.start_byte].decode(
+            "utf-8", errors="ignore"
+        )
+        scope_text = src_bytes[scope.start_byte : scope.end_byte].decode(
             "utf-8", errors="ignore"
         )
         shelljs_declaration = re.search(
@@ -498,15 +512,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if arrow_match:
                 parameter_text = arrow_match.group(1) or arrow_match.group(2)
         parameters = (
-            {
-                JsTsCommandInjectionDetector._parameter_binding(parameter)
-                for parameter in parameter_text.split(",")
-            }
+            JsTsCommandInjectionDetector._parameter_bindings(parameter_text)
             if parameter_text
             else set()
         )
         if binding_name in parameters:
             return True
+        if re.search(rf"\bfunction\s+{re.escape(binding_name)}\s*\(", scope_text):
+            return True
+        prefix = JsTsCommandInjectionDetector._remove_completed_inner_blocks(prefix)
         return bool(
             re.search(
                 rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
@@ -601,6 +615,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _parameter_binding(parameter: str) -> str:
         return re.split(r"[?:=]", parameter.strip(), maxsplit=1)[0].strip()
+
+    @staticmethod
+    def _parameter_bindings(parameter_text: str) -> Set[str]:
+        return set(re.findall(r"[A-Za-z_$][\w$]*", parameter_text))
+
+    @staticmethod
+    def _remove_completed_inner_blocks(text: str) -> str:
+        block_pattern = re.compile(
+            r"\b(?:if|for|while|switch|try|catch|else|do)\b[^{}]*\{[^{}]*\}"
+        )
+        previous = None
+        while previous != text:
+            previous = text
+            text = block_pattern.sub("", text)
+        return text
 
     @staticmethod
     def _starts_regex_literal(prefix: str) -> bool:

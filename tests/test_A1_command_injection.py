@@ -749,6 +749,54 @@ def test_js_fallback_ignores_backtick_in_regex_after_return(tmp_path, monkeypatc
     assert len(records) == 1
 
 
+def test_js_detects_direct_shelljs_require_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'require("shelljs").exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    ["{ run }, req", "[run], req", "...run"],
+)
+def test_js_ignores_shelljs_alias_shadowed_by_destructured_parameter(
+    tmp_path, parameters
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import {{ exec as run }} from "shelljs"; function handler({parameters}) {{ run(req.query.cmd); }}'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_hoisted_function(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function handler(req) { run(req.query.cmd); function run(value) { return value; } }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_detects_shelljs_alias_after_completed_inner_shadow(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function handler(req) { if (false) { const sh = safe; } sh.exec(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,
