@@ -132,7 +132,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 callee in child_process_sinks or callee_tail in child_process_sinks
             )
             if not is_known_sink and (not child_process_sinks):
-                is_known_sink = callee_tail in self._CHILD_PROCESS_NAMES
+                is_known_sink = (
+                    callee == callee_tail and callee_tail in self._CHILD_PROCESS_NAMES
+                )
             if not is_known_sink:
                 continue
             if callee_tail in {"exec", "execSync"}:
@@ -212,6 +214,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if (
                 buffer
                 and not in_template_literal
+                and not in_block_comment
                 and (
                     stripped.startswith("import ")
                     or (buffer.startswith("import ") and complete_import)
@@ -225,7 +228,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             in_template_literal, in_block_comment = self._scan_js_lexical_state(
                 line, in_template_literal, in_block_comment
             )
-            if not in_template_literal and stripped.endswith((";", "}", ")")):
+            if (
+                not in_template_literal
+                and not in_block_comment
+                and stripped.endswith((";", "}", ")"))
+            ):
                 statements.append((start_line, buffer))
                 buffer = ""
         if buffer:
@@ -285,7 +292,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             exec_names = child_process_sinks or {"exec", "execSync"}
             if any(
                 (
-                    re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
+                    re.search(f"(?<![\\w$.]){re.escape(name)}\\s*\\(", stripped)
                     for name in exec_names
                     if name.split(".")[-1] in {"exec", "execSync"}
                     or name in {"exec", "execSync"}
@@ -308,7 +315,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if any(
                 (
-                    re.search(f"(?<![\\w$]){re.escape(name)}\\s*\\(", stripped)
+                    re.search(f"(?<![\\w$.]){re.escape(name)}\\s*\\(", stripped)
                     for name in spawn_names
                     if name.split(".")[-1] in {"spawn", "spawnSync"}
                     or name in {"spawn", "spawnSync"}
@@ -366,24 +373,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def _contains_unshadowed_shelljs_call(text: str, name: str) -> bool:
         sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
         call_match = re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text)
-        if call_match is None or "." in name:
-            return call_match is not None
+        if call_match is None:
+            return False
+        binding_name = name.split(".", 1)[0]
         prefix = text[: call_match.start()]
         return not re.search(
-            rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b", prefix
+            rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
+            prefix,
         )
 
     @staticmethod
     def _line_has_shadowed_shelljs_call(
         lines: List[str], line_number: int, text: str, shelljs_sinks: Set[str]
     ) -> bool:
-        bare_sinks = {name for name in shelljs_sinks if "." not in name}
-        called_sinks = {
-            name
-            for name in bare_sinks
-            if re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", text)
-        }
-        if not called_sinks:
+        called_bindings = set()
+        for name in shelljs_sinks:
+            sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
+            if re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text):
+                called_bindings.add(name.split(".", 1)[0])
+        if not called_bindings:
             return False
         scopes: List[Set[str]] = [set()]
         for current_line in lines[:line_number]:
@@ -400,18 +408,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             if opens_block:
                 scopes.append(set())
-            for name in called_sinks:
+            for name in called_bindings:
                 if re.search(
                     rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b",
                     stripped,
                 ):
                     scopes[-1].add(name)
-        return any(called_sinks & scope for scope in scopes[1:])
+        return any(called_bindings & scope for scope in scopes[1:])
 
     @staticmethod
     def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
-        if "." in callee:
-            return False
+        binding_name = callee.split(".", 1)[0]
         scope = getattr(node, "parent", None)
         while scope is not None and getattr(scope, "type", "") not in {
             "function_declaration",
@@ -427,7 +434,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
         return bool(
             re.search(
-                rf"\b(?:const|let|var|function|class)\s+{re.escape(callee)}\b",
+                rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
                 prefix,
             )
         )

@@ -374,6 +374,39 @@ def test_js_ignores_shadowed_shelljs_alias(tmp_path):
     assert records == []
 
 
+def test_js_ignores_shelljs_import_inside_block_comment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                /*
+                import { exec as run } from "shelljs";
+                */
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shadowed_shelljs_module_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function handler(req) {
+                    const sh = safeHelper;
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,
