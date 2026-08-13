@@ -1647,3 +1647,71 @@ def test_js_fallback_detects_optional_shelljs_alias_call(tmp_path, monkeypatch):
     records = detector.evaluate(tmp_path)
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_child_process_namespace_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; function f(cp, req) { cp.exec(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_namespace_shadowed_by_for_of_destructuring(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; for (const { sh } of helpers) { sh.exec(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        'const sh = require("shelljs") as typeof import("shelljs");',
+        'const sh = (require("shelljs"));',
+        'const sh = require("shelljs") satisfies typeof import("shelljs");',
+    ],
+)
+def test_ts_detects_asserted_commonjs_shelljs_binding(tmp_path, binding):
+    records = scan_files(
+        tmp_path,
+        {"app.ts": f"{binding} sh.exec(req.query.cmd);"},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_defaulted_child_process_destructuring(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const { exec = fallback } = cp; exec(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_multiline_shelljs_member_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'import sh from "shelljs"; sh\n  .exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_commented_shelljs_default_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh /* ShellJS helper */ from "shelljs"; sh.exec(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH

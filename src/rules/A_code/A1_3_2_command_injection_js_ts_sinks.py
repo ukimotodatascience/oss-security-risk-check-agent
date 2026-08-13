@@ -18,6 +18,11 @@ class JsTsSinkMixin:
 
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+        text = re.sub(
+            r"\(\s*(require\s*\(\s*['\"]shelljs['\"]\s*\))\s*\)",
+            r"\1",
+            text,
+        )
         import_equals_match = re.search(
             r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
             text,
@@ -31,7 +36,9 @@ class JsTsSinkMixin:
             re.DOTALL,
         )
         for import_match in import_matches:
-            import_clause = import_match.group(1).strip()
+            import_clause = re.sub(
+                r"/\*.*?\*/|//[^\n]*", " ", import_match.group(1), flags=re.DOTALL
+            ).strip()
             namespace_match = re.search(
                 r"(?:^|,)\s*\*\s*as\s+([A-Za-z_$][\w$]*)", import_clause
             )
@@ -57,7 +64,8 @@ class JsTsSinkMixin:
         direct_exec_match = re.fullmatch(
             r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
-            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\.exec\s*;?\s*",
+            r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*\.exec"
+            r"(?:\s+(?:as|satisfies)\s+[^;]+)?\s*;?\s*",
             text,
         )
         if direct_exec_match:
@@ -66,11 +74,20 @@ class JsTsSinkMixin:
         module_match = re.fullmatch(
             r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
-            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*;?\s*",
+            r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?:\s+(?:as|satisfies)\s+[^;]+)?\s*;?\s*",
             text,
         )
         if module_match:
             sinks.add(f"{module_match.group(1)}.exec")
+        wrapped_module_match = re.search(
+            r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*\(\s*"
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)",
+            text,
+        )
+        if wrapped_module_match:
+            sinks.add(f"{wrapped_module_match.group(1)}.exec")
 
         require_match = re.fullmatch(
             r"\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*"
@@ -173,7 +190,8 @@ class JsTsSinkMixin:
             sink.startswith(f"{alias_destructuring.group(2)}.") for sink in sinks
         ):
             for entry in alias_destructuring.group(1).split(","):
-                source, _, alias = entry.strip().partition(":")
+                entry = entry.split("=", 1)[0].strip()
+                source, _, alias = entry.partition(":")
                 source = source.strip()
                 target = alias.strip() or source
                 if source in self._CHILD_PROCESS_NAMES:
