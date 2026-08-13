@@ -274,6 +274,36 @@ def test_js_collects_static_shelljs_imports_before_calls(tmp_path):
     assert records[0].message == "External input reaches shell command execution helper"
 
 
+def test_js_collects_top_level_shelljs_require_before_calls(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                function handler(req) { exec(req.query.cmd); }
+                const { exec } = require("shelljs");
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_does_not_match_shelljs_alias_as_object_method(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                db.run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,

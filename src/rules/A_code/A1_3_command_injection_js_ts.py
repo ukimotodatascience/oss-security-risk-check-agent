@@ -54,8 +54,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         child_process_sinks: Set[str] = set()
         shelljs_sinks: Set[str] = set()
         nodes = list(iter_ts_nodes(root))
-        for node in nodes:
-            if getattr(node, "type", "") == "import_statement":
+        for node in getattr(root, "named_children", []):
+            if getattr(node, "type", "") in {
+                "import_statement",
+                "lexical_declaration",
+                "variable_declaration",
+            }:
                 text = ts_node_text(src_bytes, node)
                 self._register_child_process_imports(text, child_process_sinks)
                 self._register_shelljs_imports(text, shelljs_sinks)
@@ -219,9 +223,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if buffer:
             statements.append((start_line, buffer))
         for _, statement in statements:
-            if re.match(r"^\s*import\b", statement):
-                self._register_child_process_imports(statement, child_process_sinks)
-                self._register_shelljs_imports(statement, shelljs_sinks)
+            self._register_child_process_imports(statement, child_process_sinks)
+            self._register_shelljs_imports(statement, shelljs_sinks)
         for i, stripped in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
@@ -340,7 +343,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             re.search(r"\bshelljs\.exec\s*\(", text)
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
             or any(
-                re.search(rf"(?<![\w$]){re.escape(name)}\s*\(", text)
+                re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", text)
                 for name in shelljs_sinks
             )
         )
