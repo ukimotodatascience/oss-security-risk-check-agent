@@ -237,6 +237,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         shelljs_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
         lines = src.splitlines()
+        masked_source = self._mask_js_noncode_for_detection(src)
+        masked_lines = masked_source.splitlines()
         statements: List[Tuple[int, str]] = []
         buffer = ""
         start_line = 1
@@ -287,8 +289,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for part in self._split_top_level_statements(statement_line, statement)
         ]
         for _, statement in statements:
-            self._register_shelljs_imports(statement, shelljs_sinks)
+            if re.match(r"\s*(?:import\b|(?:const|let)\b)", statement):
+                self._register_shelljs_imports(statement, shelljs_sinks)
+        top_level_child_process_sinks = set(child_process_sinks)
         for i, stripped in statements:
+            child_process_sinks = set(top_level_child_process_sinks)
+            is_function_statement = bool(
+                re.match(r"\s*(?:async\s+)?function\b", stripped)
+            )
             code_text = self._mask_js_noncode_for_detection(stripped)
             code_text = re.sub(
                 r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
@@ -297,6 +305,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             self._reset_child_process_local_bindings(stripped, child_process_sinks)
             self._register_child_process_imports(stripped, child_process_sinks)
+            if not is_function_statement:
+                top_level_child_process_sinks = set(child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
             self._register_embedded_shelljs_declarations(stripped, shelljs_sinks)
             m = re.search(
@@ -329,6 +339,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     shell_true_option_names.add(option_name)
                 else:
                     shell_true_option_names.discard(option_name)
+            if not is_function_statement:
+                top_level_child_process_sinks = set(child_process_sinks)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", code_text):
                 if self._js_has_external_input(code_text, tainted_names):
                     records.append(
@@ -350,6 +362,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 self._shelljs_call_line(lines, i, shelljs_sinks),
                 code_text,
                 shelljs_sinks,
+                masked_source,
+                masked_lines,
             ):
                 shell_call_arguments = self._shelljs_call_arguments(
                     code_text, shelljs_sinks
@@ -381,8 +395,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 (self._contains_js_sink_call(code_text, name) for name in exec_names)
             ):
                 if self._line_has_shadowed_child_process_call(code_text, exec_names):
-                    continue
-                if self._js_has_external_input(code_text, tainted_names):
+                    pass
+                elif self._js_has_external_input(code_text, tainted_names):
                     records.append(
                         RiskRecord(
                             rule_id=self.rule_id,
@@ -394,7 +408,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             message="External input reaches child_process command execution",
                         )
                     )
-                continue
             spawn_names = self._child_process_call_names(
                 child_process_sinks, {"spawn", "spawnSync"}
             )
@@ -625,7 +638,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
     @staticmethod
     def _line_has_shadowed_shelljs_call(
-        lines: List[str], line_number: int, text: str, shelljs_sinks: Set[str]
+        lines: List[str],
+        line_number: int,
+        text: str,
+        shelljs_sinks: Set[str],
+        masked_source: Optional[str] = None,
+        masked_lines: Optional[List[str]] = None,
     ) -> bool:
         called_bindings = set()
         for name in shelljs_sinks:
@@ -640,6 +658,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             return True
         full_source = "\n".join(lines)
+        if masked_source is None:
+            masked_source = JsTsCommandInjectionDetector._mask_js_noncode_for_detection(
+                full_source
+            )
+        if masked_lines is None:
+            masked_lines = masked_source.splitlines()
         line_offset = sum(len(line) + 1 for line in lines[: line_number - 1])
         source_tail = full_source[line_offset:]
         call_offsets = []
@@ -651,17 +675,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 call_offsets.append(line_offset + match.start())
         call_offset = min(call_offsets, default=line_offset)
         brace_depth = 0
-        for char in JsTsCommandInjectionDetector._mask_js_noncode_for_detection(
-            full_source[:call_offset]
-        ):
+        for char in masked_source[:call_offset]:
             if char == "{":
                 brace_depth += 1
             elif char == "}":
                 brace_depth = max(0, brace_depth - 1)
+        remaining_top_level = (
+            JsTsCommandInjectionDetector._remove_completed_function_blocks(
+                full_source[call_offset:]
+            )
+        )
         if brace_depth == 0 and any(
             re.search(
                 rf"\b(?:const|let)\s+{re.escape(name)}\b",
-                full_source[call_offset:],
+                remaining_top_level,
             )
             for name in called_bindings
         ):
@@ -751,10 +778,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             ):
                 return True
         scopes: List[Set[str]] = [set()]
-        for current_line in lines[:line_number]:
+        for current_index, current_line in enumerate(lines[:line_number]):
             stripped = current_line.strip()
+            masked_line = (
+                masked_lines[current_index]
+                if current_index < len(masked_lines)
+                else JsTsCommandInjectionDetector._mask_js_noncode_for_detection(
+                    current_line
+                )
+            )
             visible_text = JsTsCommandInjectionDetector._remove_completed_inner_blocks(
-                JsTsCommandInjectionDetector._mask_js_noncode_for_detection(stripped)
+                masked_line.strip()
             )
             if stripped.startswith("}") and len(scopes) > 1:
                 scopes.pop()

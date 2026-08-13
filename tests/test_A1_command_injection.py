@@ -1854,3 +1854,65 @@ def test_js_resolves_child_process_alias_api_per_scope(tmp_path):
     )
     assert len(records) == 2
     assert {record.severity for record in records} == {Severity.HIGH, Severity.MEDIUM}
+
+
+def test_js_restores_outer_child_process_alias_after_inner_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "child_process"; function helper() { const { spawn: run } = require("child_process"); } function handler(req) { run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_does_not_preregister_later_var_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'run(req.query.cmd); var run = require("shelljs").exec;'},
+    )
+    assert records == []
+
+
+def test_js_checks_spawn_after_shadowed_exec_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run, spawn as launch } from "child_process"; function f(run, req) { run("safe"); launch(req.query.cmd, []); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_js_does_not_apply_later_nested_shelljs_shadow(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; sh.exec(req.query.cmd); function setup() { let sh = safe; }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_reuses_file_mask_for_multiple_shelljs_calls(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    original_mask = detector._mask_js_noncode_for_detection
+    full_source_masks = 0
+
+    def counting_mask(text):
+        nonlocal full_source_masks
+        if text.count("sh.exec(") == 20:
+            full_source_masks += 1
+        return original_mask(text)
+
+    monkeypatch.setattr(detector, "_mask_js_noncode_for_detection", counting_mask)
+    source = 'import sh from "shelljs";\n' + "\n".join(
+        f"sh.exec(req.query.cmd{i});" for i in range(20)
+    )
+    (tmp_path / "app.js").write_text(source, encoding="utf-8")
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 20
+    assert full_source_masks == 1
