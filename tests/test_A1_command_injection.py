@@ -1609,3 +1609,41 @@ def test_ts_detects_typed_commonjs_shelljs_binding(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_preserves_child_process_api_through_alias_chain(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const run = cp.exec; const runAgain = run; runAgain(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert (
+        records[0].message == "External input reaches child_process command execution"
+    )
+
+
+def test_js_ignores_shelljs_call_example_in_template_interpolation_string(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; const example = `${"run(req.query.cmd)"}`;'
+        },
+    )
+    assert records == []
+
+
+def test_js_fallback_detects_optional_shelljs_alias_call(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'import { exec as run } from "shelljs"; run?.(req.query.cmd);',
+        encoding="utf-8",
+    )
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH

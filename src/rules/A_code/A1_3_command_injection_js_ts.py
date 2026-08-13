@@ -78,9 +78,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     ) and self._is_child_process_alias_assignment(
                         right_clean, child_process_sinks
                     ):
-                        child_process_sinks.add(
-                            f"{left_text}.{right_clean.rsplit('.', 1)[-1]}"
+                        api = self._child_process_api_for_callee(
+                            right_clean, child_process_sinks
                         )
+                        if api is not None:
+                            child_process_sinks.add(f"{left_text}.{api}")
                     if re.fullmatch(
                         "[A-Za-z_$][\\w$]*", left_text
                     ) and self._js_has_external_input(right_text, tainted_names):
@@ -269,9 +271,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if self._is_child_process_alias_assignment(
                     rhs_clean, child_process_sinks
                 ):
-                    child_process_sinks.add(
-                        f"{var_name}.{rhs_clean.rsplit('.', 1)[-1]}"
+                    api = self._child_process_api_for_callee(
+                        rhs_clean, child_process_sinks
                     )
+                    if api is not None:
+                        child_process_sinks.add(f"{var_name}.{api}")
                 if self._js_options_enable_shell(rhs_clean):
                     shell_true_option_names.add(var_name)
                 if self._js_has_external_input(rhs, tainted_names):
@@ -397,7 +401,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _contains_js_sink_call(text: str, name: str) -> bool:
         sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
-        return bool(re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text))
+        return bool(re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text))
 
     def _js_call_enables_shell(
         self, text: str, shell_true_option_names: Set[str]
@@ -429,7 +433,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _contains_unshadowed_shelljs_call(text: str, name: str) -> bool:
         sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
-        call_match = re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text)
+        call_match = re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text)
         if call_match is None:
             return False
         binding_name = name.split(".", 1)[0]
@@ -447,7 +451,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         called_bindings = set()
         for name in shelljs_sinks:
             sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
-            if re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text):
+            if re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text):
                 called_bindings.add(name.split(".", 1)[0])
         if not called_bindings:
             return False
@@ -457,7 +461,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         call_offsets = []
         for name in shelljs_sinks:
             sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
-            if match := re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", source_tail):
+            if match := re.search(
+                rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", source_tail
+            ):
                 call_offsets.append(line_offset + match.start())
         call_offset = min(call_offsets, default=line_offset)
         brace_depth = 0
@@ -630,7 +636,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 for name in shelljs_sinks:
                     sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
                     if local_call := re.search(
-                        rf"(?<![\w$.]){sink_pattern}\s*\(", visible_text
+                        rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(",
+                        visible_text,
                     ):
                         local_call_positions.append(local_call.start())
                 text_before_call = visible_text[
@@ -1022,9 +1029,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 expression_start = index + 2
                 expression_end = cls._template_interpolation_end(text, expression_start)
                 if expression_end is not None:
-                    masked[expression_start:expression_end] = text[
-                        expression_start:expression_end
-                    ]
+                    expression = text[expression_start:expression_end]
+                    masked[expression_start:expression_end] = (
+                        cls._mask_js_noncode_for_detection(expression)
+                    )
                     index = expression_end
             escaped = char == "\\" and not escaped
             if char != "\\":
