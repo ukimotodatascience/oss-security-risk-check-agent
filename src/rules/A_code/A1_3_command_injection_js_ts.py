@@ -240,9 +240,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for _, statement in statements:
             self._register_child_process_imports(statement, child_process_sinks)
             self._register_shelljs_imports(statement, shelljs_sinks)
+            self._register_embedded_shelljs_declarations(statement, shelljs_sinks)
         for i, stripped in statements:
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
+            self._register_embedded_shelljs_declarations(stripped, shelljs_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
             )
@@ -284,7 +286,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             title=self.title,
                             severity=Severity.HIGH,
                             file_path=rel_path,
-                            line=i,
+                            line=self._shelljs_call_line(lines, i, shelljs_sinks),
                             message="External input reaches shell command execution helper",
                         )
                     )
@@ -408,9 +410,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             if opens_block:
                 scopes.append(set())
+                parameters_match = re.search(r"\bfunction\b[^()]*\(([^)]*)\)", stripped)
+                if parameters_match:
+                    parameters = {
+                        parameter.strip()
+                        for parameter in parameters_match.group(1).split(",")
+                    }
+                    scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
                 if re.search(
                     rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b",
+                    stripped,
+                ) and not re.search(
+                    rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*"
+                    rf"require\(['\"]shelljs['\"]\)(?:\.exec)?\b",
                     stripped,
                 ):
                     scopes[-1].add(name)
@@ -432,12 +445,51 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         prefix = src_bytes[scope.start_byte : node.start_byte].decode(
             "utf-8", errors="ignore"
         )
+        shelljs_declaration = re.search(
+            rf"\b(?:const|let|var)\s+{re.escape(binding_name)}\s*=\s*"
+            rf"require\(['\"]shelljs['\"]\)(?:\.exec)?\b",
+            prefix,
+        )
+        if shelljs_declaration:
+            return False
+        scope_header = src_bytes[scope.start_byte : scope.start_byte + 500].decode(
+            "utf-8", errors="ignore"
+        )
+        parameters_match = re.search(r"^[^{]*\(([^)]*)\)", scope_header)
+        if parameters_match and re.search(
+            rf"(?:^|,)\s*{re.escape(binding_name)}\s*(?:,|$)",
+            parameters_match.group(1),
+        ):
+            return True
         return bool(
             re.search(
                 rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
                 prefix,
             )
         )
+
+    def _register_embedded_shelljs_declarations(
+        self, text: str, shelljs_sinks: Set[str]
+    ) -> None:
+        for match in re.finditer(
+            r"(?:const|let|var)\s+(?:[A-Za-z_$][\w$]*|\{[^}]+\})\s*=\s*"
+            r"require\(['\"]shelljs['\"]\)(?:\.exec)?\s*;?",
+            text,
+        ):
+            if not re.search(r"\bfunction\b[^{}]*\{", text[: match.start()]):
+                continue
+            self._register_shelljs_imports(match.group(0), shelljs_sinks)
+
+    def _shelljs_call_line(
+        self, lines: List[str], start_line: int, shelljs_sinks: Set[str]
+    ) -> int:
+        for line_number in range(start_line, len(lines) + 1):
+            line = lines[line_number - 1]
+            if self._is_known_third_party_shell_sink(line, shelljs_sinks):
+                return line_number
+            if line_number > start_line and line.strip().endswith((";", "}")):
+                break
+        return start_line
 
     @staticmethod
     def _scan_js_lexical_state(

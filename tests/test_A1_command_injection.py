@@ -407,6 +407,57 @@ def test_js_ignores_shadowed_shelljs_module_alias(tmp_path):
     assert records == []
 
 
+def test_js_detects_function_local_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                function handler(req) {
+                    const exec = require("shelljs").exec;
+                    exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_dedupes_function_first_shelljs_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function handler(req) {
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                function handler(run, req) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,
