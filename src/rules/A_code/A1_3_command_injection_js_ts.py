@@ -304,7 +304,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 stripped,
             ) or any(
                 (
-                    re.search(f"(?<![\\w$.]){re.escape(name)}\\s*\\(", stripped)
+                    self._contains_js_sink_call(stripped, name)
                     for name in exec_names
                     if name.split(".")[-1] in {"exec", "execSync"}
                     or name in {"exec", "execSync"}
@@ -327,7 +327,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if any(
                 (
-                    re.search(f"(?<![\\w$.]){re.escape(name)}\\s*\\(", stripped)
+                    self._contains_js_sink_call(stripped, name)
                     for name in spawn_names
                     if name.split(".")[-1] in {"spawn", "spawnSync"}
                     or name in {"spawn", "spawnSync"}
@@ -357,6 +357,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _js_options_enable_shell(text: str) -> bool:
         return bool(re.search(r"\{[^}]*\bshell\s*:\s*true\b[^}]*\}", text))
+
+    @staticmethod
+    def _contains_js_sink_call(text: str, name: str) -> bool:
+        sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
+        return bool(re.search(rf"(?<![\w$.]){sink_pattern}\s*\(", text))
 
     def _js_call_enables_shell(
         self, text: str, shell_true_option_names: Set[str]
@@ -572,7 +577,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             if char == "/":
                 prefix = text[:index].rstrip()
-                if not prefix or prefix[-1] in "=(:,[!&|?{};":
+                if JsTsCommandInjectionDetector._starts_regex_literal(prefix):
                     masked[index] = " "
                     index += 1
                     regex_escaped = False
@@ -596,6 +601,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _parameter_binding(parameter: str) -> str:
         return re.split(r"[?:=]", parameter.strip(), maxsplit=1)[0].strip()
+
+    @staticmethod
+    def _starts_regex_literal(prefix: str) -> bool:
+        if not prefix or prefix[-1] in "=(:,[!&|?{};":
+            return True
+        return bool(
+            re.search(
+                r"\b(?:return|throw|case|yield|await|typeof|void|delete|new)\s*$",
+                prefix,
+            )
+        )
 
     def _shelljs_call_line(
         self, lines: List[str], start_line: int, shelljs_sinks: Set[str]
@@ -649,7 +665,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             if char == "/":
                 prefix = line[:index].rstrip()
-                if not prefix or prefix[-1] in "=(:,[!&|?{};":
+                if JsTsCommandInjectionDetector._starts_regex_literal(prefix):
                     index += 1
                     regex_escaped = False
                     while index < len(line):
