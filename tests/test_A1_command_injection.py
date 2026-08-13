@@ -1320,3 +1320,79 @@ def test_script_detectors_dedupe_matching_tree_sitter_and_fallback_findings(
     records = detector.evaluate(tmp_path)
 
     assert records == [tree_sitter_record]
+
+
+def test_js_detects_local_shelljs_require_with_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function handler(req) {
+                    const sh = require ("shelljs");
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_fallback_drops_shadow_from_same_line_closed_function(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import sh from "shelljs";
+            function setup() { const sh = safe; }
+            sh.exec(req.query.cmd);
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_reassigned_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                let run = require("shelljs").exec;
+                run = safe;
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_ts_ignores_shelljs_alias_shadowed_after_nested_function_type(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import { exec as run } from "shelljs";
+                function handler(
+                    callback: (value: string) => void,
+                    run: Runner,
+                    req: Req,
+                ) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []

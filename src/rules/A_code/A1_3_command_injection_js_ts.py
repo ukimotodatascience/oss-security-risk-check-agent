@@ -429,6 +429,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 called_bindings.add(name.split(".", 1)[0])
         if not called_bindings:
             return False
+        statement_parameter_text = (
+            JsTsCommandInjectionDetector._function_parameter_text(text)
+        )
         visible_call_scope = (
             JsTsCommandInjectionDetector._remove_completed_inner_blocks(text)
         )
@@ -439,6 +442,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             return True
         source_prefix = "\n".join(lines[:line_number])
         for name in called_bindings:
+            if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
+                source_prefix, name
+            ):
+                return True
             if re.search(
                 rf"\bfunction\b[^{{]*\{{[^{{}}]*\b(?:const|let|var)\s+"
                 rf"{re.escape(name)}\s*=\s*require\s*\(\s*['\"]shelljs['\"]"
@@ -461,19 +468,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     r"\b[A-Za-z_$][\w$]*\s*\([^)]*\)\s*)[^{}]*\{",
                     stripped,
                 )
+                or re.search(r"\bfunction\b[\s\S]*\{", stripped)
+                or stripped.endswith("{")
                 or stripped == "{"
             )
             if opens_block:
                 scopes.append(set())
-                parameters_match = re.search(r"\bfunction\b[^()]*\(([^)]*)\)", stripped)
-                if parameters_match is None:
+                parameter_text = JsTsCommandInjectionDetector._function_parameter_text(
+                    stripped
+                )
+                parameters_match = None
+                if parameter_text is None:
                     parameters_match = re.search(
-                        r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>",
-                        stripped,
+                        r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>", stripped
                     )
-                if parameters_match is None:
+                if parameter_text is None and parameters_match is None:
                     parameters_match = re.search(r"\bcatch\s*\(([^)]*)\)", stripped)
-                if parameters_match is None:
+                if parameter_text is None and parameters_match is None:
                     parameters_match = re.search(
                         r"\b[A-Za-z_$][\w$]*\s*\(([^)]*)\)\s*\{", stripped
                     )
@@ -483,6 +494,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         parameter_text = parameter_text or parameters_match.group(2)
                     parameters = JsTsCommandInjectionDetector._parameter_bindings(
                         parameter_text
+                    )
+                    scopes[-1].update(called_bindings & parameters)
+                elif parameter_text is not None:
+                    parameters = JsTsCommandInjectionDetector._parameter_bindings(
+                        parameter_text
+                    )
+                    scopes[-1].update(called_bindings & parameters)
+                elif statement_parameter_text is not None:
+                    parameters = JsTsCommandInjectionDetector._parameter_bindings(
+                        statement_parameter_text
                     )
                     scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
@@ -498,11 +519,37 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                 ):
                     scopes[-1].add(name)
+            if opens_block:
+                local_call_positions = []
+                for name in shelljs_sinks:
+                    sink_pattern = re.escape(name).replace(r"\.", r"(?:\.|\?\.)")
+                    if local_call := re.search(
+                        rf"(?<![\w$.]){sink_pattern}\s*\(", visible_text
+                    ):
+                        local_call_positions.append(local_call.start())
+                text_before_call = visible_text[
+                    : min(local_call_positions)
+                    if local_call_positions
+                    else len(visible_text)
+                ]
+                brace_depth = 0
+                for char in text_before_call:
+                    if char == "{":
+                        brace_depth += 1
+                    elif char == "}":
+                        brace_depth = max(0, brace_depth - 1)
+                if brace_depth == 0:
+                    scopes.pop()
         return any(called_bindings & scope for scope in scopes)
 
     @staticmethod
     def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
         binding_name = callee.split(".", 1)[0]
+        source_prefix = src_bytes[: node.start_byte].decode("utf-8", errors="ignore")
+        if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
+            source_prefix, binding_name
+        ):
+            return True
         scope = getattr(node, "parent", None)
         while scope is not None and getattr(scope, "type", "") not in {
             "function_declaration",
@@ -527,8 +574,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         scope_header = src_bytes[scope.start_byte : scope.start_byte + 500].decode(
             "utf-8", errors="ignore"
         )
-        parameters_match = re.search(r"^[^{]*\(([^)]*)\)", scope_header)
-        parameter_text = parameters_match.group(1) if parameters_match else None
+        parameter_text = JsTsCommandInjectionDetector._first_parameter_list(
+            scope_header
+        )
         if getattr(scope, "type", "") == "catch_clause":
             catch_match = re.search(r"\bcatch\s*\(([^)]*)\)", scope_header)
             if catch_match:
@@ -573,7 +621,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         searchable_text = self._mask_js_strings_and_comments(text)
         for match in re.finditer(
             r"(?:const|let|var)\s+(?:[A-Za-z_$][\w$]*|\{[^}]+\})\s*=\s*"
-            r"require\(['\"]shelljs['\"]\)(?:\.exec)?\s*;?",
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?\s*;?",
             text,
         ):
             if searchable_text[match.start()].isspace():
@@ -586,6 +634,47 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             self._register_shelljs_imports(
                 text[match.start() : match.end()], shelljs_sinks
             )
+
+    @staticmethod
+    def _function_parameter_text(text: str) -> Optional[str]:
+        function_match = re.search(r"\bfunction\b", text)
+        if function_match is None:
+            return None
+        return JsTsCommandInjectionDetector._first_parameter_list(
+            text[function_match.end() :]
+        )
+
+    @staticmethod
+    def _first_parameter_list(text: str) -> Optional[str]:
+        open_paren = text.find("(")
+        if open_paren == -1:
+            return None
+        depth = 1
+        for index in range(open_paren + 1, len(text)):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    return text[open_paren + 1 : index]
+        return None
+
+    @staticmethod
+    def _has_non_shelljs_reassignment(text: str, binding_name: str) -> bool:
+        assignments = list(
+            re.finditer(
+                rf"(?:^|[;\n])\s*{re.escape(binding_name)}\s*"
+                r"(?<![=!<>])=(?!=|>)\s*"
+                r"([^;\n]+)",
+                JsTsCommandInjectionDetector._mask_js_noncode_for_detection(text),
+            )
+        )
+        if not assignments:
+            return False
+        latest_rhs = assignments[-1].group(1).strip()
+        return not bool(
+            re.match(r"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?", latest_rhs)
+        )
 
     @staticmethod
     def _mask_js_strings_and_comments(text: str) -> str:
