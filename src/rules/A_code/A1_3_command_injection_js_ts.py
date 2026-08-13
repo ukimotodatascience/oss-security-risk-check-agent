@@ -122,6 +122,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 r"\1",
                 callee,
             )
+            callee = re.sub(
+                r"\(\s*(require\s*\(\s*['\"]shelljs['\"]\s*\))\s*\)",
+                r"\1",
+                callee,
+            )
             normalized_callee = re.sub(r"\s*(?:\?\.)\s*", ".", callee)
             normalized_callee = re.sub(r"\s*\.\s*", ".", normalized_callee)
             direct_shelljs_call = bool(
@@ -296,10 +301,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             child_process_sinks = set(top_level_child_process_sinks)
             is_function_statement = bool(
                 re.match(r"\s*(?:async\s+)?function\b", stripped)
+                or re.search(r"(?:=>|\bclass\b)[\s\S]*\{", stripped)
             )
             code_text = self._mask_js_noncode_for_detection(stripped)
             code_text = re.sub(
                 r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
+                r"\1",
+                code_text,
+            )
+            code_text = re.sub(
+                r"\(\s*(require\s*\(\s*['\"]shelljs['\"]\s*\))\s*\)",
                 r"\1",
                 code_text,
             )
@@ -355,18 +366,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         )
                     )
                 continue
-            if self._is_known_third_party_shell_sink(
-                code_text, shelljs_sinks
-            ) and not self._line_has_shadowed_shelljs_call(
-                lines,
-                self._shelljs_call_line(lines, i, shelljs_sinks),
-                code_text,
-                shelljs_sinks,
-                masked_source,
-                masked_lines,
-            ):
+            visible_shelljs_sinks = {
+                sink
+                for sink in shelljs_sinks
+                if not self._line_has_shadowed_shelljs_call(
+                    lines,
+                    self._shelljs_call_line(lines, i, {sink}),
+                    code_text,
+                    {sink},
+                    masked_source,
+                    masked_lines,
+                )
+            }
+            if self._is_known_third_party_shell_sink(code_text, visible_shelljs_sinks):
                 shell_call_arguments = self._shelljs_call_arguments(
-                    code_text, shelljs_sinks
+                    code_text, visible_shelljs_sinks
                 )
                 if shell_call_arguments is not None and self._js_has_external_input(
                     shell_call_arguments, tainted_names
@@ -1197,6 +1211,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
     @staticmethod
     def _is_shelljs_declaration_binding(text: str, name: str) -> bool:
+        if re.search(
+            rf"(?:^|[;\n{{}}])\s*{re.escape(name)}\s*(?<![=!<>])=(?!=|>)\s*"
+            r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*",
+            text,
+        ):
+            return True
         for match in re.finditer(
             r"\b(?:const|let|var)\s+(.+?)\s*=\s*"
             r"(?:\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
