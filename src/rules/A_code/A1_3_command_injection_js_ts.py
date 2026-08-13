@@ -204,7 +204,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_block_comment = False
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
-            if not stripped or stripped.startswith("//"):
+            if not stripped or (stripped.startswith("//") and not in_template_literal):
                 continue
             complete_import = re.search(
                 r"\bfrom\s*['\"][^'\"]+['\"]\s*$|"
@@ -411,10 +411,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if opens_block:
                 scopes.append(set())
                 parameters_match = re.search(r"\bfunction\b[^()]*\(([^)]*)\)", stripped)
+                if parameters_match is None:
+                    parameters_match = re.search(
+                        r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>",
+                        stripped,
+                    )
                 if parameters_match:
+                    parameter_text = parameters_match.group(
+                        1
+                    ) or parameters_match.group(2)
                     parameters = {
-                        parameter.strip()
-                        for parameter in parameters_match.group(1).split(",")
+                        parameter.strip() for parameter in parameter_text.split(",")
                     }
                     scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
@@ -456,9 +463,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             "utf-8", errors="ignore"
         )
         parameters_match = re.search(r"^[^{]*\(([^)]*)\)", scope_header)
-        if parameters_match and re.search(
+        parameter_text = parameters_match.group(1) if parameters_match else None
+        if getattr(scope, "type", "") == "arrow_function":
+            arrow_match = re.search(
+                r"(?:\(([^)]*)\)|([A-Za-z_$][\w$]*))\s*=>", scope_header
+            )
+            if arrow_match:
+                parameter_text = arrow_match.group(1) or arrow_match.group(2)
+        if parameter_text and re.search(
             rf"(?:^|,)\s*{re.escape(binding_name)}\s*(?:,|$)",
-            parameters_match.group(1),
+            parameter_text,
         ):
             return True
         return bool(

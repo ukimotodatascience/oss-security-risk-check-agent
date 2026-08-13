@@ -458,6 +458,47 @@ def test_js_ignores_shelljs_alias_shadowed_by_parameter(tmp_path):
     assert records == []
 
 
+@pytest.mark.parametrize("parameters", ["run", "(run, req)"])
+def test_js_ignores_shelljs_alias_shadowed_by_arrow_parameter(tmp_path, parameters):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f"""
+                import {{ exec as run }} from "shelljs";
+                const handler = {parameters} => {{
+                    run(req.query.cmd);
+                }};
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_updates_template_state_on_slash_comment_line(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const example = `
+// `;
+const { spawn } = require("child_process");
+const { exec } = require("shelljs");
+exec(req.query.cmd);
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,
