@@ -1473,3 +1473,86 @@ def test_js_ignores_property_matching_child_process_namespace(tmp_path):
     )
 
     assert records == []
+
+
+def test_js_ignores_child_process_call_example_in_string(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const example = "require(\\"child_process\\").exec(req.query.cmd)";'
+        },
+    )
+    assert records == []
+
+
+def test_js_does_not_preregister_later_local_child_process_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import * as real from "child_process";
+                const cp = helpers;
+                cp.exec(req.query.cmd);
+                function setup() { const cp = require("child_process"); }
+            """
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_call_before_lexical_shadow_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { { sh.exec(req.query.cmd); const sh = safe; } }'
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_concise_arrow_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; const f = (sh, req) => sh.exec(req.query.cmd);'
+        },
+    )
+    assert records == []
+
+
+def test_js_reports_actual_shelljs_call_line_after_string_example(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                const value = condition
+                  ? "run(req.query.fake)"
+                  : run(req.query.cmd);
+            """
+        },
+    )
+    assert len(records) == 1
+    assert records[0].line == 4
+
+
+def test_js_ignores_shelljs_alias_in_second_declarator(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function f(req) { const x = 1, run = safe; run(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_preserves_spawn_severity_for_destructured_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const { spawn: run } = cp; run(req.query.cmd, []);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+    assert records[0].message == "External input reaches child_process spawn"

@@ -134,10 +134,13 @@ class JsTsSinkMixin:
                     r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s+as\s+([A-Za-z_$][\w$]*)",
                     name,
                 )
-                sinks.add(alias_match.group(2) if alias_match else name)
+                if alias_match:
+                    sinks.add(f"{alias_match.group(2)}.{alias_match.group(1)}")
+                elif name in self._CHILD_PROCESS_NAMES:
+                    sinks.add(f"{name}.{name}")
 
         require_match = re.search(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+            r"^\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if require_match:
@@ -147,10 +150,13 @@ class JsTsSinkMixin:
                     r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s*:\s*([A-Za-z_$][\w$]*)",
                     name,
                 )
-                sinks.add(alias_match.group(2) if alias_match else name)
+                if alias_match:
+                    sinks.add(f"{alias_match.group(2)}.{alias_match.group(1)}")
+                elif name in self._CHILD_PROCESS_NAMES:
+                    sinks.add(f"{name}.{name}")
 
         module_match = re.search(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+            r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if module_match:
@@ -169,13 +175,16 @@ class JsTsSinkMixin:
                 source = source.strip()
                 target = alias.strip() or source
                 if source in self._CHILD_PROCESS_NAMES:
-                    sinks.add(target)
+                    sinks.add(f"{target}.{source}")
 
     def _is_child_process_alias_assignment(
         self, rhs_clean: str, sinks: Set[str]
     ) -> bool:
-        return rhs_clean in sinks or any(
-            rhs_clean == f"{sink}.{name}"
+        if rhs_clean in sinks:
+            return True
+        matching_apis = {
+            sink.rsplit(".", 1)[-1]
             for sink in sinks
-            for name in self._CHILD_PROCESS_NAMES
-        )
+            if sink.rpartition(".")[0] == rhs_clean
+        }
+        return len(matching_apis) == 1
