@@ -477,13 +477,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                     scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
-                if re.search(
-                    rf"\b(?:const|let|var|function|class)\s+{re.escape(name)}\b",
-                    visible_text,
-                ) and not re.search(
-                    rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*"
-                    rf"require\(['\"]shelljs['\"]\)(?:\.exec)?",
-                    visible_text,
+                local_bindings = (
+                    JsTsCommandInjectionDetector._local_declaration_bindings(
+                        visible_text
+                    )
+                )
+                if (
+                    name in local_bindings
+                    and not JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
+                        visible_text, name
+                    )
                 ):
                     scopes[-1].add(name)
         return any(called_bindings & scope for scope in scopes)
@@ -507,7 +510,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
         shelljs_declaration = re.search(
             rf"\b(?:const|let|var)\s+{re.escape(binding_name)}\s*=\s*"
-            rf"require\(['\"]shelljs['\"]\)(?:\.exec)?\b",
+            rf"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?\b",
             prefix,
         )
         if shelljs_declaration:
@@ -551,11 +554,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if has_hoisted_binding:
             return True
         prefix = JsTsCommandInjectionDetector._remove_completed_inner_blocks(prefix)
-        return bool(
-            re.search(
-                rf"\b(?:const|let|var|function|class)\s+{re.escape(binding_name)}\b",
-                prefix,
-            )
+        return binding_name in JsTsCommandInjectionDetector._local_declaration_bindings(
+            prefix
         )
 
     def _register_embedded_shelljs_declarations(
@@ -688,6 +688,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return bindings
 
     @staticmethod
+    def _local_declaration_bindings(text: str) -> Set[str]:
+        bindings = set(re.findall(r"\b(?:function|class)\s+([A-Za-z_$][\w$]*)", text))
+        for match in re.finditer(
+            r"\b(?:const|let|var)\s+(.+?)(?==|;|$)", text, re.DOTALL
+        ):
+            bindings.update(
+                JsTsCommandInjectionDetector._parameter_bindings(match.group(1))
+            )
+        return bindings
+
+    @staticmethod
+    def _is_shelljs_declaration_binding(text: str, name: str) -> bool:
+        for match in re.finditer(
+            r"\b(?:const|let|var)\s+(.+?)\s*=\s*"
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?",
+            text,
+            re.DOTALL,
+        ):
+            if name in JsTsCommandInjectionDetector._parameter_bindings(match.group(1)):
+                return True
+        return False
+
+    @staticmethod
     def _split_top_level(text: str, delimiter: str, maxsplit: int = -1) -> List[str]:
         parts: List[str] = []
         start = 0
@@ -751,25 +774,57 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     template_start = None
             elif template_start is not None and text.startswith("${", index):
                 expression_start = index + 2
-                cursor = expression_start
-                depth = 1
-                while cursor < len(text) and depth:
-                    if text[cursor] == "{":
-                        depth += 1
-                    elif text[cursor] == "}":
-                        depth -= 1
-                    cursor += 1
-                if depth == 0:
-                    expression_end = cursor - 1
+                expression_end = cls._template_interpolation_end(text, expression_start)
+                if expression_end is not None:
                     masked[expression_start:expression_end] = text[
                         expression_start:expression_end
                     ]
-                    index = cursor - 1
+                    index = expression_end
             escaped = char == "\\" and not escaped
             if char != "\\":
                 escaped = False
             index += 1
         return "".join(masked)
+
+    @staticmethod
+    def _template_interpolation_end(text: str, start: int) -> Optional[int]:
+        depth = 1
+        quote = None
+        escaped = False
+        in_block_comment = False
+        index = start
+        while index < len(text):
+            char = text[index]
+            next_char = text[index + 1] if index + 1 < len(text) else ""
+            if in_block_comment:
+                if char == "*" and next_char == "/":
+                    in_block_comment = False
+                    index += 2
+                    continue
+            elif quote is not None:
+                if char == quote and not escaped:
+                    quote = None
+                escaped = char == "\\" and not escaped
+                if char != "\\":
+                    escaped = False
+            elif char == "/" and next_char == "*":
+                in_block_comment = True
+                index += 2
+                continue
+            elif char == "/" and next_char == "/":
+                newline = text.find("\n", index)
+                index = len(text) if newline == -1 else newline
+                continue
+            elif char in {"'", '"'}:
+                quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+            index += 1
+        return None
 
     @staticmethod
     def _remove_completed_inner_blocks(text: str) -> str:

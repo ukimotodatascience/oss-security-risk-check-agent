@@ -19,7 +19,7 @@ class JsTsSinkMixin:
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
         import_equals_match = re.search(
-            r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"]shelljs['\"]\)",
+            r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
             text,
         )
         if import_equals_match:
@@ -56,7 +56,7 @@ class JsTsSinkMixin:
 
         direct_exec_match = re.fullmatch(
             r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
-            r"require\(['\"]shelljs['\"]\)\.exec\s*;?\s*",
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\.exec\s*;?\s*",
             text,
         )
         if direct_exec_match:
@@ -64,7 +64,7 @@ class JsTsSinkMixin:
 
         module_match = re.fullmatch(
             r"\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
-            r"require\(['\"]shelljs['\"]\)\s*;?\s*",
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*;?\s*",
             text,
         )
         if module_match:
@@ -72,7 +72,7 @@ class JsTsSinkMixin:
 
         require_match = re.fullmatch(
             r"\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*"
-            r"require\(['\"]shelljs['\"]\)\s*;?\s*",
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*;?\s*",
             text,
         )
         if require_match:

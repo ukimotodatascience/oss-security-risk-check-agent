@@ -940,6 +940,46 @@ def test_js_fallback_preserves_nested_template_interpolation_taint(
     assert len(records) == 1
 
 
+def test_js_detects_commonjs_shelljs_binding_with_require_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const sh = require ("shelljs"); sh.exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_ignores_brace_in_interpolation_string(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require("shelljs").exec(`echo ${"}" + req.query.cmd}`);',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "declaration", ["const { run } = helpers;", "const [run] = helpers;"]
+)
+def test_js_ignores_shelljs_alias_shadowed_by_local_destructuring(
+    tmp_path, declaration
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import {{ exec as run }} from "shelljs"; function handler(req) {{ {declaration} run(req.query.cmd); }}'
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,
