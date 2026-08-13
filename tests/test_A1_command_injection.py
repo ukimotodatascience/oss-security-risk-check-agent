@@ -672,6 +672,79 @@ def test_ts_ignores_shelljs_alias_shadowed_by_typed_parameter(tmp_path):
     assert records == []
 
 
+def test_js_handles_parameterless_function_before_shelljs_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function helper() {} sh.exec(req.query.cmd);'
+        },
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "child_process_import",
+    [
+        'import cp, { spawn } from "node:child_process";',
+        'import cp, * as child from "node:child_process";',
+    ],
+)
+def test_js_detects_composite_child_process_module_import(
+    tmp_path, child_process_import
+):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f"{child_process_import}\ncp.exec(req.query.cmd);"},
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_ignores_backtick_inside_regex_literal(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const marker = /`/;\nimport { spawn } from "child_process";\n'
+        'import { exec } from "shelljs";\nexec(req.query.cmd);\n',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; class C { method(sh, req) { sh.exec(req.query.cmd); } }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_does_not_leak_local_shelljs_binding_to_top_level(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function helper() {
+                    const run = require("shelljs").exec;
+                }
+                function run(value) { return value; }
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,

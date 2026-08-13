@@ -66,13 +66,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for node in nodes:
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
-            if node_type in {
-                "import_statement",
-                "lexical_declaration",
-                "variable_declaration",
-            }:
-                self._register_child_process_imports(text, child_process_sinks)
-                self._register_shelljs_imports(text, shelljs_sinks)
             if node_type in {"variable_declarator", "assignment_expression"}:
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
@@ -287,7 +280,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if self._is_known_third_party_shell_sink(
                 stripped, shelljs_sinks
             ) and not self._line_has_shadowed_shelljs_call(
-                lines, i, stripped, shelljs_sinks
+                lines,
+                self._shelljs_call_line(lines, i, shelljs_sinks),
+                stripped,
+                shelljs_sinks,
             ):
                 if self._js_has_external_input(stripped, tainted_names):
                     records.append(
@@ -416,7 +412,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 scopes.pop()
             opens_block = bool(
                 re.search(
-                    r"(?:\bfunction\b|=>|\b(?:if|for|while|switch|try|catch|else|do)\b)[^{]*\{",
+                    r"(?:\bfunction\b|=>|\b(?:if|for|while|switch|try|catch|else|do)\b|"
+                    r"\b[A-Za-z_$][\w$]*\s*\([^)]*\)\s*)[^{}]*\{",
                     stripped,
                 )
                 or stripped == "{"
@@ -431,10 +428,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                 if parameters_match is None:
                     parameters_match = re.search(r"\bcatch\s*\(([^)]*)\)", stripped)
+                if parameters_match is None:
+                    parameters_match = re.search(
+                        r"\b[A-Za-z_$][\w$]*\s*\(([^)]*)\)\s*\{", stripped
+                    )
                 if parameters_match:
-                    parameter_text = parameters_match.group(
-                        1
-                    ) or parameters_match.group(2)
+                    parameter_text = parameters_match.group(1)
+                    if parameters_match.lastindex and parameters_match.lastindex > 1:
+                        parameter_text = parameter_text or parameters_match.group(2)
                     parameters = {
                         JsTsCommandInjectionDetector._parameter_binding(parameter)
                         for parameter in parameter_text.split(",")
@@ -446,11 +447,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     stripped,
                 ) and not re.search(
                     rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*"
-                    rf"require\(['\"]shelljs['\"]\)(?:\.exec)?\b",
+                    rf"require\(['\"]shelljs['\"]\)(?:\.exec)?",
                     stripped,
                 ):
                     scopes[-1].add(name)
-        return any(called_bindings & scope for scope in scopes[1:])
+        return any(called_bindings & scope for scope in scopes)
 
     @staticmethod
     def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
@@ -569,6 +570,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 in_block_comment = True
                 index += 2
                 continue
+            if char == "/":
+                prefix = text[:index].rstrip()
+                if not prefix or prefix[-1] in "=(:,[!&|?{};":
+                    masked[index] = " "
+                    index += 1
+                    regex_escaped = False
+                    while index < len(text):
+                        regex_char = text[index]
+                        masked[index] = " "
+                        if regex_char == "/" and not regex_escaped:
+                            index += 1
+                            break
+                        regex_escaped = regex_char == "\\" and not regex_escaped
+                        if regex_char != "\\":
+                            regex_escaped = False
+                        index += 1
+                    continue
             if char in {"'", '"', "`"}:
                 quote = char
                 masked[index] = " "
@@ -629,6 +647,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 in_block_comment = True
                 index += 2
                 continue
+            if char == "/":
+                prefix = line[:index].rstrip()
+                if not prefix or prefix[-1] in "=(:,[!&|?{};":
+                    index += 1
+                    regex_escaped = False
+                    while index < len(line):
+                        regex_char = line[index]
+                        if regex_char == "/" and not regex_escaped:
+                            index += 1
+                            break
+                        regex_escaped = regex_char == "\\" and not regex_escaped
+                        if regex_char != "\\":
+                            regex_escaped = False
+                        index += 1
+                    continue
             if char in {"'", '"'}:
                 quote = char
             elif char == "`":

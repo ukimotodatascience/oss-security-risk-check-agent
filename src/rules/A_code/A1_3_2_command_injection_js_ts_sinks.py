@@ -84,14 +84,27 @@ class JsTsSinkMixin:
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
         module_import_match = re.search(
-            r"^\s*import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*"
+            r"^\s*import\s+((?:(?!\bimport\b).)*?)\s+from\s*"
             r"['\"](?:node:)?child_process['\"]",
             text,
+            re.DOTALL,
         )
         if module_import_match:
-            module_name = module_import_match.group(1)
-            sinks.add(module_name)
-            sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+            import_clause = module_import_match.group(1).strip()
+            module_names = []
+            default_binding = import_clause.split(",", 1)[0].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", default_binding):
+                module_names.append(default_binding)
+            namespace_match = re.search(
+                r"(?:^|,)\s*\*\s*as\s+([A-Za-z_$][\w$]*)", import_clause
+            )
+            if namespace_match:
+                module_names.append(namespace_match.group(1))
+            for module_name in module_names:
+                sinks.add(module_name)
+                sinks.update(
+                    f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
+                )
 
         direct_require_match = re.search(
             r"require\(['\"](?:node:)?child_process['\"]\)\.("
@@ -103,7 +116,7 @@ class JsTsSinkMixin:
             sinks.add(f"require.child_process.{direct_require_match.group(1)}")
 
         import_match = re.search(
-            r"import\s*\{([^}]+)\}\s*from\s*['\"](?:node:)?child_process['\"]",
+            r"import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*['\"](?:node:)?child_process['\"]",
             text,
         )
         if import_match:
