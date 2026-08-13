@@ -596,6 +596,82 @@ def test_js_ignores_shelljs_alias_shadowed_by_catch_parameter(tmp_path):
     assert records == []
 
 
+@pytest.mark.parametrize(
+    "child_process_import, call",
+    [
+        ('import * as cp from "node:child_process";', "cp.exec(req.query.cmd);"),
+        ('import cp from "child_process";', "cp.exec(req.query.cmd);"),
+        ("", 'require("child_process").exec(req.query.cmd);'),
+    ],
+)
+def test_js_detects_child_process_module_calls(tmp_path, child_process_import, call):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f"{child_process_import}\n{call}\n"},
+    )
+
+    assert len(records) == 1
+    assert (
+        records[0].message == "External input reaches child_process command execution"
+    )
+
+
+def test_js_detects_multiline_shelljs_named_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                import {
+                    exec as run
+                } from "shelljs";
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_fallback_detects_arrow_local_shelljs_binding(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const { spawn } = require("child_process");
+const handler = req => {
+    const exec = require("shelljs").exec;
+    exec(req.query.cmd);
+};
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_ts_ignores_shelljs_alias_shadowed_by_typed_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import { exec as run } from "shelljs";
+                function handler(run: Runner, req: Req) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
     records = scan_files(
         tmp_path,

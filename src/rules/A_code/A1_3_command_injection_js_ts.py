@@ -104,6 +104,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee = ts_node_text(src_bytes, callee_node).strip()
             normalized_callee = callee.replace("?.", ".")
+            direct_child_process_call = re.fullmatch(
+                r"require\(['\"](?:node:)?child_process['\"]\)\.([A-Za-z_$][\w$]*)",
+                normalized_callee,
+            )
+            if direct_child_process_call:
+                normalized_callee = direct_child_process_call.group(1)
             call_text = text
             line = getattr(node, "start_point", (0, 0))[0] + 1
             has_external = self._js_has_external_input(call_text, tainted_names)
@@ -129,7 +135,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 continue
             callee_tail = callee.split(".")[-1]
             is_known_sink = (
-                callee in child_process_sinks or callee_tail in child_process_sinks
+                normalized_callee in child_process_sinks
+                or callee_tail in child_process_sinks
             )
             if not is_known_sink and (not child_process_sinks):
                 is_known_sink = (
@@ -296,7 +303,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                 continue
             exec_names = child_process_sinks or {"exec", "execSync"}
-            if any(
+            if re.search(
+                r"require\(['\"](?:node:)?child_process['\"]\)\.exec(?:Sync)?\s*\(",
+                stripped,
+            ) or any(
                 (
                     re.search(f"(?<![\\w$.]){re.escape(name)}\\s*\\(", stripped)
                     for name in exec_names
@@ -426,7 +436,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         1
                     ) or parameters_match.group(2)
                     parameters = {
-                        parameter.strip() for parameter in parameter_text.split(",")
+                        JsTsCommandInjectionDetector._parameter_binding(parameter)
+                        for parameter in parameter_text.split(",")
                     }
                     scopes[-1].update(called_bindings & parameters)
             for name in called_bindings:
@@ -480,10 +491,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             if arrow_match:
                 parameter_text = arrow_match.group(1) or arrow_match.group(2)
-        if parameter_text and re.search(
-            rf"(?:^|,)\s*{re.escape(binding_name)}\s*(?:,|$)",
-            parameter_text,
-        ):
+        parameters = (
+            {
+                JsTsCommandInjectionDetector._parameter_binding(parameter)
+                for parameter in parameter_text.split(",")
+            }
+            if parameter_text
+            else set()
+        )
+        if binding_name in parameters:
             return True
         return bool(
             re.search(
@@ -503,7 +519,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             if searchable_text[match.start()].isspace():
                 continue
-            if not re.search(r"\bfunction\b[^{}]*\{", text[: match.start()]):
+            if not re.search(
+                r"(?:\bfunction\b|=>|\b(?:get|set|async)?\s*[A-Za-z_$][\w$]*\s*\([^)]*\))[^{}]*\{",
+                text[: match.start()],
+            ):
                 continue
             self._register_shelljs_imports(
                 text[match.start() : match.end()], shelljs_sinks
@@ -555,6 +574,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 masked[index] = " "
             index += 1
         return "".join(masked)
+
+    @staticmethod
+    def _parameter_binding(parameter: str) -> str:
+        return re.split(r"[?:=]", parameter.strip(), maxsplit=1)[0].strip()
 
     def _shelljs_call_line(
         self, lines: List[str], start_line: int, shelljs_sinks: Set[str]

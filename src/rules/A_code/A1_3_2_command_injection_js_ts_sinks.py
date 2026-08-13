@@ -28,6 +28,7 @@ class JsTsSinkMixin:
         import_matches = re.finditer(
             r"^\s*import\s+((?:(?!\bimport\b).)*?)\s+from\s*['\"]shelljs['\"]",
             text,
+            re.DOTALL,
         )
         for import_match in import_matches:
             import_clause = import_match.group(1).strip()
@@ -82,6 +83,25 @@ class JsTsSinkMixin:
                     sinks.add(alias_match.group(1) if alias_match else name)
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
+        module_import_match = re.search(
+            r"^\s*import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*"
+            r"['\"](?:node:)?child_process['\"]",
+            text,
+        )
+        if module_import_match:
+            module_name = module_import_match.group(1)
+            sinks.add(module_name)
+            sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
+        direct_require_match = re.search(
+            r"require\(['\"](?:node:)?child_process['\"]\)\.("
+            + "|".join(self._CHILD_PROCESS_NAMES)
+            + r")\s*\(",
+            text,
+        )
+        if direct_require_match:
+            sinks.add(f"require.child_process.{direct_require_match.group(1)}")
+
         import_match = re.search(
             r"import\s*\{([^}]+)\}\s*from\s*['\"](?:node:)?child_process['\"]",
             text,
