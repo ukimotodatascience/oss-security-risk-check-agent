@@ -243,11 +243,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 buffer = ""
         if buffer:
             statements.append((start_line, buffer))
+        statements = [
+            part
+            for statement_line, statement in statements
+            for part in self._split_top_level_statements(statement_line, statement)
+        ]
         for _, statement in statements:
             self._register_child_process_imports(statement, child_process_sinks)
             self._register_shelljs_imports(statement, shelljs_sinks)
             self._register_embedded_shelljs_declarations(statement, shelljs_sinks)
         for i, stripped in statements:
+            code_text = self._mask_js_noncode_for_detection(stripped)
             self._register_child_process_imports(stripped, child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
             self._register_embedded_shelljs_declarations(stripped, shelljs_sinks)
@@ -280,14 +286,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     )
                 continue
             if self._is_known_third_party_shell_sink(
-                stripped, shelljs_sinks
+                code_text, shelljs_sinks
             ) and not self._line_has_shadowed_shelljs_call(
                 lines,
                 self._shelljs_call_line(lines, i, shelljs_sinks),
-                stripped,
+                code_text,
                 shelljs_sinks,
             ):
-                if self._js_has_external_input(stripped, tainted_names):
+                if self._js_has_external_input(code_text, tainted_names):
                     records.append(
                         RiskRecord(
                             rule_id=self.rule_id,
@@ -618,7 +624,97 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
     @staticmethod
     def _parameter_bindings(parameter_text: str) -> Set[str]:
-        return set(re.findall(r"[A-Za-z_$][\w$]*", parameter_text))
+        bindings: Set[str] = set()
+        for parameter in JsTsCommandInjectionDetector._split_top_level(
+            parameter_text, ","
+        ):
+            parameter = parameter.strip()
+            if not parameter:
+                continue
+            parameter = parameter.removeprefix("...").strip()
+            parameter = JsTsCommandInjectionDetector._split_top_level(
+                parameter, "=", maxsplit=1
+            )[0].strip()
+            if parameter.startswith("{") and parameter.endswith("}"):
+                for entry in JsTsCommandInjectionDetector._split_top_level(
+                    parameter[1:-1], ","
+                ):
+                    parts = JsTsCommandInjectionDetector._split_top_level(
+                        entry, ":", maxsplit=1
+                    )
+                    binding = parts[-1].strip()
+                    bindings.update(
+                        JsTsCommandInjectionDetector._parameter_bindings(binding)
+                    )
+                continue
+            if parameter.startswith("[") and parameter.endswith("]"):
+                bindings.update(
+                    JsTsCommandInjectionDetector._parameter_bindings(parameter[1:-1])
+                )
+                continue
+            parameter = (
+                JsTsCommandInjectionDetector._split_top_level(
+                    parameter, ":", maxsplit=1
+                )[0]
+                .rstrip("?")
+                .strip()
+            )
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", parameter):
+                bindings.add(parameter)
+        return bindings
+
+    @staticmethod
+    def _split_top_level(text: str, delimiter: str, maxsplit: int = -1) -> List[str]:
+        parts: List[str] = []
+        start = 0
+        depth = 0
+        splits = 0
+        for index, char in enumerate(text):
+            if char in "({[":
+                depth += 1
+            elif char in ")}]":
+                depth = max(0, depth - 1)
+            elif (
+                char == delimiter and depth == 0 and (maxsplit < 0 or splits < maxsplit)
+            ):
+                parts.append(text[start:index])
+                start = index + 1
+                splits += 1
+        parts.append(text[start:])
+        return parts
+
+    @classmethod
+    def _split_top_level_statements(
+        cls, start_line: int, text: str
+    ) -> List[Tuple[int, str]]:
+        masked = cls._mask_js_strings_and_comments(text)
+        parts: List[Tuple[int, str]] = []
+        start = 0
+        depth = 0
+        for index, char in enumerate(masked):
+            if char in "({[":
+                depth += 1
+            elif char in ")}]":
+                depth = max(0, depth - 1)
+            elif char == ";" and depth == 0:
+                part = text[start : index + 1].strip()
+                if part:
+                    parts.append((start_line + text[:start].count("\n"), part))
+                start = index + 1
+        remainder = text[start:].strip()
+        if remainder:
+            parts.append((start_line + text[:start].count("\n"), remainder))
+        return parts
+
+    @classmethod
+    def _mask_js_noncode_for_detection(cls, text: str) -> str:
+        masked = list(cls._mask_js_strings_and_comments(text))
+        for match in re.finditer(
+            r"require\(['\"](?:shelljs|(?:node:)?child_process)['\"]\)", text
+        ):
+            if masked[match.start()] != " ":
+                masked[match.start() : match.end()] = text[match.start() : match.end()]
+        return "".join(masked)
 
     @staticmethod
     def _remove_completed_inner_blocks(text: str) -> str:

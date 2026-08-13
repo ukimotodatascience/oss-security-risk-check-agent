@@ -797,6 +797,50 @@ def test_js_detects_shelljs_alias_after_completed_inner_shadow(tmp_path):
     assert len(records) == 1
 
 
+@pytest.mark.parametrize(
+    "parameters",
+    ["callback = run, req", "{ run: callback }, req", "callback: Runner, req"],
+)
+def test_js_detects_shelljs_alias_referenced_but_not_bound_in_parameter(
+    tmp_path, parameters
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": f'import {{ exec as run }} from "shelljs"; function handler({parameters}) {{ run(req.query.cmd); }}'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_splits_same_line_shelljs_statements(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const sh = require("shelljs"); sh.exec(req.query.cmd);', encoding="utf-8"
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "example",
+    ['const example = "run(req.query.cmd)";', "const value = 1; // run(req.query.cmd)"],
+)
+def test_js_ignores_shelljs_calls_in_noncode_text(tmp_path, example):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f'import {{ exec as run }} from "shelljs"; {example}'},
+    )
+
+    assert records == []
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,
