@@ -1715,3 +1715,55 @@ def test_js_detects_commented_shelljs_default_import(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_local_child_process_namespace_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function handler(req) { const cp = require("child_process"); cp.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_direct_child_process_api_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const run = require("child_process").exec; run(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_commented_child_process_named_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec /* command API */ as run } from "child_process"; run(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'function handler(req) { const cp = require("child_process"); cp.exec(req.query.cmd); }',
+        'const run = require("child_process").exec; run(req.query.cmd);',
+        'import { exec /* command API */ as run } from "child_process"; run(req.query.cmd);',
+    ],
+)
+def test_js_fallback_detects_reviewed_child_process_bindings(
+    tmp_path, monkeypatch, source
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(source, encoding="utf-8")
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH

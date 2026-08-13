@@ -74,6 +74,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     right_text = ts_node_text(src_bytes, right)
                     right_clean = right_text.strip()
                     if re.fullmatch(
+                        r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+                        right_clean,
+                    ) and re.fullmatch(r"[A-Za-z_$][\w$]*", left_text):
+                        child_process_sinks.update(
+                            f"{left_text}.{api}" for api in self._CHILD_PROCESS_NAMES
+                        )
+                    direct_api_alias = re.fullmatch(
+                        r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\."
+                        r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)",
+                        right_clean,
+                    )
+                    if direct_api_alias and re.fullmatch(
+                        r"[A-Za-z_$][\w$]*", left_text
+                    ):
+                        child_process_sinks.add(
+                            f"{left_text}.{direct_api_alias.group(1)}"
+                        )
+                    if re.fullmatch(
                         "[A-Za-z_$][\\w$]*", left_text
                     ) and self._is_child_process_alias_assignment(
                         right_clean, child_process_sinks

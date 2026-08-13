@@ -118,7 +118,12 @@ class JsTsSinkMixin:
             re.DOTALL,
         )
         if module_import_match:
-            import_clause = module_import_match.group(1).strip()
+            import_clause = re.sub(
+                r"/\*.*?\*/|//[^\n]*",
+                " ",
+                module_import_match.group(1),
+                flags=re.DOTALL,
+            ).strip()
             module_names = []
             default_binding = import_clause.split(",", 1)[0].strip()
             if re.fullmatch(r"[A-Za-z_$][\w$]*", default_binding):
@@ -147,7 +152,10 @@ class JsTsSinkMixin:
             text,
         )
         if import_match:
-            for name in import_match.group(1).split(","):
+            import_names = re.sub(
+                r"/\*.*?\*/|//[^\n]*", " ", import_match.group(1), flags=re.DOTALL
+            )
+            for name in import_names.split(","):
                 name = name.strip()
                 alias_match = re.match(
                     r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\s+as\s+([A-Za-z_$][\w$]*)",
@@ -159,7 +167,7 @@ class JsTsSinkMixin:
                     sinks.add(f"{name}.{name}")
 
         require_match = re.search(
-            r"^\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+            r"\b(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if require_match:
@@ -174,8 +182,17 @@ class JsTsSinkMixin:
                 elif name in self._CHILD_PROCESS_NAMES:
                     sinks.add(f"{name}.{name}")
 
+        direct_alias_match = re.search(
+            r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\."
+            r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)\b",
+            text,
+        )
+        if direct_alias_match:
+            sinks.add(f"{direct_alias_match.group(1)}.{direct_alias_match.group(2)}")
+
         module_match = re.search(
-            r"^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+            r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)(?!\s*\.)",
             text,
         )
         if module_match:
