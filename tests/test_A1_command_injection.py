@@ -980,6 +980,37 @@ def test_js_ignores_shelljs_alias_shadowed_by_local_destructuring(
     assert records == []
 
 
+def test_js_does_not_leak_local_shelljs_binding_without_top_level_name(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function setup() { const run = require("shelljs").exec; } run(req.query.cmd);'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_detects_shelljs_alias_after_independent_lexical_block(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { { const sh = safe; } sh.exec(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_detects_child_process_binding_with_require_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const cp = require ("child_process"); cp.exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
 def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
     records = scan_files(
         tmp_path,

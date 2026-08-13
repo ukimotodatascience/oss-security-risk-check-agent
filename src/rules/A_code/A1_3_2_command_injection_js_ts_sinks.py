@@ -107,7 +107,7 @@ class JsTsSinkMixin:
                 )
 
         direct_require_match = re.search(
-            r"require\(['\"](?:node:)?child_process['\"]\)\.("
+            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\.("
             + "|".join(self._CHILD_PROCESS_NAMES)
             + r")\s*\(",
             text,
@@ -129,7 +129,7 @@ class JsTsSinkMixin:
                 sinks.add(alias_match.group(2) if alias_match else name)
 
         require_match = re.search(
-            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if require_match:
@@ -142,7 +142,7 @@ class JsTsSinkMixin:
                 sinks.add(alias_match.group(2) if alias_match else name)
 
         module_match = re.search(
-            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(['\"](?:node:)?child_process['\"]\)",
+            r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
             text,
         )
         if module_match:

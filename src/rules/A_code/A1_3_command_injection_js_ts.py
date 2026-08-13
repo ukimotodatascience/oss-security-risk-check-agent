@@ -438,6 +438,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for name in called_bindings
         ):
             return True
+        source_prefix = "\n".join(lines[:line_number])
+        for name in called_bindings:
+            if re.search(
+                rf"\bfunction\b[^{{]*\{{[^{{}}]*\b(?:const|let|var)\s+"
+                rf"{re.escape(name)}\s*=\s*require\s*\(\s*['\"]shelljs['\"]"
+                rf"[^{{}}]*\}}",
+                source_prefix,
+                re.DOTALL,
+            ):
+                return True
         scopes: List[Set[str]] = [set()]
         for current_line in lines[:line_number]:
             stripped = current_line.strip()
@@ -843,6 +853,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if depth:
                 break
             text = text[: match.start()] + text[cursor:]
+        independent_block = re.compile(r"(?:(?<=\{)|(?<=;))\s*\{[^{}]*\}")
+        while independent_block.search(text):
+            text = independent_block.sub("", text)
         return text
 
     @staticmethod
