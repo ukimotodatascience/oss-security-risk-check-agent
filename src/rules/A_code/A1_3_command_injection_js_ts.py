@@ -441,9 +441,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             return True
         source_prefix = "\n".join(lines[:line_number])
+        visible_source_prefix = (
+            JsTsCommandInjectionDetector._remove_completed_function_blocks(
+                source_prefix
+            )
+        )
         for name in called_bindings:
             if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
-                source_prefix, name
+                visible_source_prefix, name
             ):
                 return True
             if re.search(
@@ -545,11 +550,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
         binding_name = callee.split(".", 1)[0]
-        source_prefix = src_bytes[: node.start_byte].decode("utf-8", errors="ignore")
-        if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
-            source_prefix, binding_name
-        ):
-            return True
         scope = getattr(node, "parent", None)
         while scope is not None and getattr(scope, "type", "") not in {
             "function_declaration",
@@ -560,10 +560,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         }:
             scope = getattr(scope, "parent", None)
         if scope is None:
+            prefix = src_bytes[: node.start_byte].decode("utf-8", errors="ignore")
+            prefix = JsTsCommandInjectionDetector._remove_completed_function_blocks(
+                prefix
+            )
+        else:
+            prefix = src_bytes[scope.start_byte : node.start_byte].decode(
+                "utf-8", errors="ignore"
+            )
+        if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
+            prefix, binding_name
+        ):
+            return True
+        if scope is None:
             return False
-        prefix = src_bytes[scope.start_byte : node.start_byte].decode(
-            "utf-8", errors="ignore"
-        )
         shelljs_declaration = re.search(
             rf"\b(?:const|let|var)\s+{re.escape(binding_name)}\s*=\s*"
             rf"require\s*\(\s*['\"]shelljs['\"]\s*\)(?:\.exec)?\b",
@@ -723,10 +733,19 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     masked[index] = " "
                     index += 1
                     regex_escaped = False
+                    in_character_class = False
                     while index < len(text):
                         regex_char = text[index]
                         masked[index] = " "
-                        if regex_char == "/" and not regex_escaped:
+                        if regex_char == "[" and not regex_escaped:
+                            in_character_class = True
+                        elif regex_char == "]" and not regex_escaped:
+                            in_character_class = False
+                        elif (
+                            regex_char == "/"
+                            and not regex_escaped
+                            and not in_character_class
+                        ):
                             index += 1
                             break
                         regex_escaped = regex_char == "\\" and not regex_escaped
@@ -947,8 +966,27 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return text
 
     @staticmethod
+    def _remove_completed_function_blocks(text: str) -> str:
+        function_pattern = re.compile(r"\bfunction\b[^{}]*\{")
+        while match := function_pattern.search(text):
+            depth = 1
+            cursor = match.end()
+            while cursor < len(text) and depth:
+                if text[cursor] == "{":
+                    depth += 1
+                elif text[cursor] == "}":
+                    depth -= 1
+                cursor += 1
+            if depth:
+                break
+            text = text[: match.start()] + text[cursor:]
+        return text
+
+    @staticmethod
     def _starts_regex_literal(prefix: str) -> bool:
         if not prefix or prefix[-1] in "=(:,[!&|?{};":
+            return True
+        if prefix.endswith("=>"):
             return True
         return bool(
             re.search(
@@ -1012,9 +1050,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if JsTsCommandInjectionDetector._starts_regex_literal(prefix):
                     index += 1
                     regex_escaped = False
+                    in_character_class = False
                     while index < len(line):
                         regex_char = line[index]
-                        if regex_char == "/" and not regex_escaped:
+                        if regex_char == "[" and not regex_escaped:
+                            in_character_class = True
+                        elif regex_char == "]" and not regex_escaped:
+                            in_character_class = False
+                        elif (
+                            regex_char == "/"
+                            and not regex_escaped
+                            and not in_character_class
+                        ):
                             index += 1
                             break
                         regex_escaped = regex_char == "\\" and not regex_escaped

@@ -1396,3 +1396,80 @@ def test_ts_ignores_shelljs_alias_shadowed_after_nested_function_type(tmp_path):
     )
 
     assert records == []
+
+
+def test_js_keeps_top_level_shelljs_binding_after_inner_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function setup() { let sh; sh = safe; }
+                sh.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_shelljs_call_text_inside_regex_character_class(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                const pattern = /[/]run(req.query.cmd)/;
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_handles_regex_after_arrow_operator(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const marker = () => /`/;\nconst sh = require("shelljs");\n'
+        "sh.exec(req.query.cmd);\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_ts_detects_child_process_import_assignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import cp = require("node:child_process");
+                cp.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_property_matching_child_process_namespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import * as cp from "child_process";
+                const run = helpers.cp;
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []

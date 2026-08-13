@@ -83,6 +83,15 @@ class JsTsSinkMixin:
                     sinks.add(alias_match.group(1) if alias_match else name)
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
+        import_equals_match = re.search(
+            r"^\s*import\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]\s*\)",
+            text,
+        )
+        if import_equals_match:
+            module_name = import_equals_match.group(1)
+            sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
         module_import_match = re.search(
             r"^\s*import\s+((?:(?!\bimport\b).)*?)\s+from\s*"
             r"['\"](?:node:)?child_process['\"]",
@@ -101,7 +110,6 @@ class JsTsSinkMixin:
             if namespace_match:
                 module_names.append(namespace_match.group(1))
             for module_name in module_names:
-                sinks.add(module_name)
                 sinks.update(
                     f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
                 )
@@ -147,14 +155,15 @@ class JsTsSinkMixin:
         )
         if module_match:
             module_name = module_match.group(1)
-            sinks.add(module_name)
             sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
 
         alias_destructuring = re.search(
             r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*([A-Za-z_$][\w$]*)",
             text,
         )
-        if alias_destructuring and alias_destructuring.group(2) in sinks:
+        if alias_destructuring and any(
+            sink.startswith(f"{alias_destructuring.group(2)}.") for sink in sinks
+        ):
             for entry in alias_destructuring.group(1).split(","):
                 source, _, alias = entry.strip().partition(":")
                 source = source.strip()
@@ -165,12 +174,8 @@ class JsTsSinkMixin:
     def _is_child_process_alias_assignment(
         self, rhs_clean: str, sinks: Set[str]
     ) -> bool:
-        return (
-            rhs_clean in sinks
-            or rhs_clean.split(".")[-1] in sinks
-            or any(
-                rhs_clean == f"{sink}.{name}"
-                for sink in sinks
-                for name in self._CHILD_PROCESS_NAMES
-            )
+        return rhs_clean in sinks or any(
+            rhs_clean == f"{sink}.{name}"
+            for sink in sinks
+            for name in self._CHILD_PROCESS_NAMES
         )
