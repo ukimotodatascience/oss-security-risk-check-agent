@@ -105,6 +105,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         ]
                         for k in old_keys:
                             child_process_sinks.discard(k)
+                        shelljs_sinks.discard(left_text)
                         if self._is_child_process_alias_assignment(
                             right_clean, child_process_sinks
                         ):
@@ -145,12 +146,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             normalized_callee = re.sub(r"\s*\.\s*", ".", normalized_callee)
             direct_shelljs_call = bool(
                 re.fullmatch(
-                    r"require\s*\(\s*['\"]shelljs['\"]\s*\)\.exec",
+                    r"(?:require|\(*\s*await\s+import|\(*\s*import)\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)?\.exec",
                     normalized_callee,
                 )
             )
             direct_child_process_call = re.fullmatch(
-                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\.([A-Za-z_$][\w$]*)",
+                r"(?:require|\(*\s*await\s+import|\(*\s*import)\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)?\.([A-Za-z_$][\w$]*)",
                 normalized_callee,
             )
             if direct_child_process_call:
@@ -178,9 +179,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 continue
             callee_tail = callee.split(".")[-1]
-            valid_child_sinks = {
+            candidate_child_sinks = {
                 s
                 for s in child_process_sinks
+                if s == normalized_callee
+                or s.startswith(normalized_callee + ".")
+                or s.rpartition(".")[2] == callee_tail
+                or normalized_callee.endswith("." + s.rpartition(".")[2])
+            }
+            valid_child_sinks = {
+                s
+                for s in candidate_child_sinks
                 if not self._is_shadowed_child_process_sink(node, s, src_bytes)
             }
             sink_api = self._child_process_api_for_callee(
@@ -410,8 +419,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             if not child_process_sinks:
                 execfile_names = {"execFile", "execFileSync", "fork"}
+            execfile_names = {
+                name
+                for name in execfile_names
+                if not self._line_has_shadowed_child_process_call(code_text, {name})
+            }
             if re.search(
-                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.(?:execFile|execFileSync|fork)\s*\(",
+                r"\(*\s*(?:require|await\s+import|import)\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)*\??\.(?:execFile|execFileSync|fork)\s*\(",
                 code_text,
             ) or any(
                 (
@@ -419,28 +433,25 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     for name in execfile_names
                 )
             ):
-                if not self._line_has_shadowed_child_process_call(
+                cp_execfile_args = self._child_process_call_arguments(
                     code_text, execfile_names
+                )
+                if cp_execfile_args is not None and self._js_has_external_input(
+                    cp_execfile_args, tainted_names
                 ):
-                    cp_execfile_args = self._child_process_call_arguments(
-                        code_text, execfile_names
-                    )
-                    if cp_execfile_args is not None and self._js_has_external_input(
-                        cp_execfile_args, tainted_names
-                    ):
-                        records.append(
-                            RiskRecord(
-                                rule_id=self.rule_id,
-                                category=self.category,
-                                title=self.title,
-                                severity=Severity.MEDIUM,
-                                file_path=rel_path,
-                                line=self._child_process_call_line(
-                                    lines, i, execfile_names, tainted_names
-                                ),
-                                message="External input reaches child_process file execution",
-                            )
+                    records.append(
+                        RiskRecord(
+                            rule_id=self.rule_id,
+                            category=self.category,
+                            title=self.title,
+                            severity=Severity.MEDIUM,
+                            file_path=rel_path,
+                            line=self._child_process_call_line(
+                                lines, i, execfile_names, tainted_names
+                            ),
+                            message="External input reaches child_process file execution",
                         )
+                    )
             visible_shelljs_sinks = {
                 sink
                 for sink in shelljs_sinks
@@ -473,80 +484,81 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             message="External input reaches shell command execution helper",
                         )
                     )
-                continue
             exec_names = self._child_process_call_names(
                 child_process_sinks, {"exec", "execSync"}
             )
             if not child_process_sinks:
                 exec_names = {"exec", "execSync"}
+            exec_names = {
+                name
+                for name in exec_names
+                if not self._line_has_shadowed_child_process_call(code_text, {name})
+            }
             if re.search(
-                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.exec(?:Sync)?\s*\(",
+                r"\(*\s*(?:require|await\s+import|import)\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)*\??\.exec(?:Sync)?\s*\(",
                 code_text,
             ) or any(
                 (self._contains_js_sink_call(code_text, name) for name in exec_names)
             ):
-                if not self._line_has_shadowed_child_process_call(
-                    code_text, exec_names
+                cp_exec_args = self._child_process_call_arguments(code_text, exec_names)
+                if cp_exec_args is not None and self._js_has_external_input(
+                    cp_exec_args, tainted_names
                 ):
-                    cp_exec_args = self._child_process_call_arguments(
-                        code_text, exec_names
-                    )
-                    if cp_exec_args is not None and self._js_has_external_input(
-                        cp_exec_args, tainted_names
-                    ):
-                        records.append(
-                            RiskRecord(
-                                rule_id=self.rule_id,
-                                category=self.category,
-                                title=self.title,
-                                severity=Severity.HIGH,
-                                file_path=rel_path,
-                                line=self._child_process_call_line(
-                                    lines, i, exec_names, tainted_names
-                                ),
-                                message="External input reaches child_process command execution",
-                            )
+                    records.append(
+                        RiskRecord(
+                            rule_id=self.rule_id,
+                            category=self.category,
+                            title=self.title,
+                            severity=Severity.HIGH,
+                            file_path=rel_path,
+                            line=self._child_process_call_line(
+                                lines, i, exec_names, tainted_names
+                            ),
+                            message="External input reaches child_process command execution",
                         )
+                    )
             spawn_names = self._child_process_call_names(
                 child_process_sinks, {"spawn", "spawnSync"}
             )
             if not child_process_sinks:
                 spawn_names = {"spawn", "spawnSync"}
+            spawn_names = {
+                name
+                for name in spawn_names
+                if not self._line_has_shadowed_child_process_call(code_text, {name})
+            }
             if re.search(
-                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.spawn(?:Sync)?\s*\(",
+                r"\(*\s*(?:require|await\s+import|import)\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)*\??\.spawn(?:Sync)?\s*\(",
                 code_text,
             ) or any(
                 (self._contains_js_sink_call(code_text, name) for name in spawn_names)
             ):
-                if not self._line_has_shadowed_child_process_call(
+                cp_spawn_args = self._child_process_call_arguments(
                     code_text, spawn_names
+                )
+                if cp_spawn_args is not None and self._js_has_external_input(
+                    cp_spawn_args, tainted_names
                 ):
-                    cp_spawn_args = self._child_process_call_arguments(
-                        code_text, spawn_names
+                    has_shell_true = self._js_call_enables_shell(
+                        code_text, shell_true_option_names
                     )
-                    if cp_spawn_args is not None and self._js_has_external_input(
-                        cp_spawn_args, tainted_names
-                    ):
-                        has_shell_true = self._js_call_enables_shell(
-                            code_text, shell_true_option_names
+                    records.append(
+                        RiskRecord(
+                            rule_id=self.rule_id,
+                            category=self.category,
+                            title=self.title,
+                            severity=Severity.HIGH
+                            if has_shell_true
+                            else Severity.MEDIUM,
+                            file_path=rel_path,
+                            line=self._child_process_call_line(
+                                lines, i, spawn_names, tainted_names
+                            ),
+                            message="External input reaches child_process spawn with shell=true"
+                            if has_shell_true
+                            else "External input reaches child_process spawn",
                         )
-                        records.append(
-                            RiskRecord(
-                                rule_id=self.rule_id,
-                                category=self.category,
-                                title=self.title,
-                                severity=Severity.HIGH
-                                if has_shell_true
-                                else Severity.MEDIUM,
-                                file_path=rel_path,
-                                line=self._child_process_call_line(
-                                    lines, i, spawn_names, tainted_names
-                                ),
-                                message="External input reaches child_process spawn with shell=true"
-                                if has_shell_true
-                                else "External input reaches child_process spawn",
-                            )
-                        )
+                    )
         return dedupe_records(records)
 
     @staticmethod
@@ -898,7 +910,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         text: str, child_process_sinks: Set[str]
     ) -> Optional[str]:
         patterns = [
-            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\("
+            r"\(*\s*(?:require|await\s+import|import)\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)*\??\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\("
         ]
         for name in child_process_sinks:
             if name.startswith("require.child_process."):
@@ -1110,6 +1122,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             arrow_parameters = concise_arrow.group(1) or concise_arrow.group(2)
             if called_bindings & JsTsCommandInjectionDetector._parameter_bindings(
                 arrow_parameters
+            ):
+                return True
+        for name in called_bindings:
+            if JsTsCommandInjectionDetector._has_non_shelljs_reassignment(
+                visible_call_scope, name
             ):
                 return True
         statement_bindings = JsTsCommandInjectionDetector._local_declaration_bindings(

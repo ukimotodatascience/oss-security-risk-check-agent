@@ -2167,3 +2167,44 @@ def test_js_reports_exact_tainted_shelljs_call_line(tmp_path):
     )
     assert len(records) == 1
     assert records[0].line == 4
+
+
+def test_js_child_process_shadow_check_per_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run, execSync as launch } from "child_process"; function f(run, req) { run("safe"); launch(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_direct_dynamic_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": '(await import("node:child_process")).exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_oneline_function_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { let run = sh.exec; run = safeRunner; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_continues_child_process_after_shelljs_check(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; import { exec } from "child_process"; function f(req) { sh.exec("echo safe"); exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
