@@ -3,8 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from src.models import Severity
+from src.models import RiskRecord, Severity
 from src.rules.A_code.A1_command_injection import A1CommandInjectionRule
+from src.rules.A_code.A1_3_command_injection_js_ts import (
+    JsTsCommandInjectionDetector,
+)
+from src.rules.A_code.A1_4_command_injection_shell import ShellCommandInjectionDetector
 
 
 def write_files(root: Path, files: dict[str, str]) -> None:
@@ -205,3 +209,2043 @@ def test_detects_script_command_injection_cases(tmp_path, filename, source):
 
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "shelljs_import, call",
+    [
+        ('const { exec } = require("shelljs");', "exec(req.query.cmd);"),
+        ('const sh = require("shelljs");', "sh.exec(req.query.cmd);"),
+        ('const run = require("shelljs").exec;', "run(req.query.cmd);"),
+        ('import sh from "shelljs";', "sh.exec(req.query.cmd);"),
+        ('import * as sh from "shelljs";', "sh.exec(req.query.cmd);"),
+        ('import sh, { exec as run } from "shelljs";', "run(req.query.cmd);"),
+        ('import sh, * as shell from "shelljs";', "shell.exec(req.query.cmd);"),
+        ('import { default as sh } from "shelljs";', "sh.exec(req.query.cmd);"),
+    ],
+)
+def test_js_detects_imported_shelljs_exec_with_child_process_sinks(
+    tmp_path, shelljs_import, call
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f"""
+                const {{ spawn }} = require("child_process");
+                {shelljs_import}
+                {call}
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_dedupes_shelljs_module_exec_across_ast_and_fallback(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const sh = require("shelljs");
+                sh.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_collects_static_shelljs_imports_before_calls(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                exec(req.query.cmd);
+                import { exec } from "shelljs";
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_collects_top_level_shelljs_require_before_calls(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                function handler(req) { exec(req.query.cmd); }
+                const { exec } = require("shelljs");
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_does_not_match_shelljs_alias_as_object_method(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                db.run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_ignores_backticks_inside_strings(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const marker = "`";
+const { spawn } = require("child_process");
+const { exec } = require("shelljs");
+exec(req.query.cmd);
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_detects_optional_chained_shelljs_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                const sh = require("shelljs");
+                sh?.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_detects_defaulted_shelljs_destructuring(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                const { exec = fallbackExec } = require("shelljs");
+                exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_shadowed_shelljs_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                function handler(req) {
+                    const run = value => value;
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shelljs_import_inside_block_comment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                /*
+                import { exec as run } from "shelljs";
+                */
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shadowed_shelljs_module_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function handler(req) {
+                    const sh = safeHelper;
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_detects_function_local_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                const { spawn } = require("child_process");
+                function handler(req) {
+                    const exec = require("shelljs").exec;
+                    exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_dedupes_function_first_shelljs_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function handler(req) {
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                function handler(run, req) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+@pytest.mark.parametrize("parameters", ["run", "(run, req)"])
+def test_js_ignores_shelljs_alias_shadowed_by_arrow_parameter(tmp_path, parameters):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f"""
+                import {{ exec as run }} from "shelljs";
+                const handler = {parameters} => {{
+                    run(req.query.cmd);
+                }};
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_updates_template_state_on_slash_comment_line(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const example = `
+// `;
+const { spawn } = require("child_process");
+const { exec } = require("shelljs");
+exec(req.query.cmd);
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_function_string_with_shelljs_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function handler(req) {
+                    const example = "const { exec: run } = require('shelljs')";
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_keeps_parameter_scope_across_object_literal(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                function handler(run, req) {
+                    const options = { safe: true };
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_updates_block_comment_state_on_slash_comment_line(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """/* comment
+// */
+const { spawn } = require("child_process");
+const { exec } = require("shelljs");
+exec(req.query.cmd);
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_detects_function_binding_after_inline_comment(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const { spawn } = require("child_process");
+function handler(req) { // comment
+    const exec = require("shelljs").exec;
+    exec(req.query.cmd);
+}
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_catch_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                try {
+                    riskyOperation();
+                } catch (run) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "child_process_import, call",
+    [
+        ('import * as cp from "node:child_process";', "cp.exec(req.query.cmd);"),
+        ('import cp from "child_process";', "cp.exec(req.query.cmd);"),
+        ("", 'require("child_process").exec(req.query.cmd);'),
+    ],
+)
+def test_js_detects_child_process_module_calls(tmp_path, child_process_import, call):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f"{child_process_import}\n{call}\n"},
+    )
+
+    assert len(records) == 1
+    assert (
+        records[0].message == "External input reaches child_process command execution"
+    )
+
+
+def test_js_detects_multiline_shelljs_named_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                import {
+                    exec as run
+                } from "shelljs";
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_fallback_detects_arrow_local_shelljs_binding(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        """const { spawn } = require("child_process");
+const handler = req => {
+    const exec = require("shelljs").exec;
+    exec(req.query.cmd);
+};
+""",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_ts_ignores_shelljs_alias_shadowed_by_typed_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import { exec as run } from "shelljs";
+                function handler(run: Runner, req: Req) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_handles_parameterless_function_before_shelljs_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function helper() {} sh.exec(req.query.cmd);'
+        },
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "child_process_import",
+    [
+        'import cp, { spawn } from "node:child_process";',
+        'import cp, * as child from "node:child_process";',
+    ],
+)
+def test_js_detects_composite_child_process_module_import(
+    tmp_path, child_process_import
+):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f"{child_process_import}\ncp.exec(req.query.cmd);"},
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_ignores_backtick_inside_regex_literal(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const marker = /`/;\nimport { spawn } from "child_process";\n'
+        'import { exec } from "shelljs";\nexec(req.query.cmd);\n',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_fallback_detects_optional_chained_child_process_call(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'import * as cp from "node:child_process";\ncp?.exec(req.query.cmd);\n',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_fallback_ignores_backtick_in_regex_after_return(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        "function marker() { return /`/; }\n"
+        'import { spawn } from "child_process";\n'
+        'import { exec } from "shelljs";\nexec(req.query.cmd);\n',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_detects_direct_shelljs_require_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'require("shelljs").exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    ["{ run }, req", "[run], req", "...run"],
+)
+def test_js_ignores_shelljs_alias_shadowed_by_destructured_parameter(
+    tmp_path, parameters
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import {{ exec as run }} from "shelljs"; function handler({parameters}) {{ run(req.query.cmd); }}'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_hoisted_function(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function handler(req) { run(req.query.cmd); function run(value) { return value; } }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_detects_shelljs_alias_after_completed_inner_shadow(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function handler(req) { if (false) { const sh = safe; } sh.exec(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    ["callback = run, req", "{ run: callback }, req", "callback: Runner, req"],
+)
+def test_js_detects_shelljs_alias_referenced_but_not_bound_in_parameter(
+    tmp_path, parameters
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": f'import {{ exec as run }} from "shelljs"; function handler({parameters}) {{ run(req.query.cmd); }}'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_splits_same_line_shelljs_statements(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const sh = require("shelljs"); sh.exec(req.query.cmd);', encoding="utf-8"
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "example",
+    ['const example = "run(req.query.cmd)";', "const value = 1; // run(req.query.cmd)"],
+)
+def test_js_ignores_shelljs_calls_in_noncode_text(tmp_path, example):
+    records = scan_files(
+        tmp_path,
+        {"app.js": f'import {{ exec as run }} from "shelljs"; {example}'},
+    )
+
+    assert records == []
+
+
+@pytest.mark.parametrize("disable_tree_sitter", [False, True])
+def test_js_detects_direct_child_process_spawn(
+    tmp_path, monkeypatch, disable_tree_sitter
+):
+    detector = JsTsCommandInjectionDetector()
+    if disable_tree_sitter:
+        monkeypatch.setattr(
+            detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+        )
+    (tmp_path / "app.js").write_text(
+        'require("child_process").spawn(req.query.cmd, [], { shell: true });',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "execa.command(`echo ${req.query.cmd}`);",
+        'require("shelljs").exec(`echo ${req.query.cmd}`);',
+    ],
+)
+def test_js_fallback_preserves_taint_in_template_interpolation(
+    tmp_path, monkeypatch, call
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(call, encoding="utf-8")
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'require ("shelljs").exec(req.query.cmd);',
+        'require( "shelljs" ).exec(req.query.cmd);',
+    ],
+)
+def test_js_detects_direct_shelljs_require_with_whitespace(tmp_path, call):
+    records = scan_files(tmp_path, {"app.js": call})
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize("api", ["exec", "execSync"])
+def test_js_fallback_detects_optional_direct_child_process_exec(
+    tmp_path, monkeypatch, api
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        f'require("child_process")?.{api}(req.query.cmd);', encoding="utf-8"
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_detects_shelljs_alias_after_inner_function_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function handler(req) { if (false) { function run() {} } run(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_preserves_nested_template_interpolation_taint(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require("shelljs").exec(`echo ${{ value: req.query.cmd }.value}`);',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+def test_js_detects_commonjs_shelljs_binding_with_require_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const sh = require ("shelljs"); sh.exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
+def test_js_fallback_ignores_brace_in_interpolation_string(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require("shelljs").exec(`echo ${"}" + req.query.cmd}`);',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize(
+    "declaration", ["const { run } = helpers;", "const [run] = helpers;"]
+)
+def test_js_ignores_shelljs_alias_shadowed_by_local_destructuring(
+    tmp_path, declaration
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import {{ exec as run }} from "shelljs"; function handler(req) {{ {declaration} run(req.query.cmd); }}'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_does_not_leak_local_shelljs_binding_without_top_level_name(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function setup() { const run = require("shelljs").exec; } run(req.query.cmd);'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_detects_shelljs_alias_after_independent_lexical_block(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { { const sh = safe; } sh.exec(req.query.cmd); }'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_detects_child_process_binding_with_require_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const cp = require ("child_process"); cp.exec(req.query.cmd);'},
+    )
+
+    assert len(records) == 1
+
+
+@pytest.mark.parametrize("binding", ["exec", "exec: run"])
+def test_js_detects_child_process_namespace_destructuring(tmp_path, binding):
+    call = "run" if ":" in binding else "exec"
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f'import * as cp from "node:child_process"; const {{ {binding} }} = cp; {call}(req.query.cmd);'
+        },
+    )
+
+    assert len(records) == 1
+
+
+def test_js_does_not_pre_register_later_local_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { run } from "./helpers.js"; run(req.query.cmd); function setup() { const run = require("shelljs").exec; }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_ignores_shadow_declaration_in_comment(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'import sh from "shelljs";\nfunction f(req) {\n// const sh = safe\nsh.exec(req.query.cmd);\n}',
+        encoding="utf-8",
+    )
+
+    assert len(detector.evaluate(tmp_path)) == 1
+
+
+def test_js_fallback_detects_direct_spawn_with_require_whitespace(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require ( "child_process" ).spawn(req.query.cmd, [], { shell: true });',
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_shelljs_module_alias_shadowed_by_method_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; class C { method(sh, req) { sh.exec(req.query.cmd); } }'
+        },
+    )
+
+    assert records == []
+
+
+def test_js_does_not_leak_local_shelljs_binding_to_top_level(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function helper() {
+                    const run = require("shelljs").exec;
+                }
+                function run(value) { return value; }
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_shelljs_import_examples_in_strings(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { spawn } from "child_process";
+                const example = "import { exec as run } from 'shelljs'";
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        "\"const { exec: run } = require('shelljs')\"",
+        '`\nimport { exec as run } from "shelljs"\n`',
+    ],
+)
+def test_js_ignores_shelljs_declaration_examples(tmp_path, example):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": f"""
+                import {{ spawn }} from "child_process";
+                const example = {example};
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_ts_fallback_detects_shelljs_import_equals_with_child_process_sinks(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.ts"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import sh = require("shelljs");
+            import { spawn } from "child_process";
+            sh.exec(req.query.cmd);
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+def test_js_fallback_parses_semicolonless_imports_independently(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import { spawn } from "child_process"
+            import sh from "shelljs"
+            sh.exec(req.query.cmd)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].message == "External input reaches shell command execution helper"
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'execa.command("cat " + req.query.target);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'source "$1"',
+        ),
+    ],
+)
+def test_script_detectors_merge_tree_sitter_and_fallback_findings(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    expected = RiskRecord(
+        rule_id=detector.rule_id,
+        category=detector.category,
+        title=detector.title,
+        severity=Severity.HIGH,
+        file_path=filename,
+        line=1,
+        message="tree-sitter finding",
+    )
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: [expected])
+
+    records = detector.evaluate(tmp_path)
+
+    assert expected in records
+    assert len(records) == 2
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+        ),
+    ],
+)
+def test_script_detectors_keep_fallback_only_findings_after_tree_sitter_success(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: [])
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+        ),
+    ],
+)
+def test_script_detectors_fall_back_when_tree_sitter_is_unavailable(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(detector, tree_sitter_method, lambda *_args: None)
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "detector, tree_sitter_method, filename, source, message",
+    [
+        (
+            JsTsCommandInjectionDetector(),
+            "_evaluate_js_ts_file_with_tree_sitter",
+            "app.js",
+            'const { exec } = require("child_process"); exec(req.query.cmd);',
+            "External input reaches child_process command execution",
+        ),
+        (
+            ShellCommandInjectionDetector(),
+            "_evaluate_shell_file_with_tree_sitter",
+            "run.sh",
+            'eval "$1"',
+            "External input reaches shell eval",
+        ),
+    ],
+)
+def test_script_detectors_dedupe_matching_tree_sitter_and_fallback_findings(
+    tmp_path, monkeypatch, detector, tree_sitter_method, filename, source, message
+):
+    file_path = tmp_path / filename
+    file_path.write_text(source, encoding="utf-8")
+    tree_sitter_record = RiskRecord(
+        rule_id=detector.rule_id,
+        category=detector.category,
+        title=detector.title,
+        severity=Severity.HIGH,
+        file_path=filename,
+        line=1,
+        message=message,
+    )
+    monkeypatch.setattr(
+        detector, tree_sitter_method, lambda *_args: [tree_sitter_record]
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert records == [tree_sitter_record]
+
+
+def test_js_detects_local_shelljs_require_with_whitespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                function handler(req) {
+                    const sh = require ("shelljs");
+                    sh.exec(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_fallback_drops_shadow_from_same_line_closed_function(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    file_path = tmp_path / "app.js"
+    file_path.write_text(
+        textwrap.dedent(
+            """
+            import sh from "shelljs";
+            function setup() { const sh = safe; }
+            sh.exec(req.query.cmd);
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_reassigned_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                let run = require("shelljs").exec;
+                run = safe;
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_ts_ignores_shelljs_alias_shadowed_after_nested_function_type(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import { exec as run } from "shelljs";
+                function handler(
+                    callback: (value: string) => void,
+                    run: Runner,
+                    req: Req,
+                ) {
+                    run(req.query.cmd);
+                }
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_keeps_top_level_shelljs_binding_after_inner_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import sh from "shelljs";
+                function setup() { let sh; sh = safe; }
+                sh.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_shelljs_call_text_inside_regex_character_class(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                const pattern = /[/]run(req.query.cmd)/;
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_fallback_handles_regex_after_arrow_operator(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'const marker = () => /`/;\nconst sh = require("shelljs");\n'
+        "sh.exec(req.query.cmd);\n",
+        encoding="utf-8",
+    )
+
+    records = detector.evaluate(tmp_path)
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_ts_detects_child_process_import_assignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": """
+                import cp = require("node:child_process");
+                cp.exec(req.query.cmd);
+            """
+        },
+    )
+
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_property_matching_child_process_namespace(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import * as cp from "child_process";
+                const run = helpers.cp;
+                run(req.query.cmd);
+            """
+        },
+    )
+
+    assert records == []
+
+
+def test_js_ignores_child_process_call_example_in_string(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const example = "require(\\"child_process\\").exec(req.query.cmd)";'
+        },
+    )
+    assert records == []
+
+
+def test_js_does_not_preregister_later_local_child_process_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import * as real from "child_process";
+                const cp = helpers;
+                cp.exec(req.query.cmd);
+                function setup() { const cp = require("child_process"); }
+            """
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_call_before_lexical_shadow_declaration(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { { sh.exec(req.query.cmd); const sh = safe; } }'
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_alias_shadowed_by_concise_arrow_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; const f = (sh, req) => sh.exec(req.query.cmd);'
+        },
+    )
+    assert records == []
+
+
+def test_js_reports_actual_shelljs_call_line_after_string_example(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": """
+                import { exec as run } from "shelljs";
+                const value = condition
+                  ? "run(req.query.fake)"
+                  : run(req.query.cmd);
+            """
+        },
+    )
+    assert len(records) == 1
+    assert records[0].line == 4
+
+
+def test_js_ignores_shelljs_alias_in_second_declarator(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function f(req) { const x = 1, run = safe; run(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_preserves_spawn_severity_for_destructured_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const { spawn: run } = cp; run(req.query.cmd, []);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+    assert records[0].message == "External input reaches child_process spawn"
+
+
+def test_js_ignores_call_before_top_level_commonjs_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'run(req.query.cmd); const run = require("shelljs").exec;'},
+    )
+    assert records == []
+
+
+def test_ts_ignores_shelljs_alias_shadowed_by_parameter_property(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.ts": 'import { exec as run } from "shelljs"; class C { constructor(private run: (s: string) => void, req: any) { run(req.query.cmd); } }'
+        },
+    )
+    assert records == []
+
+
+def test_js_fallback_detects_taint_after_regex_in_template_interpolation(
+    tmp_path, monkeypatch
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'require("shelljs").exec(`echo ${/}/.test(value) ? req.query.cmd : ""}`);',
+        encoding="utf-8",
+    )
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_does_not_restore_unimported_default_child_process_sink(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { spawn } from "child_process"; function exec(value) { return value; } exec(req.query.cmd);'
+        },
+    )
+    assert records == []
+
+
+def test_ts_detects_typed_commonjs_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.ts": 'const sh: any = require("shelljs"); sh.exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_preserves_child_process_api_through_alias_chain(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const run = cp.exec; const runAgain = run; runAgain(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert (
+        records[0].message == "External input reaches child_process command execution"
+    )
+
+
+def test_js_ignores_shelljs_call_example_in_template_interpolation_string(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; const example = `${"run(req.query.cmd)"}`;'
+        },
+    )
+    assert records == []
+
+
+def test_js_fallback_detects_optional_shelljs_alias_call(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(
+        'import { exec as run } from "shelljs"; run?.(req.query.cmd);',
+        encoding="utf-8",
+    )
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_ignores_child_process_namespace_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; function f(cp, req) { cp.exec(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_ignores_shelljs_namespace_shadowed_by_for_of_destructuring(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; for (const { sh } of helpers) { sh.exec(req.query.cmd); }'
+        },
+    )
+    assert records == []
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        'const sh = require("shelljs") as typeof import("shelljs");',
+        'const sh = (require("shelljs"));',
+        'const sh = require("shelljs") satisfies typeof import("shelljs");',
+    ],
+)
+def test_ts_detects_asserted_commonjs_shelljs_binding(tmp_path, binding):
+    records = scan_files(
+        tmp_path,
+        {"app.ts": f"{binding} sh.exec(req.query.cmd);"},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_defaulted_child_process_destructuring(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import * as cp from "child_process"; const { exec = fallback } = cp; exec(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_multiline_shelljs_member_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'import sh from "shelljs"; sh\n  .exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_commented_shelljs_default_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh /* ShellJS helper */ from "shelljs"; sh.exec(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_local_child_process_namespace_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function handler(req) { const cp = require("child_process"); cp.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_direct_child_process_api_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'const run = require("child_process").exec; run(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_commented_child_process_named_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec /* command API */ as run } from "child_process"; run(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'function handler(req) { const cp = require("child_process"); cp.exec(req.query.cmd); }',
+        'const run = require("child_process").exec; run(req.query.cmd);',
+        'import { exec /* command API */ as run } from "child_process"; run(req.query.cmd);',
+    ],
+)
+def test_js_fallback_detects_reviewed_child_process_bindings(
+    tmp_path, monkeypatch, source
+):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.js").write_text(source, encoding="utf-8")
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_does_not_taint_constant_shelljs_call_from_sibling_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function handler(req) { audit(req.query.cmd); sh.exec("uptime"); }'
+        },
+    )
+    assert records == []
+
+
+def test_js_updates_shell_option_after_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const { spawn } = require("child_process"); let opts = { shell: true }; opts = { shell: false }; spawn(req.query.cmd, [], opts);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_jsx_does_not_detect_shelljs_call_in_text(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.jsx": 'import { exec as run } from "shelljs"; const Demo = () => <code>run(req.query.cmd)</code>;'
+        },
+    )
+    assert records == []
+
+
+def test_js_detects_dynamic_shelljs_default_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'async function handler(req) { const sh = (await import("shelljs")).default; sh.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_dynamic_child_process_namespace_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'async function f(req) { const cp = await import("node:child_process"); cp.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_ts_fallback_detects_typed_child_process_binding(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    monkeypatch.setattr(
+        detector, "_evaluate_js_ts_file_with_tree_sitter", lambda *_args: None
+    )
+    (tmp_path / "app.ts").write_text(
+        'const cp: typeof import("child_process") = require("child_process"); cp.exec(req.query.cmd);',
+        encoding="utf-8",
+    )
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_parenthesized_direct_child_process_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": '(require("child_process")).exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_resolves_child_process_alias_api_per_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function command(req) { const { exec: run } = require("child_process"); run(req.query.cmd); } function process(req) { const { spawn: run } = require("child_process"); run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 2
+    assert {record.severity for record in records} == {Severity.HIGH, Severity.MEDIUM}
+
+
+def test_js_restores_outer_child_process_alias_after_inner_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "child_process"; function helper() { const { spawn: run } = require("child_process"); } function handler(req) { run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_does_not_preregister_later_var_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'run(req.query.cmd); var run = require("shelljs").exec;'},
+    )
+    assert records == []
+
+
+def test_js_checks_spawn_after_shadowed_exec_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run, spawn as launch } from "child_process"; function f(run, req) { run("safe"); launch(req.query.cmd, []); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_js_does_not_apply_later_nested_shelljs_shadow(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; sh.exec(req.query.cmd); function setup() { let sh = safe; }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_reuses_file_mask_for_multiple_shelljs_calls(tmp_path, monkeypatch):
+    detector = JsTsCommandInjectionDetector()
+    original_mask = detector._mask_js_noncode_for_detection
+    full_source_masks = 0
+
+    def counting_mask(text):
+        nonlocal full_source_masks
+        if text.count("sh.exec(") == 20:
+            full_source_masks += 1
+        return original_mask(text)
+
+    monkeypatch.setattr(detector, "_mask_js_noncode_for_detection", counting_mask)
+    source = 'import sh from "shelljs";\n' + "\n".join(
+        f"sh.exec(req.query.cmd{i});" for i in range(20)
+    )
+    (tmp_path / "app.js").write_text(source, encoding="utf-8")
+    records = detector.evaluate(tmp_path)
+    assert len(records) == 20
+    assert full_source_masks == 1
+
+
+def test_js_does_not_leak_arrow_child_process_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const setup = () => { const run = require("child_process").exec; }; const handler = req => run(req.query.cmd);'
+        },
+    )
+    assert records == []
+
+
+def test_js_detects_parenthesized_direct_shelljs_call(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": '(require("shelljs")).exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_assigned_shelljs_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": 'let sh; sh = require("shelljs"); sh.exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_keeps_unshadowed_shelljs_sink_in_same_statement(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; import sh from "shelljs"; function f(run, req) { run("safe"); sh.exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_isolates_shell_options_in_lexical_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "const opts = { shell: true };\n"
+                "function helper() {\n"
+                "    const opts = { shell: false };\n"
+                "}\n"
+                'const spawn = require("child_process").spawn;\n'
+                'spawn("cat", [req.query.cmd], opts);\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert "shell=true" in records[0].message
+
+
+def test_js_does_not_treat_control_block_sink_decl_as_top_level(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'if (ok) { const sh = require("shelljs"); }\nsh.exec(req.query.cmd);\n'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_detects_direct_property_access_on_dynamic_child_process_import(
+    tmp_path,
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "async function main() {\n"
+                '    const run = (await import("node:child_process")).exec;\n'
+                "    run(req.query.cmd);\n"
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_shelljs_callable_alias_from_module_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'import sh from "shelljs";\nconst run = sh.exec;\nrun(req.query.cmd);\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_supports_hoisted_static_child_process_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'cp.exec(req.query.cmd);\nimport * as cp from "node:child_process";\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_clears_sink_on_non_child_process_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'import * as cp from "node:child_process";\n'
+                "let run = cp.exec;\n"
+                "run = safeRunner;\n"
+                "run(req.query.cmd);\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_supports_destructuring_alias_on_dynamic_child_process_import(
+    tmp_path,
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "async function main() {\n"
+                '    const { exec: run } = await import("node:child_process");\n'
+                "    run(req.query.cmd);\n"
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_tracks_function_local_shell_options_in_ast_path(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    const opts = { shell: true };\n"
+                '    const spawn = require("child_process").spawn;\n'
+                '    spawn("cat", [req.query.cmd], opts);\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert "shell=true" in records[0].message
+
+
+def test_js_isolates_child_process_call_argument_taint(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    audit(req.query.cmd);\n"
+                '    const exec = require("child_process").exec;\n'
+                '    exec("uptime");\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_ignores_child_process_call_in_tdz(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    run(req.query.cmd);\n"
+                '    const run = require("child_process").exec;\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_masks_strings_before_registering_sinks(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "const example = 'const run = require(\"node:child_process\").exec';\n"
+                "const run = safeRunner;\n"
+                "run(req.query.cmd);\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_execfile_only_checks_call_arguments(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { execFile } from "child_process"; function f(req) { audit(req.query.cmd); execFile("safe"); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_evaluates_all_child_process_calls_in_statement(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec } from "child_process"; function f(req) { exec("safe"); exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_spawn_options_not_confused_by_unrelated_objects(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { spawn } from "child_process"; const unrelated = { shell: true }; function f(req) { spawn(req.query.cmd, [], { shell: false }); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_js_reports_exact_tainted_shelljs_call_line(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs";\nfunction f(req) {\n  sh.exec("safe");\n  sh.exec(req.query.cmd);\n}'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].line == 4
+
+
+def test_js_child_process_shadow_check_per_alias(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run, execSync as launch } from "child_process"; function f(run, req) { run("safe"); launch(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_direct_dynamic_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {"app.js": '(await import("node:child_process")).exec(req.query.cmd);'},
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_oneline_function_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; function f(req) { let run = sh.exec; run = safeRunner; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_continues_child_process_after_shelljs_check(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs"; import { exec } from "child_process"; function f(req) { sh.exec("echo safe"); exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_shelljs_destructuring_dynamic_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const { exec: run } = await import("shelljs"); run(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_child_process_shadowed_by_helper_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "child_process"; function f(req) { const run = helper.exec; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_shelljs_shadowed_by_helper_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function f(req) { const run = helper.exec; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_require_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function f(require, req) { require("shelljs").exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
