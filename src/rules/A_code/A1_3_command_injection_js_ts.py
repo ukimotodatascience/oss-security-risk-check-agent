@@ -447,7 +447,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             title=self.title,
                             severity=Severity.HIGH,
                             file_path=rel_path,
-                            line=self._shelljs_call_line(lines, i, shelljs_sinks),
+                            line=self._shelljs_call_line(
+                                lines, i, visible_shelljs_sinks
+                            ),
                             message="External input reaches shell command execution helper",
                         )
                     )
@@ -476,7 +478,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             title=self.title,
                             severity=Severity.HIGH,
                             file_path=rel_path,
-                            line=self._shelljs_call_line(lines, i, exec_names),
+                            line=self._child_process_call_line(lines, i, exec_names),
                             message="External input reaches child_process command execution",
                         )
                     )
@@ -510,7 +512,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         title=self.title,
                         severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
                         file_path=rel_path,
-                        line=self._shelljs_call_line(lines, i, spawn_names),
+                        line=self._child_process_call_line(lines, i, spawn_names),
                         message="External input reaches child_process spawn with shell=true"
                         if has_shell_true
                         else "External input reaches child_process spawn",
@@ -1785,12 +1787,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
         )
 
-    def _shelljs_call_line(
-        self, lines: List[str], start_line: int, shelljs_sinks: Set[str]
+    def _child_process_call_line(
+        self, lines: List[str], start_line: int, sinks: Set[str]
     ) -> int:
         for line_number in range(start_line, len(lines) + 1):
             line = self._mask_js_noncode_for_detection(lines[line_number - 1])
-            if self._is_known_third_party_shell_sink(line, shelljs_sinks):
+            if any(self._contains_js_sink_call(line, sink) for sink in sinks):
+                return line_number
+        return start_line
+
+    def _shelljs_call_line(
+        self, lines: List[str], start_line: int, shelljs_sinks: Set[str]
+    ) -> int:
+        call_names = {
+            s.rpartition(".")[0] if s.rpartition(".")[0] else s for s in shelljs_sinks
+        }
+        for line_number in range(start_line, len(lines) + 1):
+            line = self._mask_js_noncode_for_detection(lines[line_number - 1])
+            if re.match(r"\s*(?:import|const|let|var)\b", line):
+                continue
+            if any(
+                self._contains_js_sink_call(line, name) for name in call_names
+            ) or self._is_known_third_party_shell_sink(line, shelljs_sinks):
                 return line_number
         return start_line
 
