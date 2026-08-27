@@ -97,16 +97,22 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         child_process_sinks.add(
                             f"{left_text}.{direct_api_alias.group(1)}"
                         )
-                    if re.fullmatch(
-                        "[A-Za-z_$][\\w$]*", left_text
-                    ) and self._is_child_process_alias_assignment(
-                        right_clean, child_process_sinks
-                    ):
-                        api = self._child_process_api_for_callee(
+                    if re.fullmatch("[A-Za-z_$][\\w$]*", left_text):
+                        old_keys = [
+                            k
+                            for k in list(child_process_sinks)
+                            if k.startswith(f"{left_text}.") or k == left_text
+                        ]
+                        for k in old_keys:
+                            child_process_sinks.discard(k)
+                        if self._is_child_process_alias_assignment(
                             right_clean, child_process_sinks
-                        )
-                        if api is not None:
-                            child_process_sinks.add(f"{left_text}.{api}")
+                        ):
+                            api = self._child_process_api_for_callee(
+                                right_clean, child_process_sinks
+                            )
+                            if api is not None:
+                                child_process_sinks.add(f"{left_text}.{api}")
                     if re.fullmatch("[A-Za-z_$][\\w$]*", left_text) and is_top_level:
                         if self._js_options_enable_shell(right_clean):
                             shell_true_option_names.add(left_text)
@@ -218,8 +224,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
+                full_source_text = src_bytes.decode("utf-8", errors="ignore")
+                call_scope_text = full_source_text[: node.start_byte] + "\n" + call_text
                 has_shell_true = self._js_call_enables_shell(
-                    call_text, shell_true_option_names
+                    call_scope_text, shell_true_option_names
                 )
                 records.append(
                     RiskRecord(
@@ -381,17 +389,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if not is_scoped_statement:
                     top_level_shell_true_option_names = set(shell_true_option_names)
                 # Update child_process alias on re-assignment
+                # Remove old API mappings for this variable on any assignment
+                old_keys = [
+                    k
+                    for k in list(child_process_sinks)
+                    if k.startswith(f"{option_name}.") or k == option_name
+                ]
+                for k in old_keys:
+                    child_process_sinks.discard(k)
                 if self._is_child_process_alias_assignment(
                     option_rhs_clean, child_process_sinks
                 ):
-                    # Remove old API mappings for this variable
-                    old_keys = [
-                        k
-                        for k in list(child_process_sinks)
-                        if k.startswith(f"{option_name}.")
-                    ]
-                    for k in old_keys:
-                        child_process_sinks.discard(k)
                     api = self._child_process_api_for_callee(
                         option_rhs_clean, child_process_sinks
                     )
@@ -456,8 +464,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 (self._contains_js_sink_call(code_text, name) for name in exec_names)
             ):
                 if self._line_has_shadowed_child_process_call(code_text, exec_names):
-                    pass
-                elif self._js_has_external_input(code_text, tainted_names):
+                    continue
+                cp_exec_args = self._child_process_call_arguments(code_text, exec_names)
+                if cp_exec_args is not None and self._js_has_external_input(
+                    cp_exec_args, tainted_names
+                ):
                     records.append(
                         RiskRecord(
                             rule_id=self.rule_id,
@@ -482,7 +493,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             ):
                 if self._line_has_shadowed_child_process_call(code_text, spawn_names):
                     continue
-                if not self._js_has_external_input(code_text, tainted_names):
+                cp_spawn_args = self._child_process_call_arguments(
+                    code_text, spawn_names
+                )
+                if cp_spawn_args is None or not self._js_has_external_input(
+                    cp_spawn_args, tainted_names
+                ):
                     continue
                 has_shell_true = self._js_call_enables_shell(
                     code_text, shell_true_option_names
@@ -547,10 +563,26 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             return True
         parameter_text = JsTsCommandInjectionDetector._function_parameter_text(text)
-        if parameter_text and called_bindings & (
-            JsTsCommandInjectionDetector._parameter_bindings(parameter_text)
-        ):
-            return True
+        if parameter_text:
+            param_bindings = JsTsCommandInjectionDetector._parameter_bindings(
+                parameter_text
+            )
+            fn_match = re.search(
+                r"(?:function\b[^{]*|\([^)]*\)\s*=>)\s*\{([\s\S]*?)\}", text
+            )
+            if fn_match:
+                fn_body = fn_match.group(1)
+                for sink_name in child_process_sinks:
+                    b_name = sink_name.split(".", 1)[0]
+                    if (
+                        b_name in param_bindings
+                        and JsTsCommandInjectionDetector._contains_js_sink_call(
+                            fn_body, sink_name
+                        )
+                    ):
+                        return True
+            elif called_bindings & param_bindings:
+                return True
         return any(
             name in JsTsCommandInjectionDetector._local_declaration_bindings(text)
             and not JsTsCommandInjectionDetector._is_child_process_declaration_binding(
@@ -745,17 +777,30 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _contains_js_sink_call(text: str, name: str) -> bool:
         sink_pattern = re.escape(name).replace(r"\.", r"\s*(?:\.|\?\.)\s*")
-        return bool(re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text))
+        return bool(
+            re.search(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(", text)
+            or re.search(
+                rf"(?<![\w$.]){sink_pattern}\s*\.\s*[A-Za-z_$][\w$]*\s*\(", text
+            )
+        )
 
     def _js_call_enables_shell(
         self, text: str, shell_true_option_names: Set[str]
     ) -> bool:
         if self._js_options_enable_shell(text):
             return True
-        return any(
-            re.search(rf"[,\s]\s*{re.escape(name)}\s*\)?\s*;?$", text)
-            for name in shell_true_option_names
-        )
+        for name in shell_true_option_names:
+            if re.search(rf"[,\s]\s*{re.escape(name)}\s*\)?\s*;?$", text):
+                return True
+        option_arg_match = re.search(r",\s*([A-Za-z_$][\w$]*)\s*\)?\s*;?$", text)
+        if option_arg_match:
+            opt_var = option_arg_match.group(1)
+            if re.search(
+                rf"\b(?:const|let|var)\s+{re.escape(opt_var)}\b[^;=]*=\s*\{{[^}}]*\bshell\s*:\s*true\b",
+                text,
+            ):
+                return True
+        return False
 
     @staticmethod
     def _is_known_third_party_shell_sink(text: str, shelljs_sinks: Set[str]) -> bool:
@@ -773,6 +818,61 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 for name in shelljs_sinks
             )
         )
+
+    @staticmethod
+    def _child_process_call_arguments(
+        text: str, child_process_sinks: Set[str]
+    ) -> Optional[str]:
+        patterns = [
+            r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.(?:exec|execSync|spawn|spawnSync|execFile|execFileSync|fork)\s*\("
+        ]
+        for name in child_process_sinks:
+            if name.startswith("require.child_process."):
+                api = name.split(".")[-1]
+                patterns.append(
+                    rf"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.{re.escape(api)}\s*\("
+                )
+            else:
+                base, sep, api = name.rpartition(".")
+                if sep and api in JsTsCommandInjectionDetector._CHILD_PROCESS_NAMES:
+                    patterns.append(
+                        rf"(?<![\w$.]){re.escape(base)}(?:\s*(?:\.|\?\.)\s*{re.escape(api)})?(?:\?\.)?\s*\("
+                    )
+                else:
+                    sink_pattern = re.escape(name).replace(r"\.", r"\s*(?:\.|\?\.)\s*")
+                    patterns.append(rf"(?<![\w$.]){sink_pattern}(?:\?\.)?\s*\(")
+        matches = [
+            match
+            for pattern in patterns
+            for match in re.finditer(pattern, text)
+            if not re.search(r"\bfunction\s*$", text[: match.start()])
+        ]
+        if not matches:
+            return None
+        match = matches[0]
+        callee_head = (
+            text[match.start() : match.end()].split("(")[0].split(".")[0].strip()
+        )
+        if callee_head and re.search(
+            rf"\b(?:const|let|var)\s+{re.escape(callee_head)}\b", text[match.end() :]
+        ):
+            if not re.search(
+                rf"\b(?:const|let|var)\s+{re.escape(callee_head)}\b",
+                text[: match.start()],
+            ):
+                return None
+        open_paren_idx = match.end() - 1
+        if open_paren_idx == -1 or text[open_paren_idx] != "(":
+            return None
+        depth = 1
+        cursor = open_paren_idx + 1
+        while cursor < len(text) and depth:
+            if text[cursor] == "(":
+                depth += 1
+            elif text[cursor] == ")":
+                depth -= 1
+            cursor += 1
+        return text[open_paren_idx + 1 : cursor - 1]
 
     @staticmethod
     def _shelljs_call_arguments(text: str, shelljs_sinks: Set[str]) -> Optional[str]:

@@ -2028,3 +2028,99 @@ def test_js_supports_hoisted_static_child_process_import(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_clears_sink_on_non_child_process_reassignment(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'import * as cp from "node:child_process";\n'
+                "let run = cp.exec;\n"
+                "run = safeRunner;\n"
+                "run(req.query.cmd);\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_supports_destructuring_alias_on_dynamic_child_process_import(
+    tmp_path,
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "async function main() {\n"
+                '    const { exec: run } = await import("node:child_process");\n'
+                "    run(req.query.cmd);\n"
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_tracks_function_local_shell_options_in_ast_path(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    const opts = { shell: true };\n"
+                '    const spawn = require("child_process").spawn;\n'
+                '    spawn("cat", [req.query.cmd], opts);\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert "shell=true" in records[0].message
+
+
+def test_js_isolates_child_process_call_argument_taint(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    audit(req.query.cmd);\n"
+                '    const exec = require("child_process").exec;\n'
+                '    exec("uptime");\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_ignores_child_process_call_in_tdz(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "function f(req) {\n"
+                "    run(req.query.cmd);\n"
+                '    const run = require("child_process").exec;\n'
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_masks_strings_before_registering_sinks(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "const example = 'const run = require(\"node:child_process\").exec';\n"
+                "const run = safeRunner;\n"
+                "run(req.query.cmd);\n"
+            )
+        },
+    )
+    assert len(records) == 0

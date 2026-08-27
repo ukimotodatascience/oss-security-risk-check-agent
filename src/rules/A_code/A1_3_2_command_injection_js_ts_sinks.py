@@ -17,7 +17,23 @@ class JsTsSinkMixin:
     _CHILD_PROCESS_NAMES = CHILD_PROCESS_NAMES
 
     @staticmethod
-    def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+    def _mask_string_examples_for_registration(text: str) -> str:
+        def replacer(match: re.Match) -> str:
+            val = match.group(0)
+            if re.fullmatch(r"['\"](?:node:)?child_process['\"]", val) or re.fullmatch(
+                r"['\"]shelljs['\"]", val
+            ):
+                return val
+            return "'" + "_" * max(0, len(val) - 2) + "'"
+
+        return re.sub(
+            r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+            replacer,
+            text,
+        )
+
+    def _register_shelljs_imports(self, text: str, sinks: Set[str]) -> None:
+        text = self._mask_string_examples_for_registration(text)
         text = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
         text = re.sub(
             r"\(\s*(require\s*\(\s*['\"]shelljs['\"]\s*\))\s*\)",
@@ -119,6 +135,7 @@ class JsTsSinkMixin:
                 sinks.add(var_name)
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
+        text = self._mask_string_examples_for_registration(text)
         text = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
         text = re.sub(
             r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
@@ -225,6 +242,20 @@ class JsTsSinkMixin:
         if module_match:
             module_name = module_match.group(1)
             sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+
+        dynamic_destructuring = re.search(
+            r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*\(*\s*await\s+import\s*\(\s*"
+            r"['\"](?:node:)?child_process['\"]\s*\)\s*\)*",
+            text,
+        )
+        if dynamic_destructuring:
+            for entry in dynamic_destructuring.group(1).split(","):
+                entry = entry.split("=", 1)[0].strip()
+                source, _, alias = entry.partition(":")
+                source = source.strip()
+                target = alias.strip() or source
+                if source in self._CHILD_PROCESS_NAMES:
+                    sinks.add(f"{target}.{source}")
 
         direct_dynamic_import = re.search(
             r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
