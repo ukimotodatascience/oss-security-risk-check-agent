@@ -224,10 +224,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
-                full_source_text = src_bytes.decode("utf-8", errors="ignore")
-                call_scope_text = full_source_text[: node.start_byte] + "\n" + call_text
-                has_shell_true = self._js_call_enables_shell(
-                    call_scope_text, shell_true_option_names
+                has_shell_true = self._ast_node_enables_shell(
+                    node, src_bytes, shell_true_option_names
                 )
                 records.append(
                     RiskRecord(
@@ -407,26 +405,48 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         child_process_sinks.add(f"{option_name}.{api}")
             if not is_scoped_statement:
                 top_level_child_process_sinks = set(child_process_sinks)
-            if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", code_text):
-                if self._js_has_external_input(code_text, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.MEDIUM,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process file execution",
-                        )
+            execfile_names = self._child_process_call_names(
+                child_process_sinks, {"execFile", "execFileSync", "fork"}
+            )
+            if not child_process_sinks:
+                execfile_names = {"execFile", "execFileSync", "fork"}
+            if re.search(
+                r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\??\.(?:execFile|execFileSync|fork)\s*\(",
+                code_text,
+            ) or any(
+                (
+                    self._contains_js_sink_call(code_text, name)
+                    for name in execfile_names
+                )
+            ):
+                if not self._line_has_shadowed_child_process_call(
+                    code_text, execfile_names
+                ):
+                    cp_execfile_args = self._child_process_call_arguments(
+                        code_text, execfile_names
                     )
-                continue
+                    if cp_execfile_args is not None and self._js_has_external_input(
+                        cp_execfile_args, tainted_names
+                    ):
+                        records.append(
+                            RiskRecord(
+                                rule_id=self.rule_id,
+                                category=self.category,
+                                title=self.title,
+                                severity=Severity.MEDIUM,
+                                file_path=rel_path,
+                                line=self._child_process_call_line(
+                                    lines, i, execfile_names, tainted_names
+                                ),
+                                message="External input reaches child_process file execution",
+                            )
+                        )
             visible_shelljs_sinks = {
                 sink
                 for sink in shelljs_sinks
                 if not self._line_has_shadowed_shelljs_call(
                     lines,
-                    self._shelljs_call_line(lines, i, {sink}),
+                    self._shelljs_call_line(lines, i, {sink}, tainted_names),
                     code_text,
                     {sink},
                     masked_source,
@@ -448,7 +468,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             severity=Severity.HIGH,
                             file_path=rel_path,
                             line=self._shelljs_call_line(
-                                lines, i, visible_shelljs_sinks
+                                lines, i, visible_shelljs_sinks, tainted_names
                             ),
                             message="External input reaches shell command execution helper",
                         )
@@ -482,7 +502,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 severity=Severity.HIGH,
                                 file_path=rel_path,
                                 line=self._child_process_call_line(
-                                    lines, i, exec_names
+                                    lines, i, exec_names, tainted_names
                                 ),
                                 message="External input reaches child_process command execution",
                             )
@@ -520,7 +540,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                                 else Severity.MEDIUM,
                                 file_path=rel_path,
                                 line=self._child_process_call_line(
-                                    lines, i, spawn_names
+                                    lines, i, spawn_names, tainted_names
                                 ),
                                 message="External input reaches child_process spawn with shell=true"
                                 if has_shell_true
@@ -813,6 +833,49 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 return True
         return False
 
+    def _ast_node_enables_shell(
+        self, node, src_bytes: bytes, shell_true_option_names: Set[str]
+    ) -> bool:
+        args_node = node.child_by_field_name("arguments")
+        if not args_node:
+            return False
+        arg_nodes = [
+            child for child in args_node.children if child.type not in {"(", ")", ","}
+        ]
+        if not arg_nodes:
+            return False
+        options_node = None
+        if len(arg_nodes) >= 3:
+            options_node = arg_nodes[2]
+        elif len(arg_nodes) == 2 and arg_nodes[1].type in {"object", "identifier"}:
+            options_node = arg_nodes[1]
+        if not options_node:
+            return False
+        opt_text = src_bytes[options_node.start_byte : options_node.end_byte].decode(
+            "utf-8", errors="ignore"
+        )
+        if re.search(r"\bshell\s*:\s*false\b", opt_text):
+            return False
+        if re.search(r"\bshell\s*:\s*true\b", opt_text):
+            return True
+        if options_node.type == "identifier":
+            opt_var_name = opt_text.strip()
+            if opt_var_name in shell_true_option_names:
+                return True
+            full_source_text = src_bytes.decode("utf-8", errors="ignore")
+            call_scope_text = full_source_text[: node.start_byte]
+            decl_match = re.search(
+                rf"\b(?:const|let|var)\s+{re.escape(opt_var_name)}\b[^;=]*=\s*\{{([\s\S]*?)\}}",
+                call_scope_text,
+            )
+            if decl_match:
+                decl_body = decl_match.group(1)
+                if re.search(r"\bshell\s*:\s*false\b", decl_body):
+                    return False
+                if re.search(r"\bshell\s*:\s*true\b", decl_body):
+                    return True
+        return False
+
     @staticmethod
     def _is_known_third_party_shell_sink(text: str, shelljs_sinks: Set[str]) -> bool:
         return bool(
@@ -858,32 +921,33 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for match in re.finditer(pattern, text)
             if not re.search(r"\bfunction\s*$", text[: match.start()])
         ]
-        if not matches:
-            return None
-        match = matches[0]
-        callee_head = (
-            text[match.start() : match.end()].split("(")[0].split(".")[0].strip()
-        )
-        if callee_head and re.search(
-            rf"\b(?:const|let|var)\s+{re.escape(callee_head)}\b", text[match.end() :]
-        ):
-            if not re.search(
+        argument_ranges = []
+        for match in matches:
+            callee_head = (
+                text[match.start() : match.end()].split("(")[0].split(".")[0].strip()
+            )
+            if callee_head and re.search(
                 rf"\b(?:const|let|var)\s+{re.escape(callee_head)}\b",
-                text[: match.start()],
+                text[match.end() :],
             ):
-                return None
-        open_paren_idx = match.end() - 1
-        if open_paren_idx == -1 or text[open_paren_idx] != "(":
-            return None
-        depth = 1
-        cursor = open_paren_idx + 1
-        while cursor < len(text) and depth:
-            if text[cursor] == "(":
-                depth += 1
-            elif text[cursor] == ")":
-                depth -= 1
-            cursor += 1
-        return text[open_paren_idx + 1 : cursor - 1]
+                if not re.search(
+                    rf"\b(?:const|let|var)\s+{re.escape(callee_head)}\b",
+                    text[: match.start()],
+                ):
+                    continue
+            open_paren_idx = match.end() - 1
+            if open_paren_idx == -1 or text[open_paren_idx] != "(":
+                continue
+            depth = 1
+            cursor = open_paren_idx + 1
+            while cursor < len(text) and depth:
+                if text[cursor] == "(":
+                    depth += 1
+                elif text[cursor] == ")":
+                    depth -= 1
+                cursor += 1
+            argument_ranges.append(text[open_paren_idx + 1 : cursor - 1])
+        return "\n".join(argument_ranges) if argument_ranges else None
 
     @staticmethod
     def _shelljs_call_arguments(text: str, shelljs_sinks: Set[str]) -> Optional[str]:
@@ -1797,8 +1861,23 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
 
     def _child_process_call_line(
-        self, lines: List[str], start_line: int, sinks: Set[str]
+        self,
+        lines: List[str],
+        start_line: int,
+        sinks: Set[str],
+        tainted_names: Optional[Set[str]] = None,
     ) -> int:
+        if tainted_names is not None:
+            for line_number in range(start_line, len(lines) + 1):
+                line = self._mask_js_noncode_for_detection(lines[line_number - 1])
+                if re.match(r"\s*(?:import|const|let|var)\b", line):
+                    continue
+                if any(self._contains_js_sink_call(line, sink) for sink in sinks):
+                    args = self._child_process_call_arguments(line, sinks)
+                    if args is not None and self._js_has_external_input(
+                        args, tainted_names
+                    ):
+                        return line_number
         for line_number in range(start_line, len(lines) + 1):
             line = self._mask_js_noncode_for_detection(lines[line_number - 1])
             if any(self._contains_js_sink_call(line, sink) for sink in sinks):
@@ -1806,11 +1885,28 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return start_line
 
     def _shelljs_call_line(
-        self, lines: List[str], start_line: int, shelljs_sinks: Set[str]
+        self,
+        lines: List[str],
+        start_line: int,
+        shelljs_sinks: Set[str],
+        tainted_names: Optional[Set[str]] = None,
     ) -> int:
         call_names = {
             s.rpartition(".")[0] if s.rpartition(".")[0] else s for s in shelljs_sinks
         }
+        if tainted_names is not None:
+            for line_number in range(start_line, len(lines) + 1):
+                line = self._mask_js_noncode_for_detection(lines[line_number - 1])
+                if re.match(r"\s*(?:import|const|let|var)\b", line):
+                    continue
+                if any(
+                    self._contains_js_sink_call(line, name) for name in call_names
+                ) or self._is_known_third_party_shell_sink(line, shelljs_sinks):
+                    args = self._shelljs_call_arguments(line, shelljs_sinks)
+                    if args is not None and self._js_has_external_input(
+                        args, tainted_names
+                    ):
+                        return line_number
         for line_number in range(start_line, len(lines) + 1):
             line = self._mask_js_noncode_for_detection(lines[line_number - 1])
             if re.match(r"\s*(?:import|const|let|var)\b", line):

@@ -2124,3 +2124,46 @@ def test_js_masks_strings_before_registering_sinks(tmp_path):
         },
     )
     assert len(records) == 0
+
+
+def test_js_execfile_only_checks_call_arguments(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { execFile } from "child_process"; function f(req) { audit(req.query.cmd); execFile("safe"); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_evaluates_all_child_process_calls_in_statement(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec } from "child_process"; function f(req) { exec("safe"); exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_spawn_options_not_confused_by_unrelated_objects(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { spawn } from "child_process"; const unrelated = { shell: true }; function f(req) { spawn(req.query.cmd, [], { shell: false }); }'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.MEDIUM
+
+
+def test_js_reports_exact_tainted_shelljs_call_line(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import sh from "shelljs";\nfunction f(req) {\n  sh.exec("safe");\n  sh.exec(req.query.cmd);\n}'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].line == 4
