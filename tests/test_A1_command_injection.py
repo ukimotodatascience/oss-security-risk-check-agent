@@ -2208,3 +2208,44 @@ def test_js_continues_child_process_after_shelljs_check(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_shelljs_destructuring_dynamic_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'const { exec: run } = await import("shelljs"); run(req.query.cmd);'
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_child_process_shadowed_by_helper_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "child_process"; function f(req) { const run = helper.exec; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_shelljs_shadowed_by_helper_exec(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'import { exec as run } from "shelljs"; function f(req) { const run = helper.exec; run(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_require_shadowed_by_parameter(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'function f(require, req) { require("shelljs").exec(req.query.cmd); }'
+        },
+    )
+    assert len(records) == 0

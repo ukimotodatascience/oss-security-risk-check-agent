@@ -104,17 +104,18 @@ class JsTsSinkMixin:
         if wrapped_module_match:
             sinks.add(f"{wrapped_module_match.group(1)}.exec")
 
-        require_match = re.fullmatch(
-            r"\s*(?:const|let|var)\s*\{([^}]+)\}\s*=\s*"
-            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*;?\s*",
+        require_destructure = re.search(
+            r"(?:\b(?:const|let|var)\s*\{|^\s*\{)([^}]+)\}\s*=\s*(?:require\s*\(\s*['\"]shelljs['\"]\s*\)|\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*)",
             text,
         )
-        if require_match:
-            for name in require_match.group(1).split(","):
-                name = name.split("=", 1)[0].strip()
-                alias_match = re.match(r"exec\s*:\s*([A-Za-z_$][\w$]*)", name)
-                if name == "exec" or alias_match:
-                    sinks.add(alias_match.group(1) if alias_match else name)
+        if require_destructure:
+            for entry in require_destructure.group(1).split(","):
+                entry = entry.split("=", 1)[0].strip()
+                source, _, alias = entry.partition(":")
+                source = source.strip()
+                target = alias.strip() or source
+                if source == "exec":
+                    sinks.add(target)
 
         dynamic_import_match = re.search(
             r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)\s*=\s*"
