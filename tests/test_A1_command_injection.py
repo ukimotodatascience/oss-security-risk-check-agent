@@ -1955,3 +1955,76 @@ def test_js_keeps_unshadowed_shelljs_sink_in_same_statement(tmp_path):
     )
     assert len(records) == 1
     assert records[0].severity == Severity.HIGH
+
+
+def test_js_isolates_shell_options_in_lexical_scope(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "const opts = { shell: true };\n"
+                "function helper() {\n"
+                "    const opts = { shell: false };\n"
+                "}\n"
+                'const spawn = require("child_process").spawn;\n'
+                'spawn("cat", [req.query.cmd], opts);\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+    assert "shell=true" in records[0].message
+
+
+def test_js_does_not_treat_control_block_sink_decl_as_top_level(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": 'if (ok) { const sh = require("shelljs"); }\nsh.exec(req.query.cmd);\n'
+        },
+    )
+    assert len(records) == 0
+
+
+def test_js_detects_direct_property_access_on_dynamic_child_process_import(
+    tmp_path,
+):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                "async function main() {\n"
+                '    const run = (await import("node:child_process")).exec;\n'
+                "    run(req.query.cmd);\n"
+                "}\n"
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_detects_shelljs_callable_alias_from_module_binding(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'import sh from "shelljs";\nconst run = sh.exec;\nrun(req.query.cmd);\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH
+
+
+def test_js_supports_hoisted_static_child_process_import(tmp_path):
+    records = scan_files(
+        tmp_path,
+        {
+            "app.js": (
+                'cp.exec(req.query.cmd);\nimport * as cp from "node:child_process";\n'
+            )
+        },
+    )
+    assert len(records) == 1
+    assert records[0].severity == Severity.HIGH

@@ -109,6 +109,15 @@ class JsTsSinkMixin:
         if dynamic_import_match:
             sinks.add(f"{dynamic_import_match.group(1)}.exec")
 
+        for alias_match in re.finditer(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*([A-Za-z_$][\w$]*)\s*\.\s*exec\b",
+            text,
+        ):
+            var_name, mod_name = alias_match.group(1), alias_match.group(2)
+            if f"{mod_name}.exec" in sinks or mod_name == "shelljs":
+                sinks.add(var_name)
+
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
         text = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
         text = re.sub(
@@ -217,15 +226,30 @@ class JsTsSinkMixin:
             module_name = module_match.group(1)
             sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
 
-        dynamic_import_match = re.search(
+        direct_dynamic_import = re.search(
             r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*\(*\s*await\s+import\s*\(\s*"
-            r"['\"](?:node:)?child_process['\"]\s*\)\s*\)*\s*;?",
+            r"['\"](?:node:)?child_process['\"]\s*\)\s*\)*\s*\.\s*("
+            + "|".join(self._CHILD_PROCESS_NAMES)
+            + r")",
             text,
         )
-        if dynamic_import_match:
-            module_name = dynamic_import_match.group(1)
-            sinks.update(f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES)
+        if direct_dynamic_import:
+            sinks.add(
+                f"{direct_dynamic_import.group(1)}.{direct_dynamic_import.group(2)}"
+            )
+        else:
+            dynamic_import_match = re.search(
+                r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
+                r"(?:\s*:\s*[^=;]+)?\s*=\s*\(*\s*await\s+import\s*\(\s*"
+                r"['\"](?:node:)?child_process['\"]\s*\)\s*\)*\s*;?",
+                text,
+            )
+            if dynamic_import_match:
+                module_name = dynamic_import_match.group(1)
+                sinks.update(
+                    f"{module_name}.{name}" for name in self._CHILD_PROCESS_NAMES
+                )
 
         alias_destructuring = re.search(
             r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*([A-Za-z_$][\w$]*)",

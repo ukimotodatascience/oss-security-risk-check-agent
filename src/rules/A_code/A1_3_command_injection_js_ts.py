@@ -64,8 +64,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
             if node_type in {"variable_declarator", "assignment_expression"}:
+                is_top_level = self._is_top_level_node(node)
                 self._register_shelljs_imports(text, shelljs_sinks)
-                self._reset_child_process_local_bindings(text, child_process_sinks)
+                if is_top_level:
+                    self._reset_child_process_local_bindings(text, child_process_sinks)
                 self._register_child_process_imports(text, child_process_sinks)
                 left = ts_child_by_field_name(node, "name") or ts_child_by_field_name(
                     node, "left"
@@ -85,7 +87,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             f"{left_text}.{api}" for api in self._CHILD_PROCESS_NAMES
                         )
                     direct_api_alias = re.fullmatch(
-                        r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\."
+                        r"(?:require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)|\(*\s*await\s+import\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\s*\)*)\."
                         r"(execFileSync|execFile|execSync|exec|spawnSync|spawn|fork)",
                         right_clean,
                     )
@@ -105,7 +107,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         )
                         if api is not None:
                             child_process_sinks.add(f"{left_text}.{api}")
-                    if re.fullmatch("[A-Za-z_$][\\w$]*", left_text):
+                    if re.fullmatch("[A-Za-z_$][\\w$]*", left_text) and is_top_level:
                         if self._js_options_enable_shell(right_clean):
                             shell_true_option_names.add(left_text)
                         else:
@@ -305,13 +307,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for part in self._split_top_level_statements(statement_line, statement)
         ]
         for _, statement in statements:
-            if re.match(r"\s*(?:import\b|(?:const|let)\b)", statement):
+            if re.match(r"\s*import\b", statement):
+                self._register_shelljs_imports(statement, shelljs_sinks)
+                self._register_child_process_imports(statement, child_process_sinks)
+            elif re.match(r"\s*(?:const|let)\b", statement):
                 self._register_shelljs_imports(statement, shelljs_sinks)
         top_level_child_process_sinks = set(child_process_sinks)
         top_level_shelljs_sinks = set(shelljs_sinks)
+        top_level_shell_true_option_names = set(shell_true_option_names)
         for i, stripped in statements:
             child_process_sinks = set(top_level_child_process_sinks)
             shelljs_sinks = set(top_level_shelljs_sinks)
+            shell_true_option_names = set(top_level_shell_true_option_names)
             is_scoped_statement = bool(
                 re.match(r"\s*(?:async\s+)?function\b", stripped)
                 or re.search(r"(?:=>|\bclass\b)[\s\S]*\{", stripped)
@@ -356,6 +363,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     shell_true_option_names.add(var_name)
                 else:
                     shell_true_option_names.discard(var_name)
+                if not is_scoped_statement:
+                    top_level_shell_true_option_names = set(shell_true_option_names)
                 if self._js_has_external_input(rhs, tainted_names):
                     tainted_names.add(var_name)
             assignment = re.match(
@@ -369,6 +378,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     shell_true_option_names.add(option_name)
                 else:
                     shell_true_option_names.discard(option_name)
+                if not is_scoped_statement:
+                    top_level_shell_true_option_names = set(shell_true_option_names)
                 # Update child_process alias on re-assignment
                 if self._is_child_process_alias_assignment(
                     option_rhs_clean, child_process_sinks
@@ -454,7 +465,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             title=self.title,
                             severity=Severity.HIGH,
                             file_path=rel_path,
-                            line=i,
+                            line=self._shelljs_call_line(lines, i, exec_names),
                             message="External input reaches child_process command execution",
                         )
                     )
@@ -483,7 +494,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         title=self.title,
                         severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
                         file_path=rel_path,
-                        line=i,
+                        line=self._shelljs_call_line(lines, i, spawn_names),
                         message="External input reaches child_process spawn with shell=true"
                         if has_shell_true
                         else "External input reaches child_process spawn",
@@ -576,7 +587,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 full_source[: node.start_byte]
             )
         )
+        top_level_source = JsTsCommandInjectionDetector._remove_completed_inner_blocks(
+            top_level_source
+        )
         if is_sink_decl_fn(top_level_source, binding_name):
+            return False
+
+        full_top_level_source = (
+            JsTsCommandInjectionDetector._remove_completed_function_blocks(full_source)
+        )
+        full_top_level_source = (
+            JsTsCommandInjectionDetector._remove_completed_inner_blocks(
+                full_top_level_source
+            )
+        )
+        if re.search(
+            rf"\bimport\s+[\s\S]*?\b{re.escape(binding_name)}\b[\s\S]*?\bfrom\s*['\"]",
+            full_top_level_source,
+        ) and is_sink_decl_fn(full_top_level_source, binding_name):
             return False
 
         curr = getattr(node, "parent", None)
@@ -599,7 +627,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _is_specific_child_process_declaration(text: str, name: str, api: str) -> bool:
         if api:
-            return bool(
+            if (
                 re.search(
                     rf"\bimport\s+[\s\S]*?\b{re.escape(api)}\s+as\s+{re.escape(name)}\b[\s\S]*?\bfrom\s*['\"](?:node:)?child_process['\"]",
                     text,
@@ -614,7 +642,24 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     rf"[A-Za-z_$][\w$]*\.{re.escape(api)})\b",
                     text,
                 )
-            )
+            ):
+                return True
+            if (
+                re.search(
+                    rf"\bimport\s+\*\s+as\s+{re.escape(name)}\s+from\s*['\"](?:node:)?child_process['\"]",
+                    text,
+                )
+                or re.search(
+                    rf"\bimport\s+{re.escape(name)}\s+from\s*['\"](?:node:)?child_process['\"]",
+                    text,
+                )
+                or re.search(
+                    rf"\b(?:const|let|var)\s+{re.escape(name)}\b[^;=]*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+                    text,
+                )
+            ):
+                return True
+            return False
         return JsTsCommandInjectionDetector._is_child_process_declaration_binding(
             text, name
         )
@@ -1375,6 +1420,21 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             text,
         ):
             return True
+        for match in re.finditer(
+            rf"\b(?:const|let|var)\s+{re.escape(name)}\b[^;=]*=\s*([A-Za-z_$][\w$]*)\s*\.\s*exec\b",
+            text,
+        ):
+            mod_name = match.group(1)
+            if (
+                mod_name == "shelljs"
+                or re.search(
+                    rf"\bimport\s+[\s\S]*?\b{re.escape(mod_name)}\b[\s\S]*?\bfrom\s*['\"]shelljs['\"]|"
+                    rf"\b(?:const|let|var)\s+{re.escape(mod_name)}\b[^;=]*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
+                    text,
+                )
+                or True
+            ):  # mod_name is assigned to .exec of a module variable
+                return True
         for match in re.finditer(
             r"\b(?:const|let|var)\s+(\{[^}]*\}|\[[^\]]*\]|[A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
