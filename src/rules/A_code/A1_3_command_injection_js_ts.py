@@ -53,6 +53,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shelljs_sinks: Set[str] = set()
+        shell_true_option_names: Set[str] = set()
         nodes = list(iter_ts_nodes(root))
         for node in getattr(root, "named_children", []):
             if getattr(node, "type", "") == "import_statement":
@@ -104,6 +105,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         )
                         if api is not None:
                             child_process_sinks.add(f"{left_text}.{api}")
+                    if re.fullmatch("[A-Za-z_$][\\w$]*", left_text):
+                        if self._js_options_enable_shell(right_clean):
+                            shell_true_option_names.add(left_text)
+                        else:
+                            shell_true_option_names.discard(left_text)
                     if re.fullmatch(
                         "[A-Za-z_$][\\w$]*", left_text
                     ) and self._js_has_external_input(right_text, tainted_names):
@@ -164,13 +170,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 continue
             callee_tail = callee.split(".")[-1]
+            valid_child_sinks = {
+                s
+                for s in child_process_sinks
+                if not self._is_shadowed_child_process_sink(node, s, src_bytes)
+            }
             sink_api = self._child_process_api_for_callee(
-                normalized_callee, child_process_sinks
+                normalized_callee, valid_child_sinks
             )
-            if sink_api is not None and self._is_shadowed_child_process_sink(
-                node, normalized_callee, src_bytes
-            ):
-                sink_api = None
             is_known_sink = (
                 sink_api is not None or direct_child_process_call is not None
             )
@@ -209,7 +216,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
-                has_shell_true = "shell: true" in call_text or "shell:true" in call_text
+                has_shell_true = self._js_call_enables_shell(
+                    call_text, shell_true_option_names
+                )
                 records.append(
                     RiskRecord(
                         rule_id=self.rule_id,
@@ -282,6 +291,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if (
                 not in_template_literal
                 and not in_block_comment
+                and buffer.count("{") == buffer.count("}")
+                and buffer.count("(") == buffer.count(")")
                 and stripped.endswith((";", "}", ")"))
             ):
                 statements.append((start_line, buffer))
@@ -297,11 +308,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if re.match(r"\s*(?:import\b|(?:const|let)\b)", statement):
                 self._register_shelljs_imports(statement, shelljs_sinks)
         top_level_child_process_sinks = set(child_process_sinks)
+        top_level_shelljs_sinks = set(shelljs_sinks)
         for i, stripped in statements:
             child_process_sinks = set(top_level_child_process_sinks)
-            is_function_statement = bool(
+            shelljs_sinks = set(top_level_shelljs_sinks)
+            is_scoped_statement = bool(
                 re.match(r"\s*(?:async\s+)?function\b", stripped)
                 or re.search(r"(?:=>|\bclass\b)[\s\S]*\{", stripped)
+                or re.match(
+                    r"\s*(?:if|else|for|while|do|switch|try|catch|finally)\b", stripped
+                )
             )
             code_text = self._mask_js_noncode_for_detection(stripped)
             code_text = re.sub(
@@ -316,10 +332,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             self._reset_child_process_local_bindings(stripped, child_process_sinks)
             self._register_child_process_imports(stripped, child_process_sinks)
-            if not is_function_statement:
+            if not is_scoped_statement:
                 top_level_child_process_sinks = set(child_process_sinks)
             self._register_shelljs_imports(stripped, shelljs_sinks)
             self._register_embedded_shelljs_declarations(stripped, shelljs_sinks)
+            if not is_scoped_statement:
+                top_level_shelljs_sinks = set(shelljs_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
             )
@@ -346,11 +364,29 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             if assignment:
                 option_name, option_rhs = assignment.groups()
-                if self._js_options_enable_shell(option_rhs):
+                option_rhs_clean = option_rhs.rstrip(";").strip()
+                if self._js_options_enable_shell(option_rhs_clean):
                     shell_true_option_names.add(option_name)
                 else:
                     shell_true_option_names.discard(option_name)
-            if not is_function_statement:
+                # Update child_process alias on re-assignment
+                if self._is_child_process_alias_assignment(
+                    option_rhs_clean, child_process_sinks
+                ):
+                    # Remove old API mappings for this variable
+                    old_keys = [
+                        k
+                        for k in list(child_process_sinks)
+                        if k.startswith(f"{option_name}.")
+                    ]
+                    for k in old_keys:
+                        child_process_sinks.discard(k)
+                    api = self._child_process_api_for_callee(
+                        option_rhs_clean, child_process_sinks
+                    )
+                    if api is not None:
+                        child_process_sinks.add(f"{option_name}.{api}")
+            if not is_scoped_statement:
                 top_level_child_process_sinks = set(child_process_sinks)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", code_text):
                 if self._js_has_external_input(code_text, tainted_names):
@@ -513,8 +549,100 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
 
     @staticmethod
+    def _is_top_level_node(node) -> bool:
+        """ノードがファイルトップレベル（関数/アロー/メソッドの外）にあるかを判定する。"""
+        _SCOPE_TYPES = {
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+            "generator_function_declaration",
+        }
+        ancestor = getattr(node, "parent", None)
+        while ancestor is not None:
+            if getattr(ancestor, "type", "") in _SCOPE_TYPES:
+                return False
+            ancestor = getattr(ancestor, "parent", None)
+        return True
+
+    @staticmethod
+    def _is_sink_binding_out_of_scope(
+        node, binding_name: str, src_bytes: bytes, is_sink_decl_fn
+    ) -> bool:
+        """Check if binding_name has a valid sink declaration at top-level or in an enclosing scope of node."""
+        full_source = src_bytes.decode("utf-8", errors="ignore")
+        top_level_source = (
+            JsTsCommandInjectionDetector._remove_completed_function_blocks(
+                full_source[: node.start_byte]
+            )
+        )
+        if is_sink_decl_fn(top_level_source, binding_name):
+            return False
+
+        curr = getattr(node, "parent", None)
+        while curr is not None:
+            if getattr(curr, "type", "") in {
+                "function_declaration",
+                "function_expression",
+                "arrow_function",
+                "method_definition",
+            }:
+                scope_prefix = src_bytes[curr.start_byte : node.start_byte].decode(
+                    "utf-8", errors="ignore"
+                )
+                if is_sink_decl_fn(scope_prefix, binding_name):
+                    return False
+            curr = getattr(curr, "parent", None)
+
+        return True
+
+    @staticmethod
+    def _is_specific_child_process_declaration(text: str, name: str, api: str) -> bool:
+        if api:
+            return bool(
+                re.search(
+                    rf"\bimport\s+[\s\S]*?\b{re.escape(api)}\s+as\s+{re.escape(name)}\b[\s\S]*?\bfrom\s*['\"](?:node:)?child_process['\"]",
+                    text,
+                )
+                or re.search(
+                    rf"\b(?:const|let|var)\s*\{{[^}}]*\b{re.escape(api)}\s*:\s*{re.escape(name)}\b[^}}]*\}}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
+                    text,
+                )
+                or re.search(
+                    rf"\b(?:const|let|var)\s+{re.escape(name)}\b[^;=]*=\s*"
+                    rf"(?:require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)\.{re.escape(api)}|"
+                    rf"[A-Za-z_$][\w$]*\.{re.escape(api)})\b",
+                    text,
+                )
+            )
+        return JsTsCommandInjectionDetector._is_child_process_declaration_binding(
+            text, name
+        )
+
+    @staticmethod
     def _is_shadowed_child_process_sink(node, callee: str, src_bytes: bytes) -> bool:
-        binding_name = callee.split(".", 1)[0]
+        parts = callee.split(".", 1)
+        binding_name = parts[0]
+        api = parts[1] if len(parts) > 1 else ""
+
+        def check_decl(text: str, name: str) -> bool:
+            if api:
+                return (
+                    JsTsCommandInjectionDetector._is_specific_child_process_declaration(
+                        text, name, api
+                    )
+                )
+            return JsTsCommandInjectionDetector._is_child_process_declaration_binding(
+                text, name
+            )
+
+        if JsTsCommandInjectionDetector._is_sink_binding_out_of_scope(
+            node,
+            binding_name,
+            src_bytes,
+            check_decl,
+        ):
+            return True
         scope = getattr(node, "parent", None)
         while scope is not None and getattr(scope, "type", "") not in {
             "function_declaration",
@@ -553,6 +681,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             )
             or re.search(
                 rf"\b(?:const|let|var)\s*\{{[^}}]*\b{re.escape(name)}\b[^}}]*\}}\s*=",
+                text,
+            )
+            or re.search(
+                rf"\bimport\s+[\s\S]*?\b{re.escape(name)}\b[\s\S]*?\bfrom\s*['\"](?:node:)?child_process['\"]",
+                text,
+            )
+            or re.search(
+                rf"\bimport\s+{re.escape(name)}\s*=\s*require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\)",
                 text,
             )
         )
@@ -890,6 +1026,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     @staticmethod
     def _is_shadowed_shelljs_sink(node, callee: str, src_bytes: bytes) -> bool:
         binding_name = callee.split(".", 1)[0]
+        if JsTsCommandInjectionDetector._is_sink_binding_out_of_scope(
+            node,
+            binding_name,
+            src_bytes,
+            JsTsCommandInjectionDetector._is_shelljs_declaration_binding,
+        ):
+            return True
         source_text = src_bytes.decode("utf-8", errors="ignore")
         if JsTsCommandInjectionDetector._has_iteration_binding(
             source_text, binding_name
@@ -936,6 +1079,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         ):
             return True
         if scope is None:
+            full_prefix = src_bytes[: node.start_byte].decode("utf-8", errors="ignore")
+            if JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
+                full_prefix, binding_name
+            ) and not JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
+                prefix, binding_name
+            ):
+                return True
             return False
         lexical_scope = getattr(node, "parent", None)
         while lexical_scope is not None and getattr(lexical_scope, "type", "") not in {
@@ -1217,8 +1367,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             text,
         ):
             return True
+        if re.search(
+            rf"\bimport\s+[\s\S]*?\b{re.escape(name)}\b[\s\S]*?\bfrom\s*['\"]shelljs['\"]",
+            text,
+        ) or re.search(
+            rf"\bimport\s+{re.escape(name)}\s*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
+            text,
+        ):
+            return True
         for match in re.finditer(
-            r"\b(?:const|let|var)\s+(.+?)\s*=\s*"
+            r"\b(?:const|let|var)\s+(\{[^}]*\}|\[[^\]]*\]|[A-Za-z_$][\w$]*)"
+            r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"(?:\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
             r"(?:\.exec)?(?:\s+(?:as|satisfies)\s+[^;]+)?|"
             r"\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
@@ -1438,7 +1597,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
 
     @staticmethod
     def _remove_completed_function_blocks(text: str) -> str:
-        function_pattern = re.compile(r"\bfunction\b[^{}]*\{")
+        function_pattern = re.compile(r"(?:\bfunction\b|(?:=>|\bclass\b))[^{}]*\{")
         while match := function_pattern.search(text):
             depth = 1
             cursor = match.end()
@@ -1473,8 +1632,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             line = self._mask_js_noncode_for_detection(lines[line_number - 1])
             if self._is_known_third_party_shell_sink(line, shelljs_sinks):
                 return line_number
-            if line_number > start_line and line.strip().endswith((";", "}")):
-                break
         return start_line
 
     @staticmethod

@@ -18,6 +18,7 @@ class JsTsSinkMixin:
 
     @staticmethod
     def _register_shelljs_imports(text: str, sinks: Set[str]) -> None:
+        text = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
         text = re.sub(
             r"\(\s*(require\s*\(\s*['\"]shelljs['\"]\s*\))\s*\)",
             r"\1",
@@ -61,24 +62,22 @@ class JsTsSinkMixin:
                     if name == "exec" or alias_match:
                         sinks.add(alias_match.group(1) if alias_match else name)
 
-        direct_exec_match = re.fullmatch(
-            r"\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)"
+        for direct_exec_match in re.finditer(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*\.exec"
-            r"(?:\s+(?:as|satisfies)\s+[^;]+)?\s*;?\s*",
+            r"(?:\s+(?:as|satisfies)\s+[^;]+)?",
             text,
-        )
-        if direct_exec_match:
+        ):
             sinks.add(direct_exec_match.group(1))
 
-        module_match = re.fullmatch(
-            r"\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)"
+        for module_match in re.finditer(
+            r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
-            r"(?:\s+(?:as|satisfies)\s+[^;]+)?\s*;?\s*",
+            r"(?:\s+(?:as|satisfies)\s+[^;]+)?",
             text,
-        )
-        if module_match:
+        ):
             sinks.add(f"{module_match.group(1)}.exec")
         wrapped_module_match = re.search(
             r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
@@ -111,6 +110,7 @@ class JsTsSinkMixin:
             sinks.add(f"{dynamic_import_match.group(1)}.exec")
 
     def _register_child_process_imports(self, text: str, sinks: Set[str]) -> None:
+        text = re.sub(r"/\*.*?\*/|//[^\n]*", " ", text, flags=re.DOTALL)
         text = re.sub(
             r"\(\s*(require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))\s*\)",
             r"\1",
