@@ -1117,6 +1117,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for name in called_bindings
         ):
             return True
+        source_prefix = "\n".join(lines[:line_number])
         statement_parameter_text = (
             JsTsCommandInjectionDetector._function_parameter_text(text)
         )
@@ -1147,7 +1148,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if any(
             name in raw_statement_bindings
             and not JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
-                lexical_call_scope, name
+                lexical_call_scope, name, source_prefix
             )
             for name in called_bindings
         ):
@@ -1177,7 +1178,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if any(
             name in statement_bindings
             and not JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
-                visible_call_scope, name
+                visible_call_scope, name, source_prefix
             )
             for name in called_bindings
         ):
@@ -1187,7 +1188,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             for name in called_bindings
         ):
             return True
-        source_prefix = "\n".join(lines[:line_number])
         visible_source_prefix = (
             JsTsCommandInjectionDetector._remove_completed_function_blocks(
                 source_prefix
@@ -1274,7 +1274,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 if (
                     name in local_bindings
                     and not JsTsCommandInjectionDetector._is_shelljs_declaration_binding(
-                        visible_text, name
+                        visible_text, name, source_prefix
                     )
                 ):
                     scopes[-1].add(name)
@@ -1639,7 +1639,10 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         return bindings
 
     @staticmethod
-    def _is_shelljs_declaration_binding(text: str, name: str) -> bool:
+    def _is_shelljs_declaration_binding(
+        text: str, name: str, full_text: Optional[str] = None
+    ) -> bool:
+        search_scope = f"{full_text}\n{text}" if full_text is not None else text
         if re.search(
             rf"(?:^|[;\n{{}}])\s*{re.escape(name)}\s*(?<![=!<>])=(?!=|>)\s*"
             r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*",
@@ -1662,7 +1665,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if mod_name == "shelljs" or re.search(
                 rf"\bimport\s+[\s\S]*?\b{re.escape(mod_name)}\b[\s\S]*?\bfrom\s*['\"]shelljs['\"]|"
                 rf"\b(?:const|let|var)\s+{re.escape(mod_name)}\b[^;=]*=\s*require\s*\(\s*['\"]shelljs['\"]\s*\)",
-                text,
+                search_scope,
             ):  # mod_name is assigned to .exec of a module variable
                 return True
         for match in re.finditer(
