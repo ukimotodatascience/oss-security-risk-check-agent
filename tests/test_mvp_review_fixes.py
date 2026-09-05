@@ -713,3 +713,40 @@ def test_orchestrator_b1_deduplication_removes_matching_cve():
         rule_ids = [f.rule_id for f in res.all_findings]
         assert "B-1" not in rule_ids
         assert "CVE-2023-1234" in rule_ids
+
+
+def test_orchestrator_handles_skipped_file_object_safely():
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.targets.models import SkippedFile
+
+    orchestrator = MVPOrchestrator()
+    sf1 = SkippedFile(path="repo-ref/backend/big.bin", reason="size limit")
+    sf2 = SkippedFile(path="repo-ref/frontend/large.pdf", reason="size limit")
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch.return_value = Path(".")
+    mock_fetcher.skipped_files = (sf1, sf2)
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+    ):
+        # Should not raise AttributeError when processing SkippedFile objects with target_subdir="backend"
+        orchestrator.cli_options = type(
+            "Opt",
+            (),
+            {"target_ref": None, "target_subdir": "backend", "output_dir": None},
+        )()
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None

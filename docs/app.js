@@ -42,6 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
           renderScanResult(data);
         } catch (err) {
           alert("有効なJSONファイルを選択してください: " + err.message);
+          renderErrorState("選択されたファイルの解析に失敗しました: " + err.message);
         }
       };
       reader.readAsText(file);

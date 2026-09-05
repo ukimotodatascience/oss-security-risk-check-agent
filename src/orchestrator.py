@@ -89,12 +89,19 @@ class MVPOrchestrator:
                     f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
                 )
 
+                def _is_in_subdir(item: Any, subdir: str) -> bool:
+                    p = (item.path if hasattr(item, "path") else str(item)).replace(
+                        "\\", "/"
+                    )
+                    norm_subdir = subdir.strip("/").lower()
+                    parts = [part for part in p.lower().split("/") if part]
+                    return norm_subdir in parts
+
                 relevant_skipped_files = (
                     [
                         f
                         for f in fetcher.skipped_files
-                        if f.startswith(target_subdir.rstrip("/") + "/")
-                        or f == target_subdir
+                        if _is_in_subdir(f, target_subdir)
                     ]
                     if target_subdir
                     else fetcher.skipped_files
