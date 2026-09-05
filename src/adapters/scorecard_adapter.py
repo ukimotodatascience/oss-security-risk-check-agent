@@ -36,16 +36,64 @@ class ScorecardAdapter:
     def __init__(self, cli_path: str = "scorecard") -> None:
         self.cli_path = cli_path
 
-    def run_scan(self, repo_url: str) -> List[Finding]:
+    def run_scan(
+        self, repo_url: str, max_output_bytes: int = 50 * 1024 * 1024
+    ) -> List[Finding]:
+        import tempfile
+        import time
+
         try:
             cmd = [self.cli_path, f"--repo={repo_url}", "--format=json"]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if res.returncode == 0 and res.stdout:
-                data = json.loads(res.stdout)
-                return self.parse_json(data)
-            logger.warning(
-                f"Scorecard CLI exited with code {res.returncode}: {res.stderr}"
-            )
+            with (
+                tempfile.TemporaryFile() as tmp_out,
+                tempfile.TemporaryFile() as tmp_err,
+            ):
+                proc = subprocess.Popen(cmd, stdout=tmp_out, stderr=tmp_err, text=False)
+
+                start_time = time.time()
+                timed_out = False
+                exceeded_size = False
+
+                while proc.poll() is None:
+                    if time.time() - start_time > 120:
+                        timed_out = True
+                        proc.kill()
+                        break
+                    size = tmp_out.tell()
+                    if size > max_output_bytes:
+                        exceeded_size = True
+                        proc.kill()
+                        break
+                    time.sleep(0.1)
+
+                proc.wait()
+
+                if timed_out:
+                    logger.warning("Scorecard CLI timed out after 120s.")
+                    return []
+
+                size = tmp_out.tell()
+                if exceeded_size or size > max_output_bytes:
+                    logger.warning(
+                        f"Scorecard CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                    )
+                    return []
+
+                if proc.returncode == 0 and size > 0:
+                    tmp_out.seek(0)
+                    data = json.load(tmp_out)
+                    return self.parse_json(data)
+
+                tmp_err.seek(0)
+                stderr_bytes = tmp_err.read()
+                stderr_text = (
+                    stderr_bytes.decode("utf-8", errors="replace")
+                    if stderr_bytes
+                    else ""
+                )
+                logger.warning(
+                    f"Scorecard CLI exited with code {proc.returncode}: {stderr_text}"
+                )
         except FileNotFoundError:
             logger.info("Scorecard CLI not found in PATH. Skipping Scorecard scan.")
             return []
@@ -70,6 +118,18 @@ class ScorecardAdapter:
                 continue
 
             if raw_score < 0:
+                findings.append(
+                    Finding(
+                        category=cat,
+                        source="scorecard",
+                        rule_id=f"SCORECARD-{name.upper()}",
+                        severity="INFO",
+                        title=f"Scorecard: {name} (Unable to Evaluate)",
+                        description=f"{reason} Check unable to evaluate or disabled.".strip(),
+                        remediation=f"Enable or configure OpenSSF Scorecard check for {name}.",
+                        raw_score=None,
+                    )
+                )
                 continue
 
             severity = "INFO"

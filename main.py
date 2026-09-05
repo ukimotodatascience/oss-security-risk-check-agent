@@ -92,7 +92,7 @@ class Main:
             cfg = ScanConfig(root, options)
             try:
                 target_spec = cfg.resolve_target_spec()
-                if target_spec.source_type == "local_dir":
+                if target_spec.source_type in ("local", "local_dir"):
                     print(
                         "[!] Error: MVP mode supports GitHub repository URLs only. Local directory targets are not supported in MVP mode.",
                         file=sys.stderr,

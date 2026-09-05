@@ -115,6 +115,20 @@ class MVPOrchestrator:
                 all_findings.extend(trivy_findings)
                 if success and not fetcher.skipped_files:
                     scanner_status["trivy"] = True
+
+                # 4. 既存 Rule-based Scan (スナップショット生存中に判定)
+                try:
+                    rule_findings, success = self._run_rule_based_scan(
+                        normalized_url,
+                        scanner_status=scanner_status,
+                        target_dir=extracted_dir,
+                    )
+                    all_findings.extend(rule_findings)
+                    if success:
+                        scanner_status["rule_based"] = True
+                except Exception as e:
+                    logger.error(f"Error during Rule-based scan: {e}")
+
         except Exception as e:
             logger.warning(
                 f"Safe snapshot fetch failed or refused for Trivy scan ({e}). Skipping Trivy scan to prevent resource exhaustion."
@@ -129,18 +143,18 @@ class MVPOrchestrator:
         except Exception as e:
             logger.error(f"Error during Scorecard scan: {e}")
 
-        # 4. 既存 Rule-based Scan (ソースコード固有の判定)
-        try:
-            rule_findings, success = self._run_rule_based_scan(
-                normalized_url,
-                scanner_status=scanner_status,
-                target_dir=extracted_dir,
-            )
-            all_findings.extend(rule_findings)
-            if success:
-                scanner_status["rule_based"] = True
-        except Exception as e:
-            logger.error(f"Error during Rule-based scan: {e}")
+        # スナップショット取得が失敗した場合の Rule-based Scan フォールバック
+        if not scanner_status.get("rule_based", False):
+            try:
+                rule_findings, success = self._run_rule_based_scan(
+                    normalized_url,
+                    scanner_status=scanner_status,
+                )
+                all_findings.extend(rule_findings)
+                if success:
+                    scanner_status["rule_based"] = True
+            except Exception as e:
+                logger.error(f"Error during Rule-based fallback scan: {e}")
 
         # 5. スコアリングと総合判定
         overall_result = self.scoring_engine.evaluate(
@@ -187,14 +201,11 @@ class MVPOrchestrator:
             )
 
             if target_dir and target_dir.exists():
-                effective_opts = CliOptions(
-                    target_dir=str(target_dir),
-                    target_url=repo_url,
-                    target_ref=target_ref,
-                    target_subdir=target_subdir,
-                    output_dir=output_dir,
-                    mvp=False,
-                )
+                from src.rule_engine import load_all_rules, run_all
+
+                rules = load_all_rules(self.project_root)
+                records, errors, _ = run_all(target_dir, rules)
+                has_errors = bool(errors)
             else:
                 effective_opts = CliOptions(
                     target_url=repo_url,
@@ -203,15 +214,15 @@ class MVPOrchestrator:
                     output_dir=output_dir,
                     mvp=False,
                 )
-
-            scan_runner = SecurityScan(self.project_root, cli_options=effective_opts)
-            scan_result = scan_runner.run()
-
-            has_errors = bool(getattr(scan_result, "errors", None))
-            if len(scan_result.records) == 0 and has_errors:
-                logger.warning(
-                    f"Rule-based scan returned 0 records with errors: {scan_result.errors}"
+                scan_runner = SecurityScan(
+                    self.project_root, cli_options=effective_opts
                 )
+                scan_result = scan_runner.run()
+                records = scan_result.records
+                has_errors = bool(getattr(scan_result, "errors", None))
+
+            if len(records) == 0 and has_errors:
+                logger.warning("Rule-based scan returned 0 records with errors.")
                 return [], False
 
             RULE_CAT_TO_MVP_CAT: Dict[str, Category] = {
@@ -226,7 +237,7 @@ class MVPOrchestrator:
                 "source_code": Category.SOURCE_CODE,
             }
 
-            for rec in scan_result.records:
+            for rec in records:
                 raw_cat_str = (
                     str(rec.category).lower() if hasattr(rec, "category") else ""
                 )
@@ -238,9 +249,6 @@ class MVPOrchestrator:
                     Category.MISCONFIGURATION,
                 ):
                     if status_map.get("trivy", False):
-                        continue
-                elif mvp_cat == Category.CICD:
-                    if status_map.get("scorecard", False):
                         continue
                 elif mvp_cat == Category.DEPENDENCIES:
                     if status_map.get("trivy", False) or status_map.get(

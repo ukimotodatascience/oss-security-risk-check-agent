@@ -106,23 +106,58 @@ class ScoringEngine:
             Category.MAINTENANCE,
         ):
             if scanner_status.get("scorecard", False):
-                scorecard_findings = [
+                scorecard_valid = [
                     f
                     for f in findings
                     if f.source == "scorecard" and f.raw_score is not None
                 ]
-                if scorecard_findings:
+                scorecard_disabled = [
+                    f
+                    for f in findings
+                    if f.source == "scorecard" and f.raw_score is None
+                ]
+                if scorecard_valid:
                     raw_scores = [
-                        f.raw_score
-                        for f in scorecard_findings
-                        if f.raw_score is not None
+                        f.raw_score for f in scorecard_valid if f.raw_score is not None
                     ]
                     base_score = sum(raw_scores) / len(raw_scores)
+
+                    # Deduct points for non-Scorecard risk findings (e.g. rule-based findings)
+                    other_risks = [
+                        f
+                        for f in findings
+                        if f.source != "scorecard"
+                        and (f.severity or "").upper() != "INFO"
+                    ]
+                    for f in other_risks:
+                        sev = (f.severity or "").upper()
+                        if sev == "CRITICAL":
+                            base_score -= 3.0
+                        elif sev == "HIGH":
+                            base_score -= 1.5
+                        elif sev == "MEDIUM":
+                            base_score -= 0.5
+                        elif sev == "LOW":
+                            base_score -= 0.1
+                        else:
+                            base_score -= 0.5
+
                     risk_list = [
                         f for f in findings if (f.severity or "").upper() != "INFO"
                     ]
                     summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
-                    return True, max(0.0, min(10.0, base_score)), summary, risk_list
+                    if other_risks:
+                        summary += f" 追加指摘 {len(other_risks)} 件。"
+                    if scorecard_disabled:
+                        summary += f" ({len(scorecard_disabled)}件の指標が未評価)"
+
+                    evaluated = len(scorecard_disabled) == 0
+                    return (
+                        evaluated,
+                        max(0.0, min(10.0, base_score)),
+                        summary,
+                        risk_list,
+                    )
             is_primary_ok = False
             scanner_msg = "OpenSSF Scorecard スキャン未実行"
 
