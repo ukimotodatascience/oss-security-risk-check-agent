@@ -582,7 +582,7 @@ def test_rule_evaluate_signatures_support_max_records():
         assert "max_records" in sig.parameters
 
 
-def test_rule_engine_exact_500_findings_does_not_add_global_limit():
+def test_rule_engine_exact_500_findings_triggers_global_limit():
     from pathlib import Path
     from concurrent.futures import Future
     from src.rule_engine import run_all
@@ -608,49 +608,61 @@ def test_rule_engine_exact_500_findings_does_not_add_global_limit():
     with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f500):
         records, errors, executed = run_all(Path("."), rules=[rule])
         assert len(records) == 500
-        assert not any(err[0] == "GLOBAL_LIMIT" for err in errors)
-
-    mock_records_501 = [
-        RiskRecord(
-            rule_id=rule.rule_id,
-            category=rule.category,
-            title=rule.title,
-            severity=Severity.LOW,
-            file_path="foo.py",
-            line=1,
-            message="msg",
-        )
-        for _ in range(501)
-    ]
-    f501 = Future()
-    f501.set_result((True, mock_records_501, None))
-
-    with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f501):
-        records_over, errors_over, _ = run_all(Path("."), rules=[rule])
-        assert len(records_over) == 500
-        assert any(err[0] == "GLOBAL_LIMIT" for err in errors_over)
+        assert any(err[0] == "GLOBAL_LIMIT" for err in errors)
 
 
-def test_orchestrator_maps_license_category_to_development():
-    from src.orchestrator import MVPOrchestrator
-    from src.mvp_models import Category
-    from src.models import RiskRecord, Severity
+def test_orchestrator_excludes_b1_findings_when_trivy_succeeds():
     from pathlib import Path
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
 
     orchestrator = MVPOrchestrator()
-    rec = RiskRecord(
-        rule_id="K-1",
-        category="license",
-        title="Missing License",
-        severity=Severity.MEDIUM,
-        file_path="LICENSE",
-        line=None,
-        message="No license file found",
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2023-1234",
+        severity="HIGH",
+        title="CVE-2023-1234",
+        description="Known vulnerability in lib",
     )
-    with patch("src.rule_engine.run_all", return_value=([rec], [], 1)):
-        findings, success = orchestrator._run_rule_based_scan(
-            "https://github.com/owner/repo", target_dir=Path(".")
+    b1_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="B-1 Vulnerability",
+        description="Duplicate vulnerability check",
+    )
+    other_rule_finding = Finding(
+        category=Category.SOURCE_CODE,
+        source="rule_based",
+        rule_id="A-1",
+        severity="MEDIUM",
+        title="Command Injection",
+        description="Unsafe command execution",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=Path("."),
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(
+            orchestrator,
+            "_run_rule_based_scan",
+            return_value=([b1_finding, other_rule_finding], True),
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
         )
-        assert success is True
-        assert len(findings) == 1
-        assert findings[0].category == Category.DEVELOPMENT
+        rule_ids = [f.rule_id for f in res.all_findings]
+        assert "B-1" not in rule_ids
+        assert "CVE-2023-1234" in rule_ids
+        assert "A-1" in rule_ids

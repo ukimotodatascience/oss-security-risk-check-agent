@@ -512,10 +512,7 @@ def _evaluate_rule_in_process(
 
             sig = inspect.signature(rule.evaluate)
             if "max_records" in sig.parameters:
-                try:
-                    records = rule.evaluate(target, max_records=500)
-                except TypeError:
-                    records = rule.evaluate(target)
+                records = rule.evaluate(target, max_records=500)
             else:
                 records = rule.evaluate(target)
         if len(records) > 500:
@@ -858,7 +855,10 @@ def run_all(
             for rule in sorted_rules:
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
                 if r_id in records_by_rule:
-                    for rec in records_by_rule[r_id]:
+                    rule_recs = records_by_rule[r_id]
+                    if len(rule_recs) >= max_limit:
+                        truncated = True
+                    for rec in rule_recs:
                         if len(records) < max_limit:
                             records.append(rec)
                         else:

@@ -92,6 +92,9 @@ class Main:
             from src.orchestrator import MVPOrchestrator
             from src.targets.url_validator import parse_github_repo_url
 
+            from dotenv import load_dotenv
+
+            load_dotenv(root / ".env")
             default_url = (
                 "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
             )

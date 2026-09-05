@@ -182,6 +182,18 @@ class MVPOrchestrator:
             except Exception as e:
                 logger.error(f"Error during Rule-based fallback scan: {e}")
 
+        # Trivy 成功時は B-1 ルールの重複既知脆弱性 (Category.KNOWN_VULNERABILITIES) を除外して二重減点を防止
+        if scanner_status.get("trivy"):
+            all_findings = [
+                f
+                for f in all_findings
+                if not (
+                    f.source == "rule_based"
+                    and f.category == Category.KNOWN_VULNERABILITIES
+                    and (f.rule_id == "B-1" or str(f.rule_id).startswith("B-1"))
+                )
+            ]
+
         # 重複する Finding の排除
         seen_keys = set()
         deduped_findings: List[Finding] = []
