@@ -48,12 +48,12 @@ class MVPOrchestrator:
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
         # ArchiveSnapshotFetcher を使用して安全上限 (ダウンロード・解凍サイズ、ファイル数) を適用
         try:
-            from src.config import SecurityCheckConfig
+            from src.config import ScanConfig
             from src.targets.archive_fetcher import ArchiveSnapshotFetcher
-            from src.targets.spec import ScanTargetSpec
+            from src.targets.models import ScanTargetSpec
             import tempfile
 
-            config = SecurityCheckConfig(self.project_root, self.cli_options or {})
+            config = ScanConfig(self.project_root, self.cli_options)
             limits = config.resolve_remote_fetch_limits()
             fetcher = ArchiveSnapshotFetcher(
                 max_download_bytes=limits.max_download_bytes,
@@ -95,17 +95,8 @@ class MVPOrchestrator:
                     scanner_status["trivy"] = True
         except Exception as e:
             logger.warning(
-                f"Safe snapshot fetch failed for Trivy scan ({e}), fallback to direct URL scan."
+                f"Safe snapshot fetch failed or refused for Trivy scan ({e}). Skipping Trivy scan to prevent resource exhaustion."
             )
-            try:
-                trivy_findings, success = self.trivy_adapter.run_scan_with_status(
-                    normalized_url
-                )
-                all_findings.extend(trivy_findings)
-                if success:
-                    scanner_status["trivy"] = True
-            except Exception as ex:
-                logger.error(f"Error during Trivy scan: {ex}")
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
         try:
