@@ -30,7 +30,7 @@ class Main:
         parser.add_argument(
             "target_url",
             nargs="?",
-            default="https://github.com/ukimotodatascience/oss-security-risk-check-agent",
+            default=None,
             help="スキャン対象の GitHub URL（例: https://github.com/owner/repo）",
         )
         parser.add_argument(
@@ -83,13 +83,20 @@ class Main:
                 options.target_url
                 or "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
             )
+            out_dir = Path(options.output_dir) if options.output_dir else None
+
             print(f"[*] Running MVP OSS Security Scan for {target_url}...")
-            orchestrator = MVPOrchestrator(root)
-            result = orchestrator.run_full_scan(target_url, save_to_docs=True)
+            orchestrator = MVPOrchestrator(root, cli_options=options)
+            result = orchestrator.run_full_scan(
+                target_url, save_to_docs=True, output_dir=out_dir
+            )
             print(
                 f"[+] Scan completed! Overall Score: {result.overall_score}/10, Status: {result.status.value}"
             )
-            print("[+] Result saved to docs/scan_result.json for GitHub Pages UI.")
+            save_dest = (
+                out_dir / "scan_result.json" if out_dir else "docs/scan_result.json"
+            )
+            print(f"[+] Result saved to {save_dest} for GitHub Pages UI.")
         else:
             from src.config import ScanConfig
             from src.logger import setup_logging

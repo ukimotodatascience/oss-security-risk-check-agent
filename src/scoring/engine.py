@@ -51,7 +51,9 @@ class ScoringEngine:
         overall_score = round(sum(scores) / len(scores), 1) if scores else 0.0
 
         # 足切りルールと総合判定
-        status, status_reason = self._determine_overall_status(scores, overall_score)
+        status, status_reason = self._determine_overall_status(
+            scores, overall_score, findings
+        )
 
         return OverallResult(
             repository_url=repo_url,
@@ -116,10 +118,13 @@ class ScoringEngine:
         return final_score, summary
 
     def _determine_overall_status(
-        self, scores: List[float], overall_score: float
+        self, scores: List[float], overall_score: float, findings: List[Finding]
     ) -> tuple[OverallStatus, str]:
         """足切りルールと判定ロジック"""
         min_score = min(scores) if scores else 0.0
+        critical_count = sum(
+            1 for f in findings if (f.severity or "").upper() == "CRITICAL"
+        )
 
         if min_score <= 2.0:
             return (
@@ -128,6 +133,11 @@ class ScoringEngine:
             )
 
         if overall_score >= 7.5:
+            if critical_count > 0:
+                return (
+                    OverallStatus.MODERATE,
+                    f"総合スコアは高得点 ({overall_score:.1f}) ですが、Critical リスクが {critical_count} 件検出されているため、安全指定から「普通」に調整されました。",
+                )
             if min_score <= 4.0:
                 return (
                     OverallStatus.MODERATE,

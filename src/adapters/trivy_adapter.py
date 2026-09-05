@@ -23,12 +23,12 @@ class TrivyAdapter:
                 return self.parse_json(data)
             logger.warning(f"Trivy CLI exited with code {res.returncode}: {res.stderr}")
         except FileNotFoundError:
-            logger.info("Trivy CLI not found in PATH. Returning mock Trivy findings.")
-            return self._get_mock_findings(repo_url_or_path)
+            logger.info("Trivy CLI not found in PATH.")
+            return []
         except Exception as e:
             logger.error(f"Failed to run Trivy scan: {e}")
 
-        return self._get_mock_findings(repo_url_or_path)
+        return []
 
     def parse_json(self, data: Dict[str, Any]) -> List[Finding]:
         findings: List[Finding] = []
@@ -56,17 +56,19 @@ class TrivyAdapter:
 
             # 2. Secret (Secrets)
             for secret in result.get("Secrets", []):
+                rule_id = secret.get("RuleID", "SECRET-DETECTED")
+                title = secret.get("Title", "Secret Detected")
                 findings.append(
                     Finding(
                         category=Category.SECRETS,
                         source="trivy",
-                        rule_id=secret.get("RuleID", "SECRET-DETECTED"),
+                        rule_id=rule_id,
                         severity=secret.get("Severity", "HIGH").upper(),
-                        title=secret.get("Title", "Secret Detected"),
+                        title=title,
                         target=target,
                         location=f"Line {secret.get('StartLine', 0)}",
-                        description=secret.get("Match", ""),
-                        remediation="Hardcoded secret should be moved to environment variables or vault.",
+                        description=f"Potential secret detected ({rule_id}: {title}). Match content redacted for security.",
+                        remediation="Hardcoded secret should be removed and moved to environment variables or vault.",
                     )
                 )
 

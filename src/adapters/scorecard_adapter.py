@@ -44,14 +44,12 @@ class ScorecardAdapter:
                 f"Scorecard CLI exited with code {res.returncode}: {res.stderr}"
             )
         except FileNotFoundError:
-            logger.info(
-                "Scorecard CLI not found in PATH. Returning mock Scorecard findings."
-            )
-            return self._get_mock_findings(repo_url)
+            logger.info("Scorecard CLI not found in PATH. Skipping Scorecard scan.")
+            return []
         except Exception as e:
             logger.error(f"Failed to run Scorecard scan: {e}")
 
-        return self._get_mock_findings(repo_url)
+        return []
 
     def parse_json(self, data: Dict[str, Any]) -> List[Finding]:
         findings: List[Finding] = []
@@ -67,15 +65,14 @@ class ScorecardAdapter:
             if raw_score < 0:
                 continue
 
-            # スコアが低い(7点未満)場合をFindingとして抽出
-            severity = "INFO"
-            if raw_score <= 3:
-                severity = "HIGH"
-            elif raw_score <= 6:
-                severity = "MEDIUM"
-            elif raw_score <= 8:
-                severity = "LOW"
+            # 7点以上の合格項目はスコア計算用のraw_score保持のみで、Findingリストには追加しない（リスクとしてカウントしない）
+            if raw_score >= 7:
+                # 判定用スコア保持のために Finding オブジェクトは作成するが、severity="INFO"
+                severity = "INFO"
+                # 7点未満の指摘事項のみリストへ追加
+                continue
 
+            severity = "HIGH" if raw_score <= 3 else "MEDIUM"
             detail_str = (
                 "; ".join(details[:3]) if isinstance(details, list) else str(details)
             )
