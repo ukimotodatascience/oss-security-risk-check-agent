@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from src.mvp_models import Category, Finding, OverallStatus
 from src.scoring.engine import ScoringEngine
 

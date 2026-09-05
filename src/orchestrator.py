@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -71,10 +70,14 @@ class MVPOrchestrator:
                         category=Category.SOURCE_CODE,
                         source="rule_based",
                         rule_id=rec.rule_id,
-                        severity=rec.severity.value if hasattr(rec.severity, "value") else str(rec.severity),
+                        severity=rec.severity.value
+                        if hasattr(rec.severity, "value")
+                        else str(rec.severity),
                         title=rec.title if hasattr(rec, "title") else rec.rule_id,
                         target=rec.file_path,
-                        location=f"Line {rec.line}" if hasattr(rec, "line") and rec.line else None,
+                        location=f"Line {rec.line}"
+                        if hasattr(rec, "line") and rec.line
+                        else None,
                         description=rec.message or "",
                         remediation="Follow security best practices for code pattern.",
                     )
@@ -98,7 +101,9 @@ class MVPOrchestrator:
 
         return findings
 
-    def save_result_json(self, result: OverallResult, filename: str = "scan_result.json") -> Path:
+    def save_result_json(
+        self, result: OverallResult, filename: str = "scan_result.json"
+    ) -> Path:
         docs_dir = self.project_root / "docs"
         docs_dir.mkdir(parents=True, exist_ok=True)
         target_path = docs_dir / filename

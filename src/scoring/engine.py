@@ -63,10 +63,16 @@ class ScoringEngine:
             all_findings=findings,
         )
 
-    def _calculate_category_score(self, category: Category, findings: List[Finding]) -> tuple[float, str]:
+    def _calculate_category_score(
+        self, category: Category, findings: List[Finding]
+    ) -> tuple[float, str]:
         """カテゴリごとの 0〜10 点スコア算出"""
         # Scorecard の raw_score が含まれる場合の優先集計
-        scorecard_scores = [f.raw_score for f in findings if f.source == "scorecard" and f.raw_score is not None]
+        scorecard_scores = [
+            f.raw_score
+            for f in findings
+            if f.source == "scorecard" and f.raw_score is not None
+        ]
         if scorecard_scores and category in (
             Category.DEPENDENCIES,
             Category.DEVELOPMENT,
@@ -74,7 +80,9 @@ class ScoringEngine:
             Category.MAINTENANCE,
         ):
             base_score = sum(scorecard_scores) / len(scorecard_scores)
-            summary = f"OpenSSF Scorecard の評価指標 {len(scorecard_scores)} 件から算出。"
+            summary = (
+                f"OpenSSF Scorecard の評価指標 {len(scorecard_scores)} 件から算出。"
+            )
             return max(0.0, min(10.0, base_score)), summary
 
         # 減点方式 (10.0 点から減点)
@@ -107,7 +115,9 @@ class ScoringEngine:
 
         return final_score, summary
 
-    def _determine_overall_status(self, scores: List[float], overall_score: float) -> tuple[OverallStatus, str]:
+    def _determine_overall_status(
+        self, scores: List[float], overall_score: float
+    ) -> tuple[OverallStatus, str]:
         """足切りルールと判定ロジック"""
         min_score = min(scores) if scores else 0.0
 
@@ -123,9 +133,18 @@ class ScoringEngine:
                     OverallStatus.MODERATE,
                     f"総合スコアは高得点 ({overall_score:.1f}) ですが、一部のカテゴリで低い点数 ({min_score:.1f} 点) があるため「普通」判定に調整されました。",
                 )
-            return OverallStatus.SAFE, f"全体としてセキュリティ対策・プロジェクト健全性が非常に良好です ({overall_score:.1f} 点)。"
+            return (
+                OverallStatus.SAFE,
+                f"全体としてセキュリティ対策・プロジェクト健全性が非常に良好です ({overall_score:.1f} 点)。",
+            )
 
         if overall_score >= 5.0:
-            return OverallStatus.MODERATE, f"一定の対策は講じられていますが、一部に改善が望まれるリスクが存在します ({overall_score:.1f} 点)。"
+            return (
+                OverallStatus.MODERATE,
+                f"一定の対策は講じられていますが、一部に改善が望まれるリスクが存在します ({overall_score:.1f} 点)。",
+            )
 
-        return OverallStatus.DANGEROUS, f"複数のカテゴリで問題・リスクが確認されており、「危険」と判定されました ({overall_score:.1f} 点)。"
+        return (
+            OverallStatus.DANGEROUS,
+            f"複数のカテゴリで問題・リスクが確認されており、「危険」と判定されました ({overall_score:.1f} 点)。",
+        )

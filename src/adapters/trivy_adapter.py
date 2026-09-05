@@ -45,7 +45,8 @@ class TrivyAdapter:
                         source="trivy",
                         rule_id=vuln.get("VulnerabilityID", "CVE-UNKNOWN"),
                         severity=vuln.get("Severity", "MEDIUM").upper(),
-                        title=vuln.get("Title") or vuln.get("VulnerabilityID", "Vulnerability"),
+                        title=vuln.get("Title")
+                        or vuln.get("VulnerabilityID", "Vulnerability"),
                         target=target,
                         location=vuln.get("InstalledVersion", ""),
                         description=vuln.get("Description", ""),

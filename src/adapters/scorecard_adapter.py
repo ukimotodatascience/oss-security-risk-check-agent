@@ -40,9 +40,13 @@ class ScorecardAdapter:
             if res.returncode == 0 and res.stdout:
                 data = json.loads(res.stdout)
                 return self.parse_json(data)
-            logger.warning(f"Scorecard CLI exited with code {res.returncode}: {res.stderr}")
+            logger.warning(
+                f"Scorecard CLI exited with code {res.returncode}: {res.stderr}"
+            )
         except FileNotFoundError:
-            logger.info("Scorecard CLI not found in PATH. Returning mock Scorecard findings.")
+            logger.info(
+                "Scorecard CLI not found in PATH. Returning mock Scorecard findings."
+            )
             return self._get_mock_findings(repo_url)
         except Exception as e:
             logger.error(f"Failed to run Scorecard scan: {e}")
@@ -72,7 +76,9 @@ class ScorecardAdapter:
             elif raw_score <= 8:
                 severity = "LOW"
 
-            detail_str = "; ".join(details[:3]) if isinstance(details, list) else str(details)
+            detail_str = (
+                "; ".join(details[:3]) if isinstance(details, list) else str(details)
+            )
 
             findings.append(
                 Finding(
@@ -92,12 +98,32 @@ class ScorecardAdapter:
     def _get_mock_findings(self, repo_target: str) -> List[Finding]:
         """Scorecard CLI が存在しない場合に安全なモック結果を返す"""
         mock_checks = [
-            ("Branch-Protection", 8, Category.DEVELOPMENT, "Branch protection rules present."),
+            (
+                "Branch-Protection",
+                8,
+                Category.DEVELOPMENT,
+                "Branch protection rules present.",
+            ),
             ("Code-Review", 10, Category.DEVELOPMENT, "Code review required for PRs."),
-            ("Pinned-Dependencies", 5, Category.DEPENDENCIES, "Some dependencies are not pinned."),
-            ("Token-Permissions", 6, Category.CICD, "GitHub Actions token permissions not minimal."),
+            (
+                "Pinned-Dependencies",
+                5,
+                Category.DEPENDENCIES,
+                "Some dependencies are not pinned.",
+            ),
+            (
+                "Token-Permissions",
+                6,
+                Category.CICD,
+                "GitHub Actions token permissions not minimal.",
+            ),
             ("Security-Policy", 10, Category.MAINTENANCE, "SECURITY.md file detected."),
-            ("Maintained", 9, Category.MAINTENANCE, "Active commits in the last 90 days."),
+            (
+                "Maintained",
+                9,
+                Category.MAINTENANCE,
+                "Active commits in the last 90 days.",
+            ),
         ]
         findings = []
         for name, score, cat, reason in mock_checks:
