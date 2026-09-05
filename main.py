@@ -48,12 +48,13 @@ class Main:
             dest="output_dir",
             help="スキャン結果 JSON の出力先ディレクトリ",
         )
-        parser.add_argument(
+        mode_group = parser.add_mutually_exclusive_group()
+        mode_group.add_argument(
             "--mvp",
             action="store_true",
             help="8カテゴリ MVP 診断モード（GitHub Pages 用 JSON 生成）で実行する",
         )
-        parser.add_argument(
+        mode_group.add_argument(
             "--legacy",
             action="store_true",
             help="旧仕様の Markdown レポート出力モードで実行する",
@@ -86,10 +87,14 @@ class Main:
 
         if options.mvp:
             from src.config import ScanConfig
+            from src.logger import setup_logging
             from src.orchestrator import MVPOrchestrator
             from src.targets.url_validator import parse_github_repo_url
 
             cfg = ScanConfig(root, options)
+            setup_logging(
+                level=cfg.resolve_log_level(), log_file=cfg.resolve_log_file()
+            )
             try:
                 target_spec = cfg.resolve_target_spec()
                 if target_spec.source_type in ("local", "local_dir"):

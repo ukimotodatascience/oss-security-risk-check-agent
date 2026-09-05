@@ -446,3 +446,71 @@ def test_scorecard_skipped_when_ref_or_subdir_specified():
         mock_scorecard.assert_not_called()
         assert res.scanned_ref == "v1.0.0"
         assert res.scanned_subdir == "src"
+
+
+def test_main_mutually_exclusive_mvp_and_legacy():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        Main.parse_args(["--mvp", "--legacy"])
+
+
+def test_trivy_parse_json_max_findings_limit():
+    adapter = TrivyAdapter()
+    data = {
+        "Results": [
+            {
+                "Target": "package.json",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": f"CVE-2023-{i}",
+                        "Severity": "HIGH",
+                        "Title": f"Vuln {i}",
+                        "Description": f"Description {i}",
+                    }
+                    for i in range(600)
+                ],
+            }
+        ]
+    }
+    findings = adapter.parse_json(data, max_findings=500)
+    assert len(findings) == 501
+    assert findings[-1].rule_id == "TRIVY-FINDINGS-LIMIT-EXCEEDED"
+
+
+def test_deduplication_key_preserves_different_descriptions():
+    from src.mvp_models import Finding
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator()
+    f1 = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="MEDIUM",
+        title="Vulnerability B-1",
+        target="package.json",
+        description="CVE-2023-0001",
+    )
+    f2 = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="CRITICAL",
+        title="Vulnerability B-1",
+        target="package.json",
+        description="CVE-2023-0002",
+    )
+    with (
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(
+            orchestrator, "_run_rule_based_scan", return_value=([f1, f2], True)
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert len(res.all_findings) == 2

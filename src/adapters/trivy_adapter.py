@@ -51,6 +51,9 @@ class TrivyAdapter:
                     time.sleep(0.1)
 
                 proc.wait()
+                actual_out_size = tmp_out.tell()
+                actual_err_size = tmp_err.tell()
+
                 tmp_err.seek(0)
                 stderr_bytes = tmp_err.read(64 * 1024)
 
@@ -58,14 +61,14 @@ class TrivyAdapter:
                     logger.warning("Trivy CLI timed out after 120s.")
                     return [], False
 
-                total_size = tmp_out.tell() + tmp_err.tell()
+                total_size = actual_out_size + actual_err_size
                 if exceeded_size or total_size > max_output_bytes:
                     logger.warning(
                         f"Trivy CLI output size ({total_size} bytes) exceeded limit ({max_output_bytes} bytes)."
                     )
                     return [], False
 
-                if proc.returncode == 0 and tmp_out.tell() > 0:
+                if proc.returncode == 0 and actual_out_size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
                     return self.parse_json(data), True
@@ -93,15 +96,25 @@ class TrivyAdapter:
         findings, _ = self.run_scan_with_status(repo_url_or_path, max_output_bytes)
         return findings
 
-    def parse_json(self, data: Dict[str, Any]) -> List[Finding]:
+    def parse_json(
+        self, data: Dict[str, Any], max_findings: int = 500
+    ) -> List[Finding]:
         findings: List[Finding] = []
         results = data.get("Results", [])
+        truncated = False
 
         for result in results:
+            if len(findings) >= max_findings:
+                truncated = True
+                break
+
             target = result.get("Target", "")
 
             # 1. 既知脆弱性 (Vulnerabilities)
             for vuln in result.get("Vulnerabilities", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
                 findings.append(
                     Finding(
                         category=Category.KNOWN_VULNERABILITIES,
@@ -119,6 +132,9 @@ class TrivyAdapter:
 
             # 2. Secret (Secrets)
             for secret in result.get("Secrets", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
                 rule_id = secret.get("RuleID", "SECRET-DETECTED")
                 title = secret.get("Title", "Secret Detected")
                 findings.append(
@@ -137,6 +153,9 @@ class TrivyAdapter:
 
             # 3. Misconfiguration (設定セキュリティ)
             for misconf in result.get("Misconfigurations", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
                 findings.append(
                     Finding(
                         category=Category.MISCONFIGURATION,
@@ -149,6 +168,19 @@ class TrivyAdapter:
                         remediation=misconf.get("Resolution", ""),
                     )
                 )
+
+        if truncated:
+            findings.append(
+                Finding(
+                    category=Category.KNOWN_VULNERABILITIES,
+                    source="trivy",
+                    rule_id="TRIVY-FINDINGS-LIMIT-EXCEEDED",
+                    severity="LOW",
+                    title="Trivy Findings Limit Exceeded",
+                    description=f"Trivy scan generated over {max_findings} findings. Truncated excess findings.",
+                    remediation="Review target or narrow scan scope.",
+                )
+            )
 
         return findings
 

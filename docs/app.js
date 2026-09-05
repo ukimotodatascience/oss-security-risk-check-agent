@@ -270,7 +270,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const selectedCat = categoryFilterEl ? categoryFilterEl.value : "ALL";
     const selectedSev = severityFilterEl ? severityFilterEl.value : "ALL";
 
-    const allFindings = currentScanData.all_findings || [];
+    const allFindings = currentScanData.all_findings || currentScanData.findings || [];
 
     const filtered = allFindings.filter(f => {
       const matchCat = (selectedCat === "ALL" || f.category === selectedCat);

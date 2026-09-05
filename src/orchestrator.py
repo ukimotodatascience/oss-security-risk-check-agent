@@ -184,7 +184,14 @@ class MVPOrchestrator:
         seen_keys = set()
         deduped_findings: List[Finding] = []
         for f in all_findings:
-            key = (f.category, f.rule_id, f.target or "", f.location or "", f.title)
+            key = (
+                f.category,
+                f.rule_id,
+                f.target or "",
+                f.location or "",
+                f.title,
+                f.description or "",
+            )
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped_findings.append(f)
@@ -234,10 +241,17 @@ class MVPOrchestrator:
             )
 
             if target_dir and target_dir.exists():
+                from src.config import ScanConfig
                 from src.rule_engine import load_all_rules, run_all
+                from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
+                config = ScanConfig(self.project_root, self.cli_options)
                 rules = load_all_rules(self.project_root)
-                records, errors, _ = run_all(target_dir, rules)
+                with VulnLookupService.use_config(
+                    cache_dir=config.resolve_vuln_cache_dir(),
+                    cache_ttl=config.resolve_vuln_cache_ttl(),
+                ):
+                    records, errors, _ = run_all(target_dir, rules)
                 has_errors = bool(errors)
             else:
                 effective_opts = CliOptions(
@@ -248,7 +262,7 @@ class MVPOrchestrator:
                     mvp=False,
                 )
                 scan_runner = SecurityScan(
-                    self.project_root, cli_options=effective_opts
+                    self.project_root, cli_options=effective_opts, persist_report=False
                 )
                 scan_result = scan_runner.run()
                 records = scan_result.records
