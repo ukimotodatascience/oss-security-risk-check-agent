@@ -2,6 +2,7 @@
 
 document.addEventListener("DOMContentLoaded", () => {
   let currentScanData = null;
+  let currentLoadId = 0;
 
   // DOM Elements
   const repoUrlEl = document.getElementById("repo-url");
@@ -32,8 +33,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const file = e.target.files[0];
       if (!file) return;
 
+      const loadId = ++currentLoadId;
       const reader = new FileReader();
       reader.onload = (evt) => {
+        if (loadId !== currentLoadId) return;
         try {
           const data = JSON.parse(evt.target.result);
           renderScanResult(data);
@@ -55,14 +58,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // JSONデータのロード
   async function loadScanResult(url) {
+    const loadId = ++currentLoadId;
     try {
       const res = await fetch(url + "?t=" + Date.now());
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
-      renderScanResult(data);
+      if (loadId === currentLoadId) {
+        renderScanResult(data);
+      }
     } catch (err) {
-      console.warn("Could not load scan_result.json automatically.", err);
-      renderErrorState("スキャン結果データ (scan_result.json) を読み込めませんでした。JSONファイルを読み込むか再生成してください。");
+      if (loadId === currentLoadId) {
+        console.warn("Could not load scan_result.json automatically.", err);
+        renderErrorState("スキャン結果データ (scan_result.json) を読み込めませんでした。JSONファイルを読み込むか再生成してください。");
+      }
     }
   }
 

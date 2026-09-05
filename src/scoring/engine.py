@@ -118,12 +118,7 @@ class ScoringEngine:
             ]
             base_score = sum(raw_scores) / len(raw_scores)
 
-            risk_list = [
-                f
-                for f in findings
-                if f.severity.upper() != "INFO"
-                and (f.raw_score is None or f.raw_score < 7.0)
-            ]
+            risk_list = [f for f in findings if (f.severity or "").upper() != "INFO"]
             summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
             return True, max(0.0, min(10.0, base_score)), summary, risk_list
 
@@ -166,6 +161,9 @@ class ScoringEngine:
                 risk_list.append(f)
             elif sev == "LOW":
                 base -= 0.1
+                risk_list.append(f)
+            elif sev != "INFO":
+                base -= 0.5
                 risk_list.append(f)
 
         final_score = max(0.0, min(10.0, base))

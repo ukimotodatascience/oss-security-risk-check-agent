@@ -79,3 +79,89 @@ def test_scoring_engine_unknown_status_and_metadata():
     assert res.status == OverallStatus.UNKNOWN
     assert res.scanned_ref == "main"
     assert res.scanned_subdir == "backend"
+
+
+def test_scorecard_low_findings_retained_in_risk_list():
+    from src.mvp_models import Finding
+
+    engine = ScoringEngine()
+    findings = [
+        Finding(
+            category=Category.DEPENDENCIES,
+            source="scorecard",
+            rule_id="SCORECARD-DEPENDENCY-UPDATE-TOOL",
+            severity="LOW",
+            title="Scorecard: Dependency-Update-Tool (Score: 8/10)",
+            raw_score=8.0,
+        )
+    ]
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        findings,
+        scanner_status={"scorecard": True},
+    )
+    cat_res = res.categories["dependencies"]
+    assert cat_res.score == 8.0
+    assert len(cat_res.findings) == 1
+    assert cat_res.findings[0].severity == "LOW"
+
+
+def test_scoring_engine_unknown_severity_deduction():
+    from src.mvp_models import Finding
+
+    engine = ScoringEngine()
+    findings = [
+        Finding(
+            category=Category.SOURCE_CODE,
+            source="rule_based",
+            rule_id="RULE-UNKNOWN-1",
+            severity="UNKNOWN",
+            title="Unknown Vulnerability",
+        )
+    ]
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        findings,
+        scanner_status={"rule_based": True},
+    )
+    cat_res = res.categories["source_code"]
+    assert cat_res.score == 9.5  # 10.0 - 0.5
+    assert len(cat_res.findings) == 1
+    assert cat_res.findings[0].severity == "UNKNOWN"
+
+
+def test_orchestrator_rule_based_findings_retained_when_trivy_fails():
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category
+
+    orchestrator = MVPOrchestrator()
+    mock_record = MagicMock()
+    mock_record.category = "secrets"
+    mock_record.rule_id = "SECRET-001"
+    mock_record.severity.value = "HIGH"
+    mock_record.title = "Hardcoded Secret"
+    mock_record.file_path = "config.py"
+    mock_record.line = 10
+    mock_record.message = "Found potential secret"
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = [mock_record]
+    mock_scan_result.errors = []
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        # When trivy scanner is False (failed/skipped), secrets rule-based finding is retained
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status={"trivy": False},
+        )
+        assert success is True
+        assert len(findings) == 1
+        assert findings[0].category == Category.SECRETS
+
+        # When trivy scanner is True (succeeded), secrets rule-based finding is skipped (handled by Trivy)
+        findings_trivy_ok, _ = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status={"trivy": True},
+        )
+        assert len(findings_trivy_ok) == 0

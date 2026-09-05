@@ -126,7 +126,9 @@ class MVPOrchestrator:
 
         # 4. 既存 Rule-based Scan (ソースコード固有の判定)
         try:
-            rule_findings, success = self._run_rule_based_scan(normalized_url)
+            rule_findings, success = self._run_rule_based_scan(
+                normalized_url, scanner_status=scanner_status
+            )
             all_findings.extend(rule_findings)
             if success:
                 scanner_status["rule_based"] = True
@@ -148,9 +150,12 @@ class MVPOrchestrator:
 
         return overall_result
 
-    def _run_rule_based_scan(self, repo_url: str) -> tuple[List[Finding], bool]:
+    def _run_rule_based_scan(
+        self, repo_url: str, scanner_status: Optional[Dict[str, bool]] = None
+    ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
+        status_map = scanner_status or {}
         try:
             from main import CliOptions
             from src.scan import SecurityScan
@@ -188,13 +193,41 @@ class MVPOrchestrator:
                 )
                 return [], False
 
+            RULE_CAT_TO_MVP_CAT: Dict[str, Category] = {
+                "secrets": Category.SECRETS,
+                "dependencies": Category.DEPENDENCIES,
+                "cicd": Category.CICD,
+                "known_vulnerabilities": Category.KNOWN_VULNERABILITIES,
+                "misconfiguration": Category.MISCONFIGURATION,
+                "code": Category.SOURCE_CODE,
+                "source_code": Category.SOURCE_CODE,
+            }
+
             for rec in scan_result.records:
-                if rec.category in ("secrets", "dependencies", "cicd"):
-                    continue
+                raw_cat_str = (
+                    str(rec.category).lower() if hasattr(rec, "category") else ""
+                )
+                mvp_cat = RULE_CAT_TO_MVP_CAT.get(raw_cat_str, Category.SOURCE_CODE)
+
+                if mvp_cat in (
+                    Category.SECRETS,
+                    Category.KNOWN_VULNERABILITIES,
+                    Category.MISCONFIGURATION,
+                ):
+                    if status_map.get("trivy", False):
+                        continue
+                elif mvp_cat == Category.CICD:
+                    if status_map.get("scorecard", False):
+                        continue
+                elif mvp_cat == Category.DEPENDENCIES:
+                    if status_map.get("trivy", False) or status_map.get(
+                        "scorecard", False
+                    ):
+                        continue
 
                 findings.append(
                     Finding(
-                        category=Category.SOURCE_CODE,
+                        category=mvp_cat,
                         source="rule_based",
                         rule_id=rec.rule_id,
                         severity=rec.severity.value
