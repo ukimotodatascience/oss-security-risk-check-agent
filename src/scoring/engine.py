@@ -105,6 +105,9 @@ class ScoringEngine:
         is_primary_ok = True
         scanner_msg = ""
 
+        rule_based_ok = scanner_status.get("rule_based", False)
+        git_history_ok = scanner_status.get("git_history", True)
+
         # 1. Scorecard 対象カテゴリ
         if category in (
             Category.DEPENDENCIES,
@@ -158,7 +161,13 @@ class ScoringEngine:
                     if scorecard_disabled:
                         summary += f" ({len(scorecard_disabled)}件の指標が未評価)"
 
-                    evaluated = len(scorecard_disabled) == 0
+                    evaluated = (len(scorecard_disabled) == 0) and rule_based_ok
+                    if category == Category.MAINTENANCE and not git_history_ok:
+                        evaluated = False
+                        summary += " (Git履歴未評価)"
+                    if not rule_based_ok:
+                        summary += " (ルールベーススキャン未実行)"
+
                     return (
                         evaluated,
                         max(0.0, min(10.0, base_score)),
@@ -177,10 +186,16 @@ class ScoringEngine:
             if not scanner_status.get("trivy", False):
                 is_primary_ok = False
                 scanner_msg = "Trivy スキャン未実行"
+            elif category == Category.SECRETS and not git_history_ok:
+                is_primary_ok = False
+                scanner_msg = "Git履歴未評価"
+            elif not rule_based_ok:
+                is_primary_ok = False
+                scanner_msg = "ルールベーススキャン未実行"
 
         # 3. Rule-based 対象カテゴリ
         elif category == Category.SOURCE_CODE:
-            if not scanner_status.get("rule_based", False):
+            if not rule_based_ok:
                 is_primary_ok = False
                 scanner_msg = "ルールベーススキャン未実行"
 

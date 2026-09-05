@@ -514,3 +514,30 @@ def test_deduplication_key_preserves_different_descriptions():
             "https://github.com/owner/repo", save_to_docs=False
         )
         assert len(res.all_findings) == 2
+
+
+def test_git_history_unevaluated_affects_secrets_and_maintenance_categories():
+    engine = ScoringEngine()
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        [],
+        scanner_status={
+            "trivy": True,
+            "scorecard": True,
+            "rule_based": True,
+            "git_history": False,
+        },
+    )
+    assert res.categories[Category.SECRETS.value].evaluated is False
+    assert res.categories[Category.MAINTENANCE.value].evaluated is False
+
+
+def test_rule_based_scan_failure_propagates_to_all_categories():
+    engine = ScoringEngine()
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        [],
+        scanner_status={"trivy": True, "scorecard": True, "rule_based": False},
+    )
+    for cat_res in res.categories.values():
+        assert cat_res.evaluated is False

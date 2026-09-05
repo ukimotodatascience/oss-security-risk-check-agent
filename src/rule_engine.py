@@ -508,7 +508,16 @@ def _evaluate_rule_in_process(
     try:
         rule = pickle.loads(rule_bytes)
         with VulnLookupService.use_config(cache_dir, cache_ttl):
-            records = rule.evaluate(target)
+            try:
+                import inspect
+
+                sig = inspect.signature(rule.evaluate)
+                if "max_records" in sig.parameters:
+                    records = rule.evaluate(target, max_records=500)
+                else:
+                    records = rule.evaluate(target)
+            except Exception:
+                records = rule.evaluate(target)
         if len(records) > 500:
             records = records[:500]
         return True, records, None
