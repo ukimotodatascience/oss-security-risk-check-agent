@@ -13,13 +13,16 @@ CHECK_CATEGORY_MAP: Dict[str, Category] = {
     "Binary-Artifacts": Category.DEPENDENCIES,
     "Pinned-Dependencies": Category.DEPENDENCIES,
     "Vulnerabilities": Category.DEPENDENCIES,
+    "Dependency-Update-Tool": Category.DEPENDENCIES,
     "Branch-Protection": Category.DEVELOPMENT,
     "Code-Review": Category.DEVELOPMENT,
     "CI-Tests": Category.DEVELOPMENT,
+    "License": Category.DEVELOPMENT,
     "Dangerous-Workflow": Category.CICD,
     "Token-Permissions": Category.CICD,
     "Signed-Releases": Category.CICD,
     "Packaging": Category.CICD,
+    "Webhooks": Category.CICD,
     "Maintained": Category.MAINTENANCE,
     "Security-Policy": Category.MAINTENANCE,
     "CII-Best-Practices": Category.MAINTENANCE,
@@ -60,7 +63,11 @@ class ScorecardAdapter:
             raw_score = check.get("score", -1)  # -1 means disabled or unable to check
             reason = check.get("reason", "")
             details = check.get("details") or []
-            cat = CHECK_CATEGORY_MAP.get(name, Category.MAINTENANCE)
+
+            cat = CHECK_CATEGORY_MAP.get(name)
+            if cat is None:
+                logger.debug(f"Unmapped Scorecard check skipped: {name}")
+                continue
 
             if raw_score < 0:
                 continue

@@ -16,7 +16,11 @@ class TrivyAdapter:
     def run_scan(self, repo_url_or_path: str) -> List[Finding]:
         """Trivy CLI を実行して Findings のリストを取得。利用不可の場合はダミーまたは空リスト。"""
         try:
-            cmd = [self.cli_path, "repo", "--format", "json", repo_url_or_path]
+            is_url = repo_url_or_path.startswith(
+                "http://"
+            ) or repo_url_or_path.startswith("https://")
+            scan_mode = "repo" if is_url else "fs"
+            cmd = [self.cli_path, scan_mode, "--format", "json", repo_url_or_path]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if res.returncode == 0 and res.stdout:
                 data = json.loads(res.stdout)

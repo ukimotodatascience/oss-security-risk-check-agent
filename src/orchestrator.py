@@ -46,12 +46,44 @@ class MVPOrchestrator:
         }
 
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
+        # ArchiveSnapshotFetcher を使用して安全上限 (ダウンロード・解凍サイズ、ファイル数) を適用
         try:
-            trivy_findings = self.trivy_adapter.run_scan(normalized_url)
-            all_findings.extend(trivy_findings)
-            scanner_status["trivy"] = True
+            from src.config import SecurityCheckConfig
+            from src.targets.archive_fetcher import ArchiveSnapshotFetcher
+            from src.targets.spec import ScanTargetSpec
+            import tempfile
+
+            config = SecurityCheckConfig(self.project_root, self.cli_options or {})
+            limits = config.resolve_remote_fetch_limits()
+            fetcher = ArchiveSnapshotFetcher(
+                max_download_bytes=limits.max_download_bytes,
+                max_extracted_bytes=limits.max_extracted_bytes,
+                max_files=limits.max_files,
+                max_single_file_bytes=limits.max_single_file_bytes,
+                timeout_sec=limits.timeout_sec,
+                github_token=config.resolve_github_token(),
+            )
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                spec = ScanTargetSpec(repo_url=normalized_url)
+                extracted_dir = fetcher.fetch(spec, tmp_path)
+                logger.info(
+                    f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
+                )
+                trivy_findings = self.trivy_adapter.run_scan(str(extracted_dir))
+                all_findings.extend(trivy_findings)
+                scanner_status["trivy"] = True
         except Exception as e:
-            logger.error(f"Error during Trivy scan: {e}")
+            logger.warning(
+                f"Safe snapshot fetch failed for Trivy scan ({e}), fallback to direct URL scan."
+            )
+            try:
+                trivy_findings = self.trivy_adapter.run_scan(normalized_url)
+                all_findings.extend(trivy_findings)
+                scanner_status["trivy"] = True
+            except Exception as ex:
+                logger.error(f"Error during Trivy scan: {ex}")
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
         try:

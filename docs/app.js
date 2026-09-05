@@ -66,6 +66,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  function validateScanData(data) {
+    if (!data || typeof data !== "object") return false;
+    if (typeof data.repository_url !== "string") return false;
+    if (typeof data.overall_score !== "number" || isNaN(data.overall_score)) return false;
+    if (typeof data.status !== "string") return false;
+    if (!data.categories || typeof data.categories !== "object") return false;
+    if (!Array.isArray(data.findings)) return false;
+    return true;
+  }
+
   function renderErrorState(message) {
     repoUrlEl.textContent = "Data Load Error";
     scannedAtEl.textContent = "最終診断日時: N/A";
@@ -82,6 +92,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 画面全体へのデータ反映
   function renderScanResult(data) {
+    if (!validateScanData(data)) {
+      renderErrorState("診断データ (JSON) の構造が正しくありません。");
+      return;
+    }
+
     currentScanData = data;
 
     // Header & Meta
