@@ -13,10 +13,10 @@ class TrivyAdapter:
     def __init__(self, cli_path: str = "trivy") -> None:
         self.cli_path = cli_path
 
-    def run_scan(
+    def run_scan_with_status(
         self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
-    ) -> List[Finding]:
-        """Trivy CLI を実行して Findings のリストを取得。利用不可の場合はダミーまたは空リスト。"""
+    ) -> tuple[List[Finding], bool]:
+        """Trivy CLI を実行し (findings, success_flag) を返す。"""
         import tempfile
 
         try:
@@ -37,19 +37,19 @@ class TrivyAdapter:
                     proc.kill()
                     proc.wait()
                     logger.warning("Trivy CLI timed out after 120s.")
-                    return []
+                    return [], False
 
                 size = tmp_out.tell()
                 if size > max_output_bytes:
                     logger.warning(
                         f"Trivy CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
                     )
-                    return []
+                    return [], False
 
                 if proc.returncode == 0 and size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
-                    return self.parse_json(data)
+                    return self.parse_json(data), True
 
                 stderr_text = (
                     stderr_bytes.decode("utf-8", errors="replace")
@@ -59,13 +59,20 @@ class TrivyAdapter:
                 logger.warning(
                     f"Trivy CLI exited with code {proc.returncode}: {stderr_text}"
                 )
+                return [], False
         except FileNotFoundError:
             logger.info("Trivy CLI not found in PATH.")
-            return []
+            return [], False
         except Exception as e:
             logger.error(f"Failed to run Trivy scan: {e}")
+            return [], False
 
-        return []
+    def run_scan(
+        self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
+    ) -> List[Finding]:
+        """Trivy CLI を実行して Findings のリストを取得。"""
+        findings, _ = self.run_scan_with_status(repo_url_or_path, max_output_bytes)
+        return findings
 
     def parse_json(self, data: Dict[str, Any]) -> List[Finding]:
         findings: List[Finding] = []

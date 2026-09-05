@@ -72,7 +72,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (typeof data.overall_score !== "number" || isNaN(data.overall_score)) return false;
     if (typeof data.status !== "string") return false;
     if (!data.categories || typeof data.categories !== "object") return false;
-    if (!Array.isArray(data.findings)) return false;
+    const findingsArray = data.all_findings || data.findings;
+    if (!Array.isArray(findingsArray)) return false;
     return true;
   }
 

@@ -64,24 +64,46 @@ class MVPOrchestrator:
                 github_token=config.resolve_github_token(),
             )
 
+            target_ref = (
+                getattr(self.cli_options, "target_ref", None)
+                if self.cli_options
+                else None
+            )
+            target_subdir = (
+                getattr(self.cli_options, "target_subdir", None)
+                if self.cli_options
+                else None
+            )
+
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_path = Path(tmpdir)
-                spec = ScanTargetSpec(repo_url=normalized_url)
+                spec = ScanTargetSpec(
+                    source_type="remote_archive",
+                    repo_url=normalized_url,
+                    ref=target_ref,
+                    subdir=target_subdir,
+                )
                 extracted_dir = fetcher.fetch(spec, tmp_path)
                 logger.info(
                     f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
                 )
-                trivy_findings = self.trivy_adapter.run_scan(str(extracted_dir))
+                trivy_findings, success = self.trivy_adapter.run_scan_with_status(
+                    str(extracted_dir)
+                )
                 all_findings.extend(trivy_findings)
-                scanner_status["trivy"] = True
+                if success:
+                    scanner_status["trivy"] = True
         except Exception as e:
             logger.warning(
                 f"Safe snapshot fetch failed for Trivy scan ({e}), fallback to direct URL scan."
             )
             try:
-                trivy_findings = self.trivy_adapter.run_scan(normalized_url)
+                trivy_findings, success = self.trivy_adapter.run_scan_with_status(
+                    normalized_url
+                )
                 all_findings.extend(trivy_findings)
-                scanner_status["trivy"] = True
+                if success:
+                    scanner_status["trivy"] = True
             except Exception as ex:
                 logger.error(f"Error during Trivy scan: {ex}")
 
@@ -96,9 +118,10 @@ class MVPOrchestrator:
 
         # 4. 既存 Rule-based Scan (ソースコード固有の判定)
         try:
-            rule_findings = self._run_rule_based_scan(normalized_url)
+            rule_findings, success = self._run_rule_based_scan(normalized_url)
             all_findings.extend(rule_findings)
-            scanner_status["rule_based"] = True
+            if success:
+                scanner_status["rule_based"] = True
         except Exception as e:
             logger.error(f"Error during Rule-based scan: {e}")
 
@@ -113,13 +136,38 @@ class MVPOrchestrator:
 
         return overall_result
 
-    def _run_rule_based_scan(self, repo_url: str) -> List[Finding]:
-        """既存ルールベース評価を実行し、SOURCE_CODE カテゴリの Finding に変換"""
+    def _run_rule_based_scan(self, repo_url: str) -> tuple[List[Finding], bool]:
+        """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
         try:
+            from main import CliOptions
             from src.scan import SecurityScan
 
-            scan_runner = SecurityScan(self.project_root, cli_options=self.cli_options)
+            target_ref = (
+                getattr(self.cli_options, "target_ref", None)
+                if self.cli_options
+                else None
+            )
+            target_subdir = (
+                getattr(self.cli_options, "target_subdir", None)
+                if self.cli_options
+                else None
+            )
+            output_dir = (
+                getattr(self.cli_options, "output_dir", None)
+                if self.cli_options
+                else None
+            )
+
+            effective_opts = CliOptions(
+                target_url=repo_url,
+                target_ref=target_ref,
+                target_subdir=target_subdir,
+                output_dir=output_dir,
+                mvp=False,
+            )
+
+            scan_runner = SecurityScan(self.project_root, cli_options=effective_opts)
             scan_result = scan_runner.run()
             for rec in scan_result.records:
                 if rec.category in ("secrets", "dependencies", "cicd"):
@@ -142,10 +190,11 @@ class MVPOrchestrator:
                         remediation="Follow security best practices for code pattern.",
                     )
                 )
+            return findings, True
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")
 
-        return findings
+        return findings, False
 
     def save_result_json(
         self,
