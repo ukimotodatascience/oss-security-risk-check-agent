@@ -96,6 +96,7 @@ class MVPOrchestrator:
                         Category.MISCONFIGURATION,
                         Category.KNOWN_VULNERABILITIES,
                         Category.SECRETS,
+                        Category.SOURCE_CODE,
                     ):
                         all_findings.append(
                             Finding(
@@ -108,6 +109,22 @@ class MVPOrchestrator:
                                 remediation="Review large files individually for secrets or vulnerabilities.",
                             )
                         )
+
+                # Record Git History unevaluated alert for snapshot scan
+                if not (extracted_dir / ".git").exists():
+                    for cat in (Category.SECRETS, Category.MAINTENANCE):
+                        all_findings.append(
+                            Finding(
+                                category=cat,
+                                source="snapshot_fetcher",
+                                rule_id="GIT-HISTORY-UNEVALUATED",
+                                severity="INFO",
+                                title="Git History Check Skipped (Snapshot Only)",
+                                description="Scan performed on archive snapshot without .git directory. Commit history and deleted secrets were not evaluated.",
+                                remediation="Run scan on full git repository clone for commit history evaluation.",
+                            )
+                        )
+                    scanner_status["git_history"] = False
 
                 trivy_findings, success = self.trivy_adapter.run_scan_with_status(
                     str(extracted_dir)
@@ -124,7 +141,7 @@ class MVPOrchestrator:
                         target_dir=extracted_dir,
                     )
                     all_findings.extend(rule_findings)
-                    if success:
+                    if success and not fetcher.skipped_files:
                         scanner_status["rule_based"] = True
                 except Exception as e:
                     logger.error(f"Error during Rule-based scan: {e}")
@@ -144,7 +161,8 @@ class MVPOrchestrator:
             logger.error(f"Error during Scorecard scan: {e}")
 
         # スナップショット取得が失敗した場合の Rule-based Scan フォールバック
-        if not scanner_status.get("rule_based", False):
+        has_rule_findings = any(f.source == "rule_based" for f in all_findings)
+        if not has_rule_findings and not scanner_status.get("rule_based", False):
             try:
                 rule_findings, success = self._run_rule_based_scan(
                     normalized_url,
@@ -155,6 +173,16 @@ class MVPOrchestrator:
                     scanner_status["rule_based"] = True
             except Exception as e:
                 logger.error(f"Error during Rule-based fallback scan: {e}")
+
+        # 重複する Finding の排除
+        seen_keys = set()
+        deduped_findings: List[Finding] = []
+        for f in all_findings:
+            key = (f.category, f.rule_id, f.target or "", f.location or "", f.title)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_findings.append(f)
+        all_findings = deduped_findings
 
         # 5. スコアリングと総合判定
         overall_result = self.scoring_engine.evaluate(
@@ -179,7 +207,6 @@ class MVPOrchestrator:
     ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
-        status_map = scanner_status or {}
         try:
             from main import CliOptions
             from src.scan import SecurityScan
@@ -225,6 +252,14 @@ class MVPOrchestrator:
                 logger.warning("Rule-based scan returned 0 records with errors.")
                 return [], False
 
+            # Finding 数上限チェック (500件上限)
+            max_limit = 500
+            truncated = False
+            if len(records) > max_limit:
+                records = records[:max_limit]
+                has_errors = True
+                truncated = True
+
             RULE_CAT_TO_MVP_CAT: Dict[str, Category] = {
                 "secrets": Category.SECRETS,
                 "dependencies": Category.DEPENDENCIES,
@@ -243,19 +278,6 @@ class MVPOrchestrator:
                 )
                 mvp_cat = RULE_CAT_TO_MVP_CAT.get(raw_cat_str, Category.SOURCE_CODE)
 
-                if mvp_cat in (
-                    Category.SECRETS,
-                    Category.KNOWN_VULNERABILITIES,
-                    Category.MISCONFIGURATION,
-                ):
-                    if status_map.get("trivy", False):
-                        continue
-                elif mvp_cat == Category.DEPENDENCIES:
-                    if status_map.get("trivy", False) or status_map.get(
-                        "scorecard", False
-                    ):
-                        continue
-
                 findings.append(
                     Finding(
                         category=mvp_cat,
@@ -273,6 +295,20 @@ class MVPOrchestrator:
                         remediation="Follow security best practices for code pattern.",
                     )
                 )
+
+            if truncated:
+                findings.append(
+                    Finding(
+                        category=Category.SOURCE_CODE,
+                        source="rule_based",
+                        rule_id="FINDINGS-LIMIT-EXCEEDED",
+                        severity="LOW",
+                        title="Rule Findings Limit Exceeded",
+                        description=f"Rule scan generated over {max_limit} findings. Truncated excess findings.",
+                        remediation="Review findings or narrow scan scope.",
+                    )
+                )
+
             return findings, not has_errors
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")

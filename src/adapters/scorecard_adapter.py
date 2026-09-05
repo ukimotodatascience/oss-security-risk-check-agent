@@ -59,7 +59,7 @@ class ScorecardAdapter:
                         timed_out = True
                         proc.kill()
                         break
-                    size = tmp_out.tell()
+                    size = tmp_out.tell() + tmp_err.tell()
                     if size > max_output_bytes:
                         exceeded_size = True
                         proc.kill()
@@ -72,20 +72,21 @@ class ScorecardAdapter:
                     logger.warning("Scorecard CLI timed out after 120s.")
                     return []
 
-                size = tmp_out.tell()
+                size = tmp_out.tell() + tmp_err.tell()
                 if exceeded_size or size > max_output_bytes:
                     logger.warning(
-                        f"Scorecard CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                        f"Scorecard CLI output size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
                     )
                     return []
 
-                if proc.returncode == 0 and size > 0:
+                out_size = tmp_out.tell()
+                if proc.returncode == 0 and out_size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
                     return self.parse_json(data)
 
                 tmp_err.seek(0)
-                stderr_bytes = tmp_err.read()
+                stderr_bytes = tmp_err.read(64 * 1024)
                 stderr_text = (
                     stderr_bytes.decode("utf-8", errors="replace")
                     if stderr_bytes

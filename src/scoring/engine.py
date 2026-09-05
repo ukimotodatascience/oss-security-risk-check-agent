@@ -39,6 +39,7 @@ class ScoringEngine:
 
         category_results: Dict[str, CategoryResult] = {}
         valid_scores: List[float] = []
+        all_calculated_scores: List[float] = []
         risk_findings: List[Finding] = []
 
         for cat in Category:
@@ -61,16 +62,22 @@ class ScoringEngine:
             category_results[cat.value] = cat_res
             if evaluated and score is not None:
                 valid_scores.append(cat_res.score)
+            if score is not None:
+                all_calculated_scores.append(cat_res.score)
             risk_findings.extend(filtered_risk_findings)
 
-        # 総合スコア = 評価成功カテゴリの平均
+        # 総合スコア = 評価成功カテゴリの平均（すべての評価が未実行なら算出不能）
+        eval_base_scores = valid_scores if valid_scores else all_calculated_scores
         overall_score = (
-            round(sum(valid_scores) / len(valid_scores), 1) if valid_scores else 0.0
+            round(sum(eval_base_scores) / len(eval_base_scores), 1)
+            if eval_base_scores
+            else 0.0
         )
 
         # 足切りルールと総合判定
         status, status_reason = self._determine_overall_status(
             valid_scores,
+            all_calculated_scores,
             overall_score,
             risk_findings,
             len(valid_scores) == len(Category),
@@ -224,18 +231,21 @@ class ScoringEngine:
     def _determine_overall_status(
         self,
         valid_scores: List[float],
+        all_calculated_scores: List[float],
         overall_score: float,
         findings: List[Finding],
         all_evaluated: bool,
     ) -> Tuple[OverallStatus, str]:
         """足切りルールと判定ロジック"""
-        if not valid_scores:
+        if not valid_scores and not all_calculated_scores:
             return (
                 OverallStatus.UNKNOWN,
                 "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした (評価不能)。",
             )
 
-        min_score = min(valid_scores)
+        min_score = (
+            min(all_calculated_scores) if all_calculated_scores else min(valid_scores)
+        )
         critical_count = sum(
             1 for f in findings if (f.severity or "").upper() == "CRITICAL"
         )

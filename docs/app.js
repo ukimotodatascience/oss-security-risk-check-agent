@@ -280,15 +280,28 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (filtered.length === 0) {
       const categories = currentScanData.categories || {};
-      const hasEvaluatedCategory = Object.values(categories).some(c => c && c.evaluated !== false);
+      const requiredKeys = [
+        "known_vulnerabilities",
+        "secrets",
+        "misconfiguration",
+        "dependencies",
+        "development",
+        "cicd",
+        "maintenance",
+        "source_code"
+      ];
+      const allEvaluated = requiredKeys.every(k => categories[k] && categories[k].evaluated === true);
+      const hasEvaluatedCategory = Object.values(categories).some(c => c && c.evaluated === true);
       const isUnsetOrUnevaluated = currentScanData.status === "評価不能" || !hasEvaluatedCategory;
 
       if (isUnsetOrUnevaluated) {
         findingsListEl.innerHTML = `<div class="empty-findings">評価可能なスキャンデータが存在しません (未評価)。</div>`;
       } else if (allFindings.length > 0) {
         findingsListEl.innerHTML = `<div class="empty-findings">選択されたフィルター条件に一致する指摘事項 (Findings) はありません。</div>`;
+      } else if (allEvaluated) {
+        findingsListEl.innerHTML = `<div class="empty-findings">該当する指摘事項 (Findings) はありません。全カテゴリの診断結果は良好です！</div>`;
       } else {
-        findingsListEl.innerHTML = `<div class="empty-findings">該当する指摘事項 (Findings) はありません。診断結果は良好です！</div>`;
+        findingsListEl.innerHTML = `<div class="empty-findings">評価された範囲では指摘事項は検出されませんでしたが、一部のカテゴリは未診断または部分評価となっています。</div>`;
       }
       return;
     }

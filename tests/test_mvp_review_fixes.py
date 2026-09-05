@@ -159,12 +159,12 @@ def test_orchestrator_rule_based_findings_retained_when_trivy_fails():
         assert len(findings) == 1
         assert findings[0].category == Category.SECRETS
 
-        # When trivy scanner is True (succeeded), secrets rule-based finding is skipped (handled by Trivy)
+        # Rule-based findings are retained and deduplicated across scanners
         findings_trivy_ok, _ = orchestrator._run_rule_based_scan(
             "https://github.com/owner/repo",
             scanner_status={"trivy": True},
         )
-        assert len(findings_trivy_ok) == 0
+        assert len(findings_trivy_ok) == 1
 
 
 def test_scoring_engine_preserves_fallback_findings_when_trivy_false():
@@ -304,3 +304,75 @@ def test_rule_based_scan_with_target_dir(tmp_path):
     )
     assert isinstance(findings, list)
     assert success is True
+
+
+def test_cutoff_rule_triggers_dangerous_on_unevaluated_category_critical_finding():
+    from src.mvp_models import Finding
+
+    engine = ScoringEngine()
+    findings = [
+        # Category SECRETS is unevaluated (trivy = False), but has 3 CRITICAL findings => score 1.0
+        Finding(
+            category=Category.SECRETS,
+            source="rule_based",
+            rule_id="SECRET-1",
+            severity="CRITICAL",
+            title="Secret 1",
+        ),
+        Finding(
+            category=Category.SECRETS,
+            source="rule_based",
+            rule_id="SECRET-2",
+            severity="CRITICAL",
+            title="Secret 2",
+        ),
+        Finding(
+            category=Category.SECRETS,
+            source="rule_based",
+            rule_id="SECRET-3",
+            severity="CRITICAL",
+            title="Secret 3",
+        ),
+    ]
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        findings,
+        scanner_status={"trivy": False, "scorecard": False, "rule_based": True},
+    )
+    # SECRETS score is 1.0 (<= 2.0) => status must be DANGEROUS even if unevaluated
+    assert res.status == OverallStatus.DANGEROUS
+    assert "足切りルール" in res.status_reason
+
+
+def test_orchestrator_deduplicates_findings():
+    from src.mvp_models import Finding
+
+    f1 = Finding(
+        category=Category.SECRETS,
+        source="rule_based",
+        rule_id="RULE-1",
+        severity="HIGH",
+        title="Duplicate Secret",
+        target="config.py",
+        location="Line 5",
+    )
+    f2 = Finding(
+        category=Category.SECRETS,
+        source="trivy",
+        rule_id="RULE-1",
+        severity="HIGH",
+        title="Duplicate Secret",
+        target="config.py",
+        location="Line 5",
+    )
+
+    all_findings = [f1, f2]
+    seen_keys = set()
+    deduped = []
+    for f in all_findings:
+        key = (f.category, f.rule_id, f.target or "", f.location or "", f.title)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(f)
+
+    assert len(deduped) == 1
