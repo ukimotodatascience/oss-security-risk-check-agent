@@ -1,14 +1,13 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 from src.adapters.scorecard_adapter import ScorecardAdapter, CHECK_CATEGORY_MAP
 from src.adapters.trivy_adapter import TrivyAdapter
-from src.mvp_models import Category, Finding
+from src.mvp_models import Category
+from main import Main
 
 
 def test_scorecard_adapter_mappings_and_unmapped_checks():
     adapter = ScorecardAdapter()
-    
+
     # 1. New explicit mappings check
     assert CHECK_CATEGORY_MAP.get("Dependency-Update-Tool") == Category.DEPENDENCIES
     assert CHECK_CATEGORY_MAP.get("License") == Category.DEVELOPMENT
@@ -29,18 +28,39 @@ def test_scorecard_adapter_mappings_and_unmapped_checks():
 
 def test_trivy_adapter_local_path_mode():
     adapter = TrivyAdapter()
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = '{"Results": []}'
-        
+    with patch("subprocess.Popen") as mock_popen:
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = (b"", b"")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
         # Test local path triggers "fs" mode
         adapter.run_scan("/tmp/some_repo")
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         assert cmd[1] == "fs"
         assert cmd[4] == "/tmp/some_repo"
 
         # Test URL triggers "repo" mode
         adapter.run_scan("https://github.com/owner/repo")
-        cmd2 = mock_run.call_args[0][0]
+        cmd2 = mock_popen.call_args[0][0]
         assert cmd2[1] == "repo"
         assert cmd2[4] == "https://github.com/owner/repo"
+
+
+def test_main_cli_options_parse():
+    # 1. Default (no args) should maintain legacy = False, mvp = False
+    opt1 = Main.parse_args([])
+    assert opt1.mvp is False
+
+    # 2. Target URL given => mvp = True
+    opt2 = Main.parse_args(["https://github.com/owner/repo"])
+    assert opt2.mvp is True
+    assert opt2.target_url == "https://github.com/owner/repo"
+
+    # 3. --mvp flag given => mvp = True
+    opt3 = Main.parse_args(["--mvp"])
+    assert opt3.mvp is True
+
+    # 4. --legacy flag given => mvp = False
+    opt4 = Main.parse_args(["--legacy"])
+    assert opt4.mvp is False

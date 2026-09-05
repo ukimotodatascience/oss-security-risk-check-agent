@@ -49,18 +49,31 @@ class Main:
             help="スキャン結果 JSON の出力先ディレクトリ",
         )
         parser.add_argument(
+            "--mvp",
+            action="store_true",
+            help="8カテゴリ MVP 診断モード（GitHub Pages 用 JSON 生成）で実行する",
+        )
+        parser.add_argument(
             "--legacy",
             action="store_true",
             help="旧仕様の Markdown レポート出力モードで実行する",
         )
 
         args = parser.parse_args(argv)
+
+        if args.legacy:
+            is_mvp = False
+        elif args.mvp or args.target_url is not None:
+            is_mvp = True
+        else:
+            is_mvp = False
+
         return CliOptions(
             target_url=args.target_url,
             target_ref=args.target_ref,
             target_subdir=args.target_subdir,
             output_dir=args.output_dir,
-            mvp=not args.legacy,
+            mvp=is_mvp,
         )
 
     @classmethod
@@ -80,8 +93,18 @@ class Main:
             from src.orchestrator import MVPOrchestrator
             from src.targets.url_validator import parse_github_repo_url
 
+            target_url = options.target_url
+            if not target_url:
+                try:
+                    from src.config import SecurityCheckConfig
+
+                    cfg = SecurityCheckConfig(root, {})
+                    target_url = cfg.resolve_target_spec().repo_url
+                except Exception:
+                    pass
+
             target_url = (
-                options.target_url
+                target_url
                 or "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
             )
             try:

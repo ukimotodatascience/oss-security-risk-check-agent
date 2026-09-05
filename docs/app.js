@@ -77,6 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderErrorState(message) {
+    currentScanData = null;
     repoUrlEl.textContent = "Data Load Error";
     scannedAtEl.textContent = "最終診断日時: N/A";
     overallScoreNumEl.textContent = "0.0";
@@ -233,7 +234,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     if (filtered.length === 0) {
-      findingsListEl.innerHTML = `<div class="empty-findings">該当する指摘事項 (Findings) はありません。診断結果は良好です！</div>`;
+      const categories = currentScanData.categories || {};
+      const hasEvaluatedCategory = Object.values(categories).some(c => c && c.evaluated !== false);
+      const isUnsetOrUnevaluated = currentScanData.status === "評価不能" || !hasEvaluatedCategory;
+
+      if (isUnsetOrUnevaluated) {
+        findingsListEl.innerHTML = `<div class="empty-findings">評価可能なスキャンデータが存在しません (未評価)。</div>`;
+      } else {
+        findingsListEl.innerHTML = `<div class="empty-findings">該当する指摘事項 (Findings) はありません。診断結果は良好です！</div>`;
+      }
       return;
     }
 

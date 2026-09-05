@@ -13,19 +13,52 @@ class TrivyAdapter:
     def __init__(self, cli_path: str = "trivy") -> None:
         self.cli_path = cli_path
 
-    def run_scan(self, repo_url_or_path: str) -> List[Finding]:
+    def run_scan(
+        self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
+    ) -> List[Finding]:
         """Trivy CLI を実行して Findings のリストを取得。利用不可の場合はダミーまたは空リスト。"""
+        import tempfile
+
         try:
             is_url = repo_url_or_path.startswith(
                 "http://"
             ) or repo_url_or_path.startswith("https://")
             scan_mode = "repo" if is_url else "fs"
             cmd = [self.cli_path, scan_mode, "--format", "json", repo_url_or_path]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if res.returncode == 0 and res.stdout:
-                data = json.loads(res.stdout)
-                return self.parse_json(data)
-            logger.warning(f"Trivy CLI exited with code {res.returncode}: {res.stderr}")
+
+            with tempfile.TemporaryFile() as tmp_out:
+                proc = subprocess.Popen(
+                    cmd, stdout=tmp_out, stderr=subprocess.PIPE, text=False
+                )
+
+                try:
+                    stderr_bytes = proc.communicate(timeout=120)[1]
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                    logger.warning("Trivy CLI timed out after 120s.")
+                    return []
+
+                size = tmp_out.tell()
+                if size > max_output_bytes:
+                    logger.warning(
+                        f"Trivy CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                    )
+                    return []
+
+                if proc.returncode == 0 and size > 0:
+                    tmp_out.seek(0)
+                    data = json.load(tmp_out)
+                    return self.parse_json(data)
+
+                stderr_text = (
+                    stderr_bytes.decode("utf-8", errors="replace")
+                    if stderr_bytes
+                    else ""
+                )
+                logger.warning(
+                    f"Trivy CLI exited with code {proc.returncode}: {stderr_text}"
+                )
         except FileNotFoundError:
             logger.info("Trivy CLI not found in PATH.")
             return []
