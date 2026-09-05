@@ -22,29 +22,28 @@ class ScoringEngine:
         repo_url: str,
         findings: List[Finding],
         scanner_status: Optional[Dict[str, bool]] = None,
+        scanned_ref: Optional[str] = None,
+        scanned_subdir: Optional[str] = None,
     ) -> OverallResult:
+        repository_url = repo_url
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        status_map = scanner_status or {
-            "trivy": True,
-            "scorecard": True,
-            "rule_based": True,
-        }
-
-        # カテゴリごとに Finding を分類
-        cat_findings: Dict[Category, List[Finding]] = {cat: [] for cat in Category}
-        for f in findings:
-            if f.category in cat_findings:
-                cat_findings[f.category].append(f)
-            else:
-                cat_findings[Category.SOURCE_CODE].append(f)
+        status_map = (
+            scanner_status
+            if scanner_status is not None
+            else {
+                "trivy": True,
+                "scorecard": True,
+                "rule_based": True,
+            }
+        )
 
         category_results: Dict[str, CategoryResult] = {}
         valid_scores: List[float] = []
         risk_findings: List[Finding] = []
 
         for cat in Category:
-            c_findings = cat_findings[cat]
             cat_name = CATEGORY_NAMES_JA.get(cat, cat.value)
+            c_findings = [f for f in findings if f.category == cat]
 
             evaluated, score, summary, filtered_risk_findings = (
                 self._calculate_category_score(cat, c_findings, status_map)
@@ -78,8 +77,10 @@ class ScoringEngine:
         )
 
         return OverallResult(
-            repository_url=repo_url,
+            repository_url=repository_url,
             scanned_at=now_str,
+            scanned_ref=scanned_ref,
+            scanned_subdir=scanned_subdir,
             overall_score=overall_score,
             status=status,
             status_reason=status_reason,
@@ -102,7 +103,7 @@ class ScoringEngine:
             Category.MAINTENANCE,
         ):
             if not scanner_status.get("scorecard", False):
-                return False, None, "Scorecard スキャナー未実行または評価不能です。", []
+                return False, None, "OpenSSF Scorecard スキャン未実行", []
 
             scorecard_findings = [
                 f
@@ -133,40 +134,39 @@ class ScoringEngine:
             Category.MISCONFIGURATION,
         ):
             if not scanner_status.get("trivy", False):
-                return False, None, "Trivy スキャナー未実行または評価不能です。", []
+                return False, None, "Trivy スキャン未実行", []
 
-        # 3. ルールベース対象カテゴリ
+        # 3. Rule-based 対象カテゴリ
         if category == Category.SOURCE_CODE:
             if not scanner_status.get("rule_based", False):
-                return (
-                    False,
-                    None,
-                    "ルールベーススキャナー未実行または評価不能です。",
-                    [],
-                )
+                return False, None, "ルールベーススキャン未実行", []
 
-        risk_list = [f for f in findings if f.severity.upper() != "INFO"]
+        critical_count = sum(
+            1 for f in findings if (f.severity or "").upper() == "CRITICAL"
+        )
+        high_count = sum(1 for f in findings if (f.severity or "").upper() == "HIGH")
+        medium_count = sum(
+            1 for f in findings if (f.severity or "").upper() == "MEDIUM"
+        )
+        low_count = sum(1 for f in findings if (f.severity or "").upper() == "LOW")
 
         base = 10.0
-        critical_count = 0
-        high_count = 0
-        medium_count = 0
-        low_count = 0
+        risk_list: List[Finding] = []
 
-        for f in risk_list:
-            sev = f.severity.upper()
+        for f in findings:
+            sev = (f.severity or "").upper()
             if sev == "CRITICAL":
                 base -= 3.0
-                critical_count += 1
+                risk_list.append(f)
             elif sev == "HIGH":
                 base -= 1.5
-                high_count += 1
+                risk_list.append(f)
             elif sev == "MEDIUM":
                 base -= 0.5
-                medium_count += 1
+                risk_list.append(f)
             elif sev == "LOW":
-                base -= 0.2
-                low_count += 1
+                base -= 0.1
+                risk_list.append(f)
 
         final_score = max(0.0, min(10.0, base))
         if len(risk_list) == 0:
@@ -186,8 +186,8 @@ class ScoringEngine:
         """足切りルールと判定ロジック"""
         if not valid_scores:
             return (
-                OverallStatus.MODERATE,
-                "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした。",
+                OverallStatus.UNKNOWN,
+                "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした (評価不能)。",
             )
 
         min_score = min(valid_scores)

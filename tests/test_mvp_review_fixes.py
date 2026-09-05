@@ -1,7 +1,8 @@
 from unittest.mock import MagicMock, patch
 from src.adapters.scorecard_adapter import ScorecardAdapter, CHECK_CATEGORY_MAP
 from src.adapters.trivy_adapter import TrivyAdapter
-from src.mvp_models import Category
+from src.mvp_models import Category, OverallStatus
+from src.scoring.engine import ScoringEngine
 from main import Main
 
 
@@ -48,19 +49,33 @@ def test_trivy_adapter_local_path_mode():
 
 
 def test_main_cli_options_parse():
-    # 1. Default (no args) should maintain legacy = False, mvp = False
+    # 1. Default (no args) => mvp = False
     opt1 = Main.parse_args([])
     assert opt1.mvp is False
 
-    # 2. Target URL given => mvp = True
+    # 2. Target URL given without --mvp => mvp = False (legacy compatibility)
     opt2 = Main.parse_args(["https://github.com/owner/repo"])
-    assert opt2.mvp is True
+    assert opt2.mvp is False
     assert opt2.target_url == "https://github.com/owner/repo"
 
     # 3. --mvp flag given => mvp = True
     opt3 = Main.parse_args(["--mvp"])
     assert opt3.mvp is True
 
-    # 4. --legacy flag given => mvp = False
-    opt4 = Main.parse_args(["--legacy"])
-    assert opt4.mvp is False
+    # 4. --mvp flag and target_url given => mvp = True
+    opt4 = Main.parse_args(["https://github.com/owner/repo", "--mvp"])
+    assert opt4.mvp is True
+
+
+def test_scoring_engine_unknown_status_and_metadata():
+    engine = ScoringEngine()
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        [],
+        scanner_status={},
+        scanned_ref="main",
+        scanned_subdir="backend",
+    )
+    assert res.status == OverallStatus.UNKNOWN
+    assert res.scanned_ref == "main"
+    assert res.scanned_subdir == "backend"

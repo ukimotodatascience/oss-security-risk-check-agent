@@ -32,6 +32,7 @@ class OverallStatus(str, Enum):
     SAFE = "安全"
     MODERATE = "普通"
     DANGEROUS = "危険"
+    UNKNOWN = "評価不能"
 
 
 class Finding(BaseModel):
@@ -60,6 +61,8 @@ class CategoryResult(BaseModel):
 class OverallResult(BaseModel):
     repository_url: str
     scanned_at: str
+    scanned_ref: Optional[str] = None
+    scanned_subdir: Optional[str] = None
     overall_score: float  # 0.0 ~ 10.0
     status: OverallStatus
     status_reason: str = ""

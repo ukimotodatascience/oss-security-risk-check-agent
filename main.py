@@ -61,12 +61,7 @@ class Main:
 
         args = parser.parse_args(argv)
 
-        if args.legacy:
-            is_mvp = False
-        elif args.mvp or args.target_url is not None:
-            is_mvp = True
-        else:
-            is_mvp = False
+        is_mvp = bool(args.mvp)
 
         return CliOptions(
             target_url=args.target_url,

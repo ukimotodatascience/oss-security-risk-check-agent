@@ -87,6 +87,23 @@ class MVPOrchestrator:
                 logger.info(
                     f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
                 )
+
+                if fetcher.skipped_files:
+                    logger.warning(
+                        f"ArchiveSnapshotFetcher skipped {len(fetcher.skipped_files)} files due to size limits."
+                    )
+                    all_findings.append(
+                        Finding(
+                            category=Category.MISCONFIGURATION,
+                            source="snapshot_fetcher",
+                            rule_id="SKIPPED-FILES-LIMIT",
+                            severity="LOW",
+                            title="Large Files Skipped During Fetch",
+                            description=f"{len(fetcher.skipped_files)} file(s) were skipped due to size limits during snapshot fetch.",
+                            remediation="Review large files individually for secrets or vulnerabilities.",
+                        )
+                    )
+
                 trivy_findings, success = self.trivy_adapter.run_scan_with_status(
                     str(extracted_dir)
                 )
@@ -118,7 +135,11 @@ class MVPOrchestrator:
 
         # 5. スコアリングと総合判定
         overall_result = self.scoring_engine.evaluate(
-            normalized_url, all_findings, scanner_status=scanner_status
+            normalized_url,
+            all_findings,
+            scanner_status=scanner_status,
+            scanned_ref=target_ref,
+            scanned_subdir=target_subdir,
         )
 
         # 6. JSON 保存

@@ -102,7 +102,14 @@ document.addEventListener("DOMContentLoaded", () => {
     currentScanData = data;
 
     // Header & Meta
-    repoUrlEl.textContent = data.repository_url || "Target Repository";
+    let repoDisplay = data.repository_url || "Target Repository";
+    const extraMeta = [];
+    if (data.scanned_ref) extraMeta.push(`ref: ${data.scanned_ref}`);
+    if (data.scanned_subdir) extraMeta.push(`subdir: ${data.scanned_subdir}`);
+    if (extraMeta.length > 0) {
+      repoDisplay += ` (${extraMeta.join(", ")})`;
+    }
+    repoUrlEl.textContent = repoDisplay;
     scannedAtEl.textContent = `最終診断日時: ${data.scanned_at || "N/A"}`;
 
     // Overall Score & Circle Animation
@@ -126,6 +133,9 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (status === "普通" || status === "MODERATE") {
       statusBadgeEl.classList.add("status-moderate");
       circleProgressEl.style.stroke = "var(--color-moderate)";
+    } else if (status === "評価不能" || status === "UNKNOWN") {
+      statusBadgeEl.classList.add("status-unknown");
+      circleProgressEl.style.stroke = "var(--text-dim)";
     } else {
       statusBadgeEl.classList.add("status-dangerous");
       circleProgressEl.style.stroke = "var(--color-danger)";
@@ -241,6 +251,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (isUnsetOrUnevaluated) {
         findingsListEl.innerHTML = `<div class="empty-findings">評価可能なスキャンデータが存在しません (未評価)。</div>`;
+      } else if (allFindings.length > 0) {
+        findingsListEl.innerHTML = `<div class="empty-findings">選択されたフィルター条件に一致する指摘事項 (Findings) はありません。</div>`;
       } else {
         findingsListEl.innerHTML = `<div class="empty-findings">該当する指摘事項 (Findings) はありません。診断結果は良好です！</div>`;
       }
