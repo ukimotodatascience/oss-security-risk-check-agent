@@ -152,13 +152,19 @@ class MVPOrchestrator:
             )
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
-        try:
-            scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
-            all_findings.extend(scorecard_findings)
-            if scorecard_findings:
-                scanner_status["scorecard"] = True
-        except Exception as e:
-            logger.error(f"Error during Scorecard scan: {e}")
+        if not target_ref and not target_subdir:
+            try:
+                scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
+                all_findings.extend(scorecard_findings)
+                if scorecard_findings:
+                    scanner_status["scorecard"] = True
+            except Exception as e:
+                logger.error(f"Error during Scorecard scan: {e}")
+        else:
+            logger.info(
+                "Skipping Scorecard scan because target_ref or target_subdir is set (Scorecard evaluates default branch/entire repo only)."
+            )
+            scanner_status["scorecard"] = False
 
         # スナップショット取得が失敗した場合の Rule-based Scan フォールバック
         has_rule_findings = any(f.source == "rule_based" for f in all_findings)
@@ -276,7 +282,11 @@ class MVPOrchestrator:
                 raw_cat_str = (
                     str(rec.category).lower() if hasattr(rec, "category") else ""
                 )
-                mvp_cat = RULE_CAT_TO_MVP_CAT.get(raw_cat_str, Category.SOURCE_CODE)
+                rule_id_str = str(rec.rule_id) if hasattr(rec, "rule_id") else ""
+                if rule_id_str == "B-1" or rule_id_str.startswith("B-1"):
+                    mvp_cat = Category.KNOWN_VULNERABILITIES
+                else:
+                    mvp_cat = RULE_CAT_TO_MVP_CAT.get(raw_cat_str, Category.SOURCE_CODE)
 
                 findings.append(
                     Finding(
@@ -297,17 +307,21 @@ class MVPOrchestrator:
                 )
 
             if truncated:
-                findings.append(
-                    Finding(
-                        category=Category.SOURCE_CODE,
-                        source="rule_based",
-                        rule_id="FINDINGS-LIMIT-EXCEEDED",
-                        severity="LOW",
-                        title="Rule Findings Limit Exceeded",
-                        description=f"Rule scan generated over {max_limit} findings. Truncated excess findings.",
-                        remediation="Review findings or narrow scan scope.",
+                affected_categories = {f.category for f in findings}
+                if not affected_categories:
+                    affected_categories = {Category.SOURCE_CODE}
+                for cat in affected_categories:
+                    findings.append(
+                        Finding(
+                            category=cat,
+                            source="rule_based",
+                            rule_id="FINDINGS-LIMIT-EXCEEDED",
+                            severity="LOW",
+                            title="Rule Findings Limit Exceeded",
+                            description=f"Rule scan generated over {max_limit} findings. Truncated excess findings.",
+                            remediation="Review findings or narrow scan scope.",
+                        )
                     )
-                )
 
             return findings, not has_errors
         except Exception as e:

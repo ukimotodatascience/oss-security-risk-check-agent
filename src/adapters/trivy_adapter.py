@@ -43,8 +43,8 @@ class TrivyAdapter:
                         timed_out = True
                         proc.kill()
                         break
-                    size = tmp_out.tell()
-                    if size > max_output_bytes:
+                    total_size = tmp_out.tell() + tmp_err.tell()
+                    if total_size > max_output_bytes:
                         exceeded_size = True
                         proc.kill()
                         break
@@ -52,20 +52,20 @@ class TrivyAdapter:
 
                 proc.wait()
                 tmp_err.seek(0)
-                stderr_bytes = tmp_err.read()
+                stderr_bytes = tmp_err.read(64 * 1024)
 
                 if timed_out:
                     logger.warning("Trivy CLI timed out after 120s.")
                     return [], False
 
-                size = tmp_out.tell()
-                if exceeded_size or size > max_output_bytes:
+                total_size = tmp_out.tell() + tmp_err.tell()
+                if exceeded_size or total_size > max_output_bytes:
                     logger.warning(
-                        f"Trivy CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                        f"Trivy CLI output size ({total_size} bytes) exceeded limit ({max_output_bytes} bytes)."
                     )
                     return [], False
 
-                if proc.returncode == 0 and size > 0:
+                if proc.returncode == 0 and tmp_out.tell() > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
                     return self.parse_json(data), True

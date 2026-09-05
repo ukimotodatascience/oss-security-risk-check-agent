@@ -509,6 +509,8 @@ def _evaluate_rule_in_process(
         rule = pickle.loads(rule_bytes)
         with VulnLookupService.use_config(cache_dir, cache_ttl):
             records = rule.evaluate(target)
+        if len(records) > 500:
+            records = records[:500]
         return True, records, None
     except BaseException as e:
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -841,11 +843,24 @@ def run_all(
                     executed_count += 1
                     _run_callback(rule_id)
 
-            # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合
+            # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合（上限500件）
+            max_limit = 500
             for rule in sorted_rules:
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
                 if r_id in records_by_rule:
-                    records.extend(records_by_rule[r_id])
+                    for rec in records_by_rule[r_id]:
+                        if len(records) < max_limit:
+                            records.append(rec)
+                        else:
+                            break
+                    if len(records) >= max_limit:
+                        errors.append(
+                            (
+                                "GLOBAL_LIMIT",
+                                f"Rule scan generated over {max_limit} findings across rules. Truncated excess findings.",
+                            )
+                        )
+                        break
         except BaseException as e:
             _interrupted_event.set()
             for f in futures:

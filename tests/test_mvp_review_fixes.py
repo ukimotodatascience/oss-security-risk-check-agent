@@ -376,3 +376,73 @@ def test_orchestrator_deduplicates_findings():
             deduped.append(f)
 
     assert len(deduped) == 1
+
+
+def test_scoring_engine_unevaluated_with_only_info_findings_keeps_score_none():
+    from src.mvp_models import Finding
+
+    engine = ScoringEngine()
+    # SECRETS category is unevaluated (trivy = False) and only has an INFO finding
+    findings = [
+        Finding(
+            category=Category.SECRETS,
+            source="snapshot_fetcher",
+            rule_id="GIT-HISTORY-UNEVALUATED",
+            severity="INFO",
+            title="Git History Skipped",
+        )
+    ]
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        findings,
+        scanner_status={"trivy": False, "scorecard": True, "rule_based": True},
+    )
+    sec_result = res.categories[Category.SECRETS.value]
+    assert sec_result.evaluated is False
+    assert sec_result.score == 0.0 or sec_result.score is None
+
+
+def test_b1_rule_mapped_to_known_vulnerabilities():
+    from src.models import RiskRecord, Severity
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator()
+    mock_rec = RiskRecord(
+        rule_id="B-1",
+        category="dependencies",
+        severity=Severity.HIGH,
+        title="Vulnerable Dep",
+        message="CVE-2023-1234",
+    )
+    with (
+        patch("src.rule_engine.load_all_rules", return_value=[]),
+        patch("src.rule_engine.run_all", return_value=([mock_rec], [], 1)),
+    ):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            target_dir=orchestrator.project_root,
+        )
+        assert len(findings) == 1
+        assert findings[0].category == Category.KNOWN_VULNERABILITIES
+        assert findings[0].rule_id == "B-1"
+
+
+def test_scorecard_skipped_when_ref_or_subdir_specified():
+    from main import CliOptions
+    from src.orchestrator import MVPOrchestrator
+
+    opts = CliOptions(target_ref="v1.0.0", target_subdir="src")
+    orchestrator = MVPOrchestrator(cli_options=opts)
+    with (
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(orchestrator.scorecard_adapter, "run_scan") as mock_scorecard,
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        mock_scorecard.assert_not_called()
+        assert res.scanned_ref == "v1.0.0"
+        assert res.scanned_subdir == "src"

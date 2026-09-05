@@ -184,21 +184,8 @@ class ScoringEngine:
                 is_primary_ok = False
                 scanner_msg = "ルールベーススキャン未実行"
 
-        if not is_primary_ok and not findings:
-            return False, None, scanner_msg, []
-
-        critical_count = sum(
-            1 for f in findings if (f.severity or "").upper() == "CRITICAL"
-        )
-        high_count = sum(1 for f in findings if (f.severity or "").upper() == "HIGH")
-        medium_count = sum(
-            1 for f in findings if (f.severity or "").upper() == "MEDIUM"
-        )
-        low_count = sum(1 for f in findings if (f.severity or "").upper() == "LOW")
-
         base = 10.0
         risk_list: List[Finding] = []
-
         for f in findings:
             sev = (f.severity or "").upper()
             if sev == "CRITICAL":
@@ -217,10 +204,23 @@ class ScoringEngine:
                 base -= 0.5
                 risk_list.append(f)
 
+        if not is_primary_ok and not risk_list:
+            return False, None, scanner_msg, []
+
         final_score = max(0.0, min(10.0, base))
         if len(risk_list) == 0:
             summary = "検出された問題・懸念点はありません。"
         else:
+            critical_count = sum(
+                1 for f in risk_list if (f.severity or "").upper() == "CRITICAL"
+            )
+            high_count = sum(
+                1 for f in risk_list if (f.severity or "").upper() == "HIGH"
+            )
+            medium_count = sum(
+                1 for f in risk_list if (f.severity or "").upper() == "MEDIUM"
+            )
+            low_count = sum(1 for f in risk_list if (f.severity or "").upper() == "LOW")
             summary = f"指摘事項 {len(risk_list)} 件 (Critical:{critical_count}, High:{high_count}, Med:{medium_count}, Low:{low_count})"
 
         if not is_primary_ok:

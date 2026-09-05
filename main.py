@@ -124,7 +124,7 @@ class Main:
                 mvp=options.mvp,
             )
 
-            out_dir = Path(options.output_dir) if options.output_dir else None
+            out_dir = cfg.resolve_output_dir()
 
             print(f"[*] Running MVP OSS Security Scan for {safe_url}...")
             orchestrator = MVPOrchestrator(root, cli_options=effective_options)
