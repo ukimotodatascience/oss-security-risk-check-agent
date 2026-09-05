@@ -31,6 +31,8 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for py_file in self._iter_python_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -45,6 +47,8 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
             rel_path = str(py_file.relative_to(target))
 
             for scope in self._iter_analysis_scopes(tree):
+                if len(records) >= max_records:
+                    break
                 tainted_names = self._collect_tainted_names(
                     scope, aliases, taint_returning_functions
                 )
@@ -54,6 +58,8 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                 bool_bindings = self._collect_bool_bindings(scope)
 
                 for node in self._walk_scope_nodes(scope):
+                    if len(records) >= max_records:
+                        break
                     if not isinstance(node, ast.Call):
                         continue
 

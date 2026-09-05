@@ -299,5 +299,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for js_file in self._iter_js_ts_files(target):
+            if len(records) >= max_records:
+                break
             records.extend(self._evaluate_js_ts_file(js_file, target))
         return dedupe_records(records)

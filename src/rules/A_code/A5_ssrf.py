@@ -130,6 +130,8 @@ class A5SsrfRule:
         records: List[RiskRecord] = []
 
         for py_file in self._iter_py_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -141,6 +143,8 @@ class A5SsrfRule:
             rel_path = str(py_file.relative_to(target))
 
             for node in ast.walk(tree):
+                if len(records) >= max_records:
+                    break
                 if not isinstance(node, ast.Call):
                     continue
                 callee = self._resolve_name(self._full_name(node.func), aliases)
@@ -149,6 +153,8 @@ class A5SsrfRule:
 
                 url_arg = node.args[0] if node.args else None
                 for kw in node.keywords:
+                    if len(records) >= max_records:
+                        break
                     if kw.arg in {"url", "uri"}:
                         url_arg = kw.value
                         break

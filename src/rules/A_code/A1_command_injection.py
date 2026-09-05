@@ -34,5 +34,7 @@ class A1CommandInjectionRule:
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for detector in self._detectors:
+            if len(records) >= max_records:
+                break
             records.extend(detector.evaluate(target))
         return dedupe_records(records)

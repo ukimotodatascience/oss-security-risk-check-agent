@@ -161,6 +161,8 @@ class A2SqlInjectionRule:
         records: List[RiskRecord] = []
 
         for py_file in self._iter_py_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -174,6 +176,8 @@ class A2SqlInjectionRule:
             rel_path = str(py_file.relative_to(target))
 
             for node in ast.walk(tree):
+                if len(records) >= max_records:
+                    break
                 if not isinstance(node, ast.Call):
                     continue
                 callee = self._resolve_name(self._full_name(node.func), aliases)
@@ -226,12 +230,16 @@ class A2SqlInjectionRule:
             r"req\.(?:query|body|params)|request\.(?:query|body|params)|process\.argv"
         )
         for js_file in self._iter_js_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = js_file.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
                 continue
             rel_path = str(js_file.relative_to(target))
             for i, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 m = js_sink.search(line)
                 if not m:
                     continue

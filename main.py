@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,7 +92,26 @@ class Main:
             from src.orchestrator import MVPOrchestrator
             from src.targets.url_validator import parse_github_repo_url
 
-            cfg = ScanConfig(root, options)
+            default_url = (
+                "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
+            )
+            raw_env_url = os.environ.get("TARGET_REPO_URL")
+            raw_env_dir = os.environ.get("TARGET_DIR")
+            init_url = (
+                options.target_url
+                if options.target_url
+                else (None if (raw_env_url or raw_env_dir) else default_url)
+            )
+
+            init_options = CliOptions(
+                target_url=init_url,
+                target_ref=options.target_ref,
+                target_subdir=options.target_subdir,
+                output_dir=options.output_dir,
+                mvp=options.mvp,
+            )
+
+            cfg = ScanConfig(root, init_options)
             setup_logging(
                 level=cfg.resolve_log_level(), log_file=cfg.resolve_log_file()
             )
@@ -110,10 +130,7 @@ class Main:
                 print(f"[!] Error resolving target spec: {e}", file=sys.stderr)
                 sys.exit(1)
 
-            target_url = (
-                resolved_url
-                or "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
-            )
+            target_url = resolved_url or default_url
             try:
                 ref = parse_github_repo_url(target_url)
                 safe_url = f"https://github.com/{ref.owner}/{ref.repo}"

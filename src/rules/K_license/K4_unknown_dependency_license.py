@@ -36,6 +36,8 @@ class K4UnknownDependencyLicenseRule:
         license_map = build_dependency_license_map(dep_licenses)
 
         for dep in dep_decls:
+            if len(records) >= max_records:
+                break
             lic = license_map.get(dep.name, "").strip()
             if not lic or lic.lower() in self._UNKNOWN_HINTS:
                 records.append(

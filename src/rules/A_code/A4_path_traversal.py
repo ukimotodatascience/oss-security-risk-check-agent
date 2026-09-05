@@ -131,6 +131,8 @@ class A4PathTraversalRule:
         records: List[RiskRecord] = []
 
         for py_file in self._iter_py_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -143,6 +145,8 @@ class A4PathTraversalRule:
             unsafe_path_vars: Set[str] = set()
 
             for node in ast.walk(tree):
+                if len(records) >= max_records:
+                    break
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                     callee = self._resolve_name(
                         self._full_name(node.value.func), aliases
@@ -152,7 +156,11 @@ class A4PathTraversalRule:
                         for arg in node.value.args
                     ):
                         for t in node.targets:
+                            if len(records) >= max_records:
+                                break
                             for name in self._iter_assigned_names(t):
+                                if len(records) >= max_records:
+                                    break
                                 unsafe_path_vars.add(name)
 
                 if not isinstance(node, ast.Call):

@@ -58,6 +58,8 @@ class H6ExpiredOrMissingTLSDocsRule:
         has_tls_operation_doc = False
 
         for doc in doc_files:
+            if len(records) >= max_records:
+                break
             try:
                 lines = doc.read_text(encoding="utf-8", errors="ignore").splitlines()
             except OSError:
@@ -65,6 +67,8 @@ class H6ExpiredOrMissingTLSDocsRule:
 
             rel_path = str(doc.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped:
                     continue

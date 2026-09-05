@@ -22,6 +22,8 @@ class C2UnpinnedActionsRule:
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 lines = wf.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -29,6 +31,8 @@ class C2UnpinnedActionsRule:
 
             rel_path = str(wf.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 m = self._USES_LINE.match(line)
                 if not m:
                     continue

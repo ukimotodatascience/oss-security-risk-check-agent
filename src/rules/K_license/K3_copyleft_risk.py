@@ -70,6 +70,8 @@ class K3CopyleftRiskRule:
         has_strong_copyleft = False
         copyleft_examples: List[str] = []
         for dep in dep_licenses:
+            if len(records) >= max_records:
+                break
             tokens = extract_spdx_like_tokens(dep.license_expr)
             matched = sorted(tokens & self._STRONG_COPYLEFT)
             if matched:

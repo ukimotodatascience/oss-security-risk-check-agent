@@ -41,6 +41,8 @@ class D7InsecureFilePermissionsRule:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):
+            if len(records) >= max_records:
+                break
             if not p.is_file() or not self._is_sensitive_file(p):
                 continue
 

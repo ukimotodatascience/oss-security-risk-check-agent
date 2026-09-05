@@ -26,6 +26,8 @@ class C4UntrustedCheckoutRule:
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 lines = wf.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):

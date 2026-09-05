@@ -30,9 +30,13 @@ class K2ConflictingLicensesRule:
 
         seen_tokens = set()
         for dep in dep_licenses:
+            if len(records) >= max_records:
+                break
             seen_tokens.update(extract_spdx_like_tokens(dep.license_expr))
 
         for left, right in self._INCOMPATIBLE_SPDX_PAIRS:
+            if len(records) >= max_records:
+                break
             if left in seen_tokens and right in seen_tokens:
                 records.append(
                     RiskRecord(

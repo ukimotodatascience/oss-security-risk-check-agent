@@ -25,10 +25,14 @@ class J3MissingIssueTemplatesRule:
         records: List[RiskRecord] = []
 
         for rel in self._TEMPLATE_FILES:
+            if len(records) >= max_records:
+                break
             if (target / rel).is_file():
                 return records
 
         for rel_dir in self._TEMPLATE_DIRS:
+            if len(records) >= max_records:
+                break
             d = target / rel_dir
             if not d.is_dir():
                 continue

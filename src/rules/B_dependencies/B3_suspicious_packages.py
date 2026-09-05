@@ -58,6 +58,8 @@ class B3SuspiciousPackagesRule:
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for dep in collect_dependency_declarations(target):
+            if len(records) >= max_records:
+                break
             suspicious_reason = None
             name = dep.name
             spec = dep.spec.lower()
@@ -73,6 +75,8 @@ class B3SuspiciousPackagesRule:
                 )
             else:
                 for legit in self._COMMON_PACKAGES:
+                    if len(records) >= max_records:
+                        break
                     if self._is_edit_distance_one(name, legit):
                         suspicious_reason = f"'{legit}' に酷似した名前で、タイポスクワッティングの可能性があります"
                         break

@@ -31,6 +31,8 @@ class K5NoncommercialRestrictionRule:
 
         dep_licenses = collect_dependency_licenses(target)
         for dep in dep_licenses:
+            if len(records) >= max_records:
+                break
             lic = dep.license_expr.lower()
             if any(h in lic for h in self._NC_HINTS):
                 records.append(
@@ -46,6 +48,8 @@ class K5NoncommercialRestrictionRule:
                 )
 
         for lf in find_license_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 text = lf.read_text(encoding="utf-8", errors="ignore").lower()
             except OSError:

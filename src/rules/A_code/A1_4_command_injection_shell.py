@@ -260,5 +260,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for shell_file in self._iter_shell_files(target):
+            if len(records) >= max_records:
+                break
             records.extend(self._evaluate_shell_file(shell_file, target))
         return dedupe_records(records)

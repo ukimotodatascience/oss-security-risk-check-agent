@@ -508,15 +508,15 @@ def _evaluate_rule_in_process(
     try:
         rule = pickle.loads(rule_bytes)
         with VulnLookupService.use_config(cache_dir, cache_ttl):
-            try:
-                import inspect
+            import inspect
 
-                sig = inspect.signature(rule.evaluate)
-                if "max_records" in sig.parameters:
+            sig = inspect.signature(rule.evaluate)
+            if "max_records" in sig.parameters:
+                try:
                     records = rule.evaluate(target, max_records=500)
-                else:
+                except TypeError:
                     records = rule.evaluate(target)
-            except Exception:
+            else:
                 records = rule.evaluate(target)
         if len(records) > 500:
             records = records[:500]
@@ -854,6 +854,7 @@ def run_all(
 
             # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合（上限500件）
             max_limit = 500
+            truncated = False
             for rule in sorted_rules:
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
                 if r_id in records_by_rule:
@@ -861,15 +862,16 @@ def run_all(
                         if len(records) < max_limit:
                             records.append(rec)
                         else:
+                            truncated = True
                             break
-                    if len(records) >= max_limit:
-                        errors.append(
-                            (
-                                "GLOBAL_LIMIT",
-                                f"Rule scan generated over {max_limit} findings across rules. Truncated excess findings.",
-                            )
+                if truncated:
+                    errors.append(
+                        (
+                            "GLOBAL_LIMIT",
+                            f"Rule scan generated over {max_limit} findings across rules. Truncated excess findings.",
                         )
-                        break
+                    )
+                    break
         except BaseException as e:
             _interrupted_event.set()
             for f in futures:

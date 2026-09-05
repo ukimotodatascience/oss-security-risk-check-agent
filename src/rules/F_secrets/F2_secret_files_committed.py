@@ -49,6 +49,8 @@ class F2SecretFilesCommittedRule:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):
+            if len(records) >= max_records:
+                break
             if not p.is_file():
                 continue
             if ".git" in p.parts:

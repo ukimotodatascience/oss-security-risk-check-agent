@@ -46,6 +46,8 @@ class F3SecretsInGitHistoryRule:
             output = output[: self._MAX_OUTPUT_CHARS]
 
         for pat in self._SECRET_PATTERNS:
+            if len(records) >= max_records:
+                break
             if pat.search(output):
                 records.append(
                     RiskRecord(

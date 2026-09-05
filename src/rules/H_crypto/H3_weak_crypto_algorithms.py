@@ -59,6 +59,8 @@ class H3WeakCryptoAlgorithmsRule:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -66,11 +68,15 @@ class H3WeakCryptoAlgorithmsRule:
 
             rel_path = str(file_path.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or self._COMMENT_ONLY.search(stripped):
                     continue
 
                 for alg_name, pattern, sev in self._ALGORITHM_PATTERNS:
+                    if len(records) >= max_records:
+                        break
                     if not pattern.search(stripped):
                         continue
                     records.append(

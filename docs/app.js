@@ -117,6 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
     scannedAtEl.textContent = "最終診断日時: N/A";
     overallScoreNumEl.textContent = "0.0";
     circleProgressEl.style.strokeDashoffset = "440";
+    circleProgressEl.style.stroke = "var(--text-dim)";
 
     statusBadgeEl.textContent = "評価不能";
     statusBadgeEl.className = "status-badge status-unknown";

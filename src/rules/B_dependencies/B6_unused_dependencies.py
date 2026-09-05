@@ -31,6 +31,8 @@ class B6UnusedDependenciesRule:
         js_imports = {x.lower() for x in collect_js_imports(target)}
 
         for dep in collect_dependency_declarations(target):
+            if len(records) >= max_records:
+                break
             if dep.ecosystem == "python":
                 expected = self._KNOWN_PY_IMPORT_MAP.get(dep.name, dep.name).split(
                     ".", 1

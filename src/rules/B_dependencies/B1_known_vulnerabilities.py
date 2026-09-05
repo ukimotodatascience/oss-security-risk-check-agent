@@ -46,6 +46,8 @@ class B1KnownVulnerabilitiesRule:
         pinned_deps_by_eco: dict[str, list[tuple[str, str]]] = {}
 
         for dep in deps:
+            if len(records) >= max_records:
+                break
             if not is_pinned(dep):
                 # カタログ条件: バージョン未固定で照合不能 → 注意
                 records.append(
@@ -65,6 +67,8 @@ class B1KnownVulnerabilitiesRule:
             pinned_deps_by_eco.setdefault(dep.ecosystem, []).append((dep, version))
 
         for ecosystem, dep_list in pinned_deps_by_eco.items():
+            if len(records) >= max_records:
+                break
             if hasattr(self._lookup, "bulk_lookup"):
                 query_list = [(dep.name, version) for dep, version in dep_list]
                 bulk_results = self._lookup.bulk_lookup(ecosystem, query_list)
@@ -77,8 +81,12 @@ class B1KnownVulnerabilitiesRule:
                 }
 
             for dep, version in dep_list:
+                if len(records) >= max_records:
+                    break
                 hits = bulk_results.get((dep.name, version), [])
                 for hit in hits:
+                    if len(records) >= max_records:
+                        break
                     refs = (
                         f" refs: {', '.join(hit.references[:2])}"
                         if hit.references

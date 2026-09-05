@@ -288,6 +288,7 @@ class MVPOrchestrator:
                 "misconfiguration": Category.MISCONFIGURATION,
                 "config": Category.MISCONFIGURATION,
                 "maintenance": Category.MAINTENANCE,
+                "license": Category.DEVELOPMENT,
                 "code": Category.SOURCE_CODE,
                 "source_code": Category.SOURCE_CODE,
             }

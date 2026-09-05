@@ -580,3 +580,77 @@ def test_rule_evaluate_signatures_support_max_records():
     for r in rules:
         sig = inspect.signature(r.evaluate)
         assert "max_records" in sig.parameters
+
+
+def test_rule_engine_exact_500_findings_does_not_add_global_limit():
+    from pathlib import Path
+    from concurrent.futures import Future
+    from src.rule_engine import run_all
+    from src.models import RiskRecord, Severity
+    from src.rules.A_code.A8_unsafe_eval import A8UnsafeEvalRule
+
+    rule = A8UnsafeEvalRule()
+    mock_records_500 = [
+        RiskRecord(
+            rule_id=rule.rule_id,
+            category=rule.category,
+            title=rule.title,
+            severity=Severity.LOW,
+            file_path="foo.py",
+            line=1,
+            message="msg",
+        )
+        for _ in range(500)
+    ]
+    f500 = Future()
+    f500.set_result((True, mock_records_500, None))
+
+    with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f500):
+        records, errors, executed = run_all(Path("."), rules=[rule])
+        assert len(records) == 500
+        assert not any(err[0] == "GLOBAL_LIMIT" for err in errors)
+
+    mock_records_501 = [
+        RiskRecord(
+            rule_id=rule.rule_id,
+            category=rule.category,
+            title=rule.title,
+            severity=Severity.LOW,
+            file_path="foo.py",
+            line=1,
+            message="msg",
+        )
+        for _ in range(501)
+    ]
+    f501 = Future()
+    f501.set_result((True, mock_records_501, None))
+
+    with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f501):
+        records_over, errors_over, _ = run_all(Path("."), rules=[rule])
+        assert len(records_over) == 500
+        assert any(err[0] == "GLOBAL_LIMIT" for err in errors_over)
+
+
+def test_orchestrator_maps_license_category_to_development():
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category
+    from src.models import RiskRecord, Severity
+    from pathlib import Path
+
+    orchestrator = MVPOrchestrator()
+    rec = RiskRecord(
+        rule_id="K-1",
+        category="license",
+        title="Missing License",
+        severity=Severity.MEDIUM,
+        file_path="LICENSE",
+        line=None,
+        message="No license file found",
+    )
+    with patch("src.rule_engine.run_all", return_value=([rec], [], 1)):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo", target_dir=Path(".")
+        )
+        assert success is True
+        assert len(findings) == 1
+        assert findings[0].category == Category.DEVELOPMENT

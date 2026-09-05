@@ -30,6 +30,8 @@ class C5DangerousWorkflowTriggersRule:
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 src = wf.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -38,6 +40,8 @@ class C5DangerousWorkflowTriggersRule:
             lines = src.splitlines()
             risky_line = None
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 low = line.strip().lower()
                 if any(event in low for event in self._RISKY_EVENTS):
                     risky_line = idx

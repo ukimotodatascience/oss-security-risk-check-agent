@@ -28,6 +28,8 @@ class C3ThirdPartyActionUsageRule:
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 lines = wf.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -36,6 +38,8 @@ class C3ThirdPartyActionUsageRule:
             third_party_count = 0
             first_line = None
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 m = self._USES_LINE.match(line)
                 if not m:
                     continue

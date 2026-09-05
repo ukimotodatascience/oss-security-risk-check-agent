@@ -45,6 +45,8 @@ class K1MissingLicenseRule:
             return records
 
         for file_path, lic in manifest_licenses:
+            if len(records) >= max_records:
+                break
             lower = lic.strip().lower()
             if any(marker in lower for marker in self._AMBIGUOUS_LICENSE_MARKERS):
                 records.append(

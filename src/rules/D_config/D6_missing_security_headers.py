@@ -57,6 +57,8 @@ class D6MissingSecurityHeadersRule:
         observed = {k: False for k in self._HEADER_PATTERNS}
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = file_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -64,6 +66,8 @@ class D6MissingSecurityHeadersRule:
 
             scanned += 1
             for key, pat in self._HEADER_PATTERNS.items():
+                if len(records) >= max_records:
+                    break
                 if pat.search(src):
                     observed[key] = True
 

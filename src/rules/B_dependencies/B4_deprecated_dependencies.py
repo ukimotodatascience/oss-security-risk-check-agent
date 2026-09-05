@@ -34,6 +34,8 @@ class B4DeprecatedDependenciesRule:
         records: List[RiskRecord] = []
 
         for dep in collect_dependency_declarations(target):
+            if len(records) >= max_records:
+                break
             if dep.name in self._FULLY_DEPRECATED:
                 records.append(
                     RiskRecord(

@@ -59,6 +59,8 @@ class G7MissingSandboxRule:
 
         has_any_sandbox_control = False
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = file_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -68,6 +70,8 @@ class G7MissingSandboxRule:
                 break
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -75,6 +79,8 @@ class G7MissingSandboxRule:
 
             rel_path = str(file_path.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue

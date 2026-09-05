@@ -78,6 +78,8 @@ class F1HardcodedSecretsRule:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -85,6 +87,8 @@ class F1HardcodedSecretsRule:
 
             rel_path = str(file_path.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
@@ -93,6 +97,8 @@ class F1HardcodedSecretsRule:
                 secret_hit = False
 
                 for m in self._KEY_VALUE_SECRET_PATTERN.finditer(stripped):
+                    if len(records) >= max_records:
+                        break
                     value = m.group(1).strip()
                     normalized = value.lower()
                     if normalized in self._PLACEHOLDER_VALUES or normalized.startswith(

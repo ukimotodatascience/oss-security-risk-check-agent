@@ -29,10 +29,14 @@ class J2MissingSecurityPolicyRule:
         records: List[RiskRecord] = []
 
         for rel in self._SECURITY_FILES:
+            if len(records) >= max_records:
+                break
             if (target / rel).is_file():
                 return records
 
         for readme_name in self._README_FILES:
+            if len(records) >= max_records:
+                break
             readme = target / readme_name
             if not readme.is_file():
                 continue

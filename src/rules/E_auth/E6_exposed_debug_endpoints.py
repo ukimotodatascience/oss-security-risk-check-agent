@@ -43,6 +43,8 @@ class E6ExposedDebugEndpointsRule:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -52,6 +54,8 @@ class E6ExposedDebugEndpointsRule:
             file_has_prod_hint = bool(self._PROD_HINT_PATTERN.search(rel_path.lower()))
 
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped:
                     continue
