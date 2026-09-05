@@ -165,3 +165,68 @@ def test_orchestrator_rule_based_findings_retained_when_trivy_fails():
             scanner_status={"trivy": True},
         )
         assert len(findings_trivy_ok) == 0
+
+
+def test_scoring_engine_preserves_fallback_findings_when_trivy_false():
+    from src.mvp_models import Finding
+
+    engine = ScoringEngine()
+    findings = [
+        Finding(
+            category=Category.SECRETS,
+            source="rule_based",
+            rule_id="SECRET-FALLBACK-1",
+            severity="HIGH",
+            title="Fallback Secret Finding",
+        )
+    ]
+    res = engine.evaluate(
+        "https://github.com/owner/repo",
+        findings,
+        scanner_status={"trivy": False, "scorecard": True, "rule_based": True},
+    )
+    # Category evaluated is False because Trivy didn't run
+    assert res.categories["secrets"].evaluated is False
+    # But findings are preserved!
+    assert len(res.categories["secrets"].findings) == 1
+    assert res.categories["secrets"].findings[0].rule_id == "SECRET-FALLBACK-1"
+    assert len(res.all_findings) == 1
+
+
+def test_orchestrator_config_and_maintenance_category_mapping():
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category
+
+    orchestrator = MVPOrchestrator()
+    rec_config = MagicMock()
+    rec_config.category = "config"
+    rec_config.rule_id = "CONFIG-001"
+    rec_config.severity.value = "MEDIUM"
+    rec_config.title = "Config Issue"
+    rec_config.file_path = "settings.json"
+    rec_config.line = 1
+    rec_config.message = "Bad config"
+
+    rec_maint = MagicMock()
+    rec_maint.category = "maintenance"
+    rec_maint.rule_id = "MAINT-001"
+    rec_maint.severity.value = "LOW"
+    rec_maint.title = "Maintenance Issue"
+    rec_maint.file_path = "README.md"
+    rec_maint.line = 1
+    rec_maint.message = "Missing policy"
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = [rec_config, rec_maint]
+    mock_scan_result.errors = []
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status={"trivy": False, "scorecard": False},
+        )
+        assert success is True
+        cat_map = {f.rule_id: f.category for f in findings}
+        assert cat_map["CONFIG-001"] == Category.MISCONFIGURATION
+        assert cat_map["MAINT-001"] == Category.MAINTENANCE

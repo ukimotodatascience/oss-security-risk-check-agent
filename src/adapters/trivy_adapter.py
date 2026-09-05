@@ -26,10 +26,11 @@ class TrivyAdapter:
             scan_mode = "repo" if is_url else "fs"
             cmd = [self.cli_path, scan_mode, "--format", "json", repo_url_or_path]
 
-            with tempfile.TemporaryFile() as tmp_out:
-                proc = subprocess.Popen(
-                    cmd, stdout=tmp_out, stderr=subprocess.PIPE, text=False
-                )
+            with (
+                tempfile.TemporaryFile() as tmp_out,
+                tempfile.TemporaryFile() as tmp_err,
+            ):
+                proc = subprocess.Popen(cmd, stdout=tmp_out, stderr=tmp_err, text=False)
 
                 import time
 
@@ -49,8 +50,9 @@ class TrivyAdapter:
                         break
                     time.sleep(0.1)
 
-                stderr_bytes = proc.stderr.read() if proc.stderr else b""
                 proc.wait()
+                tmp_err.seek(0)
+                stderr_bytes = tmp_err.read()
 
                 if timed_out:
                     logger.warning("Trivy CLI timed out after 120s.")

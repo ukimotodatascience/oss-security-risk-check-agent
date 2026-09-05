@@ -75,11 +75,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function validateScanData(data) {
-    if (!data || typeof data !== "object") return false;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
     if (typeof data.repository_url !== "string") return false;
     if (typeof data.overall_score !== "number" || isNaN(data.overall_score)) return false;
     if (typeof data.status !== "string") return false;
-    if (!data.categories || typeof data.categories !== "object") return false;
+    if (!data.categories || typeof data.categories !== "object" || Array.isArray(data.categories)) return false;
 
     const requiredKeys = [
       "known_vulnerabilities",
@@ -92,11 +92,22 @@ document.addEventListener("DOMContentLoaded", () => {
       "source_code"
     ];
     for (const key of requiredKeys) {
-      if (!data.categories[key] || typeof data.categories[key] !== "object") return false;
+      const catObj = data.categories[key];
+      if (!catObj || typeof catObj !== "object" || Array.isArray(catObj)) return false;
+      if (typeof catObj.score !== "number" || isNaN(catObj.score) || catObj.score < 0 || catObj.score > 10) return false;
+      if (typeof catObj.evaluated !== "boolean") return false;
+      if (typeof catObj.category !== "string") return false;
+      if (catObj.findings && !Array.isArray(catObj.findings)) return false;
     }
 
     const findingsArray = data.all_findings || data.findings;
     if (!Array.isArray(findingsArray)) return false;
+    for (const f of findingsArray) {
+      if (!f || typeof f !== "object" || Array.isArray(f)) return false;
+      if (typeof f.category !== "string") return false;
+      if (typeof f.severity !== "string") return false;
+      if (typeof f.title !== "string") return false;
+    }
     return true;
   }
 

@@ -92,23 +92,28 @@ class MVPOrchestrator:
                     logger.warning(
                         f"ArchiveSnapshotFetcher skipped {len(fetcher.skipped_files)} files due to size limits."
                     )
-                    all_findings.append(
-                        Finding(
-                            category=Category.MISCONFIGURATION,
-                            source="snapshot_fetcher",
-                            rule_id="SKIPPED-FILES-LIMIT",
-                            severity="LOW",
-                            title="Large Files Skipped During Fetch",
-                            description=f"{len(fetcher.skipped_files)} file(s) were skipped due to size limits during snapshot fetch.",
-                            remediation="Review large files individually for secrets or vulnerabilities.",
+                    for cat in (
+                        Category.MISCONFIGURATION,
+                        Category.KNOWN_VULNERABILITIES,
+                        Category.SECRETS,
+                    ):
+                        all_findings.append(
+                            Finding(
+                                category=cat,
+                                source="snapshot_fetcher",
+                                rule_id="SKIPPED-FILES-LIMIT",
+                                severity="LOW",
+                                title="Large Files Skipped During Fetch",
+                                description=f"{len(fetcher.skipped_files)} file(s) were skipped due to size limits during snapshot fetch.",
+                                remediation="Review large files individually for secrets or vulnerabilities.",
+                            )
                         )
-                    )
 
                 trivy_findings, success = self.trivy_adapter.run_scan_with_status(
                     str(extracted_dir)
                 )
                 all_findings.extend(trivy_findings)
-                if success:
+                if success and not fetcher.skipped_files:
                     scanner_status["trivy"] = True
         except Exception as e:
             logger.warning(
@@ -127,7 +132,9 @@ class MVPOrchestrator:
         # 4. 既存 Rule-based Scan (ソースコード固有の判定)
         try:
             rule_findings, success = self._run_rule_based_scan(
-                normalized_url, scanner_status=scanner_status
+                normalized_url,
+                scanner_status=scanner_status,
+                target_dir=extracted_dir,
             )
             all_findings.extend(rule_findings)
             if success:
@@ -151,7 +158,10 @@ class MVPOrchestrator:
         return overall_result
 
     def _run_rule_based_scan(
-        self, repo_url: str, scanner_status: Optional[Dict[str, bool]] = None
+        self,
+        repo_url: str,
+        scanner_status: Optional[Dict[str, bool]] = None,
+        target_dir: Optional[Path] = None,
     ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
@@ -176,18 +186,29 @@ class MVPOrchestrator:
                 else None
             )
 
-            effective_opts = CliOptions(
-                target_url=repo_url,
-                target_ref=target_ref,
-                target_subdir=target_subdir,
-                output_dir=output_dir,
-                mvp=False,
-            )
+            if target_dir and target_dir.exists():
+                effective_opts = CliOptions(
+                    target_dir=str(target_dir),
+                    target_url=repo_url,
+                    target_ref=target_ref,
+                    target_subdir=target_subdir,
+                    output_dir=output_dir,
+                    mvp=False,
+                )
+            else:
+                effective_opts = CliOptions(
+                    target_url=repo_url,
+                    target_ref=target_ref,
+                    target_subdir=target_subdir,
+                    output_dir=output_dir,
+                    mvp=False,
+                )
 
             scan_runner = SecurityScan(self.project_root, cli_options=effective_opts)
             scan_result = scan_runner.run()
 
-            if len(scan_result.records) == 0 and getattr(scan_result, "errors", None):
+            has_errors = bool(getattr(scan_result, "errors", None))
+            if len(scan_result.records) == 0 and has_errors:
                 logger.warning(
                     f"Rule-based scan returned 0 records with errors: {scan_result.errors}"
                 )
@@ -199,6 +220,8 @@ class MVPOrchestrator:
                 "cicd": Category.CICD,
                 "known_vulnerabilities": Category.KNOWN_VULNERABILITIES,
                 "misconfiguration": Category.MISCONFIGURATION,
+                "config": Category.MISCONFIGURATION,
+                "maintenance": Category.MAINTENANCE,
                 "code": Category.SOURCE_CODE,
                 "source_code": Category.SOURCE_CODE,
             }
@@ -242,7 +265,7 @@ class MVPOrchestrator:
                         remediation="Follow security best practices for code pattern.",
                     )
                 )
-            return findings, True
+            return findings, not has_errors
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")
 

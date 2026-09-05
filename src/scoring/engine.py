@@ -95,6 +95,9 @@ class ScoringEngine:
         scanner_status: Dict[str, bool],
     ) -> Tuple[bool, float | None, str, List[Finding]]:
         """カテゴリごとの 0〜10 点スコア算出とリスク Finding のフィルタリング"""
+        is_primary_ok = True
+        scanner_msg = ""
+
         # 1. Scorecard 対象カテゴリ
         if category in (
             Category.DEPENDENCIES,
@@ -102,39 +105,45 @@ class ScoringEngine:
             Category.CICD,
             Category.MAINTENANCE,
         ):
-            if not scanner_status.get("scorecard", False):
-                return False, None, "OpenSSF Scorecard スキャン未実行", []
-
-            scorecard_findings = [
-                f
-                for f in findings
-                if f.source == "scorecard" and f.raw_score is not None
-            ]
-            if not scorecard_findings:
-                return False, None, "Scorecard 指標データが得られませんでした。", []
-
-            raw_scores = [
-                f.raw_score for f in scorecard_findings if f.raw_score is not None
-            ]
-            base_score = sum(raw_scores) / len(raw_scores)
-
-            risk_list = [f for f in findings if (f.severity or "").upper() != "INFO"]
-            summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
-            return True, max(0.0, min(10.0, base_score)), summary, risk_list
+            if scanner_status.get("scorecard", False):
+                scorecard_findings = [
+                    f
+                    for f in findings
+                    if f.source == "scorecard" and f.raw_score is not None
+                ]
+                if scorecard_findings:
+                    raw_scores = [
+                        f.raw_score
+                        for f in scorecard_findings
+                        if f.raw_score is not None
+                    ]
+                    base_score = sum(raw_scores) / len(raw_scores)
+                    risk_list = [
+                        f for f in findings if (f.severity or "").upper() != "INFO"
+                    ]
+                    summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
+                    return True, max(0.0, min(10.0, base_score)), summary, risk_list
+            is_primary_ok = False
+            scanner_msg = "OpenSSF Scorecard スキャン未実行"
 
         # 2. Trivy 対象カテゴリ
-        if category in (
+        elif category in (
             Category.KNOWN_VULNERABILITIES,
             Category.SECRETS,
             Category.MISCONFIGURATION,
         ):
             if not scanner_status.get("trivy", False):
-                return False, None, "Trivy スキャン未実行", []
+                is_primary_ok = False
+                scanner_msg = "Trivy スキャン未実行"
 
         # 3. Rule-based 対象カテゴリ
-        if category == Category.SOURCE_CODE:
+        elif category == Category.SOURCE_CODE:
             if not scanner_status.get("rule_based", False):
-                return False, None, "ルールベーススキャン未実行", []
+                is_primary_ok = False
+                scanner_msg = "ルールベーススキャン未実行"
+
+        if not is_primary_ok and not findings:
+            return False, None, scanner_msg, []
 
         critical_count = sum(
             1 for f in findings if (f.severity or "").upper() == "CRITICAL"
@@ -172,7 +181,10 @@ class ScoringEngine:
         else:
             summary = f"指摘事項 {len(risk_list)} 件 (Critical:{critical_count}, High:{high_count}, Med:{medium_count}, Low:{low_count})"
 
-        return True, final_score, summary, risk_list
+        if not is_primary_ok:
+            summary += f" ({scanner_msg}・ルールベース補完)"
+
+        return is_primary_ok, final_score, summary, risk_list
 
     def _determine_overall_status(
         self,

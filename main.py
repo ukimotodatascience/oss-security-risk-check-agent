@@ -85,21 +85,28 @@ class Main:
         options = cls.parse_args()
 
         if options.mvp:
+            from src.config import ScanConfig
             from src.orchestrator import MVPOrchestrator
             from src.targets.url_validator import parse_github_repo_url
 
-            target_url = options.target_url
-            if not target_url:
-                try:
-                    from src.config import ScanConfig
-
-                    cfg = ScanConfig(root)
-                    target_url = cfg.resolve_target_spec().repo_url
-                except Exception:
-                    pass
+            cfg = ScanConfig(root, options)
+            try:
+                target_spec = cfg.resolve_target_spec()
+                if target_spec.source_type == "local_dir":
+                    print(
+                        "[!] Error: MVP mode supports GitHub repository URLs only. Local directory targets are not supported in MVP mode.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                resolved_url = target_spec.repo_url
+                resolved_ref = options.target_ref or target_spec.ref
+                resolved_subdir = options.target_subdir or target_spec.subdir
+            except Exception as e:
+                print(f"[!] Error resolving target spec: {e}", file=sys.stderr)
+                sys.exit(1)
 
             target_url = (
-                target_url
+                resolved_url
                 or "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
             )
             try:
@@ -111,8 +118,8 @@ class Main:
 
             effective_options = CliOptions(
                 target_url=safe_url,
-                target_ref=options.target_ref,
-                target_subdir=options.target_subdir,
+                target_ref=resolved_ref,
+                target_subdir=resolved_subdir,
                 output_dir=options.output_dir,
                 mvp=options.mvp,
             )
