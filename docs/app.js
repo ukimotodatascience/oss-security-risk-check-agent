@@ -231,7 +231,8 @@ document.addEventListener("DOMContentLoaded", () => {
         bgScoreClass = "var(--color-moderate-bg)";
       }
 
-      const countDisplay = catData.findings_count != null ? catData.findings_count : 0;
+      const rawCount = parseInt(catData.findings_count, 10);
+      const countDisplay = Number.isInteger(rawCount) && rawCount >= 0 ? rawCount : 0;
 
       card.innerHTML = `
         <div class="cat-header">

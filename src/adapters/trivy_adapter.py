@@ -14,7 +14,11 @@ class TrivyAdapter:
         self.cli_path = cli_path
 
     def run_scan_with_status(
-        self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
+        self,
+        repo_url_or_path: str,
+        max_output_bytes: int = 50 * 1024 * 1024,
+        target_ref: str | None = None,
+        target_subdir: str | None = None,
     ) -> tuple[List[Finding], bool]:
         """Trivy CLI を実行し (findings, success_flag) を返す。"""
         import tempfile
@@ -24,7 +28,10 @@ class TrivyAdapter:
                 "http://"
             ) or repo_url_or_path.startswith("https://")
             scan_mode = "repo" if is_url else "fs"
-            cmd = [self.cli_path, scan_mode, "--format", "json", repo_url_or_path]
+            cmd = [self.cli_path, scan_mode, "--format", "json"]
+            if is_url and target_ref:
+                cmd.extend(["--branch", target_ref])
+            cmd.append(repo_url_or_path)
 
             with (
                 tempfile.TemporaryFile() as tmp_out,

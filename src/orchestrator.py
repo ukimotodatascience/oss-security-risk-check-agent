@@ -127,7 +127,9 @@ class MVPOrchestrator:
                     scanner_status["git_history"] = False
 
                 trivy_findings, success = self.trivy_adapter.run_scan_with_status(
-                    str(extracted_dir)
+                    str(extracted_dir),
+                    target_ref=target_ref,
+                    target_subdir=target_subdir,
                 )
                 all_findings.extend(trivy_findings)
                 if success and not fetcher.skipped_files:

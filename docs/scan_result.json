@@ -1,20 +1,20 @@
 {
   "repository_url": "https://github.com/ukimotodatascience/oss-security-risk-check-agent",
-  "scanned_at": "2026-09-05 14:27:00 UTC",
+  "scanned_at": "2026-09-05 15:10:57 UTC",
   "scanned_ref": null,
   "scanned_subdir": null,
-  "overall_score": 10.0,
-  "status": "普通",
-  "status_reason": "評価されたカテゴリは良好 (10.0 点) ですが、一部の評価ツールが未実行のため最高判定を抑制しています。",
+  "overall_score": 0.0,
+  "status": "評価不能",
+  "status_reason": "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした (評価不能)。",
   "categories": {
     "known_vulnerabilities": {
       "category": "known_vulnerabilities",
       "category_name": "既知脆弱性",
-      "score": 10.0,
-      "evaluated": true,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "Trivy スキャン未実行"
     },
     "secrets": {
       "category": "secrets",
@@ -23,16 +23,16 @@
       "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "Git履歴未評価"
+      "summary": "Trivy スキャン未実行"
     },
     "misconfiguration": {
       "category": "misconfiguration",
       "category_name": "設定セキュリティ",
-      "score": 10.0,
-      "evaluated": true,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "Trivy スキャン未実行"
     },
     "dependencies": {
       "category": "dependencies",
@@ -73,11 +73,11 @@
     "source_code": {
       "category": "source_code",
       "category_name": "ソースコードセキュリティ",
-      "score": 10.0,
-      "evaluated": true,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "ルールベーススキャン未実行"
     }
   },
   "all_findings": []
