@@ -47,6 +47,7 @@ class MVPOrchestrator:
 
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
         # ArchiveSnapshotFetcher を使用して安全上限 (ダウンロード・解凍サイズ、ファイル数) を適用
+        rule_scan_executed = False
         try:
             from src.config import ScanConfig
             from src.targets.archive_fetcher import ArchiveSnapshotFetcher
@@ -88,9 +89,20 @@ class MVPOrchestrator:
                     f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
                 )
 
-                if fetcher.skipped_files:
+                relevant_skipped_files = (
+                    [
+                        f
+                        for f in fetcher.skipped_files
+                        if f.startswith(target_subdir.rstrip("/") + "/")
+                        or f == target_subdir
+                    ]
+                    if target_subdir
+                    else fetcher.skipped_files
+                )
+
+                if relevant_skipped_files:
                     logger.warning(
-                        f"ArchiveSnapshotFetcher skipped {len(fetcher.skipped_files)} files due to size limits."
+                        f"ArchiveSnapshotFetcher skipped {len(relevant_skipped_files)} files in target scope due to size limits."
                     )
                     for cat in (
                         Category.MISCONFIGURATION,
@@ -105,7 +117,7 @@ class MVPOrchestrator:
                                 rule_id="SKIPPED-FILES-LIMIT",
                                 severity="LOW",
                                 title="Large Files Skipped During Fetch",
-                                description=f"{len(fetcher.skipped_files)} file(s) were skipped due to size limits during snapshot fetch.",
+                                description=f"{len(relevant_skipped_files)} file(s) in target scope were skipped due to size limits during snapshot fetch.",
                                 remediation="Review large files individually for secrets or vulnerabilities.",
                             )
                         )
@@ -132,18 +144,19 @@ class MVPOrchestrator:
                     target_subdir=target_subdir,
                 )
                 all_findings.extend(trivy_findings)
-                if success and not fetcher.skipped_files:
+                if success and not relevant_skipped_files:
                     scanner_status["trivy"] = True
 
                 # 4. 既存 Rule-based Scan (スナップショット生存中に判定)
                 try:
+                    rule_scan_executed = True
                     rule_findings, success = self._run_rule_based_scan(
                         normalized_url,
                         scanner_status=scanner_status,
                         target_dir=extracted_dir,
                     )
                     all_findings.extend(rule_findings)
-                    if success and not fetcher.skipped_files:
+                    if success and not relevant_skipped_files:
                         scanner_status["rule_based"] = True
                 except Exception as e:
                     logger.error(f"Error during Rule-based scan: {e}")
@@ -168,9 +181,8 @@ class MVPOrchestrator:
             )
             scanner_status["scorecard"] = False
 
-        # スナップショット取得が失敗した場合の Rule-based Scan フォールバック
-        has_rule_findings = any(f.source == "rule_based" for f in all_findings)
-        if not has_rule_findings and not scanner_status.get("rule_based", False):
+        # スナップショット取得が失敗した場合（一度もルールスキャンが実行されていない場合）の Rule-based Scan フォールバック
+        if not rule_scan_executed:
             try:
                 rule_findings, success = self._run_rule_based_scan(
                     normalized_url,
@@ -182,17 +194,46 @@ class MVPOrchestrator:
             except Exception as e:
                 logger.error(f"Error during Rule-based fallback scan: {e}")
 
-        # Trivy 成功時は B-1 ルールの重複既知脆弱性 (Category.KNOWN_VULNERABILITIES) を除外して二重減点を防止
+        # Trivy 成功時は Trivy と重複する CVE/GHSA の B-1 ルール Finding のみを除外して二重減点を防止
         if scanner_status.get("trivy"):
-            all_findings = [
-                f
-                for f in all_findings
-                if not (
+            import re
+
+            trivy_vuln_ids: set[str] = set()
+            for f in all_findings:
+                if f.source == "trivy":
+                    text = f"{f.rule_id} {f.title} {f.description or ''}"
+                    cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
+                    ghsas = set(
+                        re.findall(
+                            r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}",
+                            text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    trivy_vuln_ids.update(v.upper() for v in (cves | ghsas))
+
+            filtered_findings: List[Finding] = []
+            for f in all_findings:
+                is_b1 = (
                     f.source == "rule_based"
                     and f.category == Category.KNOWN_VULNERABILITIES
                     and (f.rule_id == "B-1" or str(f.rule_id).startswith("B-1"))
                 )
-            ]
+                if is_b1:
+                    text = f"{f.rule_id} {f.title} {f.description or ''}"
+                    b1_cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
+                    b1_ghsas = set(
+                        re.findall(
+                            r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}",
+                            text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    b1_ids = {v.upper() for v in (b1_cves | b1_ghsas)}
+                    if b1_ids and b1_ids.issubset(trivy_vuln_ids):
+                        continue
+                filtered_findings.append(f)
+            all_findings = filtered_findings
 
         # 重複する Finding の排除
         seen_keys = set()
@@ -280,7 +321,8 @@ class MVPOrchestrator:
                 )
                 scan_result = scan_runner.run()
                 records = scan_result.records
-                has_errors = bool(getattr(scan_result, "errors", None))
+                errors = getattr(scan_result, "errors", []) or []
+                has_errors = bool(errors)
 
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
@@ -288,8 +330,11 @@ class MVPOrchestrator:
 
             # Finding 数上限チェック (500件上限)
             max_limit = 500
+            has_global_limit = (
+                any(err[0] == "GLOBAL_LIMIT" for err in errors) if errors else False
+            )
             truncated = False
-            if len(records) > max_limit:
+            if len(records) > max_limit or has_global_limit:
                 records = records[:max_limit]
                 has_errors = True
                 truncated = True

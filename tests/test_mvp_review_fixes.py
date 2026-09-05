@@ -663,6 +663,53 @@ def test_orchestrator_excludes_b1_findings_when_trivy_succeeds():
             "https://github.com/owner/repo", save_to_docs=False
         )
         rule_ids = [f.rule_id for f in res.all_findings]
-        assert "B-1" not in rule_ids
+        # B-1 finding without CVE matches should be preserved
+        assert "B-1" in rule_ids
         assert "CVE-2023-1234" in rule_ids
         assert "A-1" in rule_ids
+
+
+def test_orchestrator_b1_deduplication_removes_matching_cve():
+    from pathlib import Path
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
+
+    orchestrator = MVPOrchestrator()
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2023-1234",
+        severity="HIGH",
+        title="CVE-2023-1234 in libfoo",
+        description="Vulnerability CVE-2023-1234 detected",
+    )
+    b1_cve_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="CVE-2023-1234",
+        description="CVE-2023-1234 in dependency",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=Path("."),
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(
+            orchestrator, "_run_rule_based_scan", return_value=([b1_cve_finding], True)
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        rule_ids = [f.rule_id for f in res.all_findings]
+        assert "B-1" not in rule_ids
+        assert "CVE-2023-1234" in rule_ids

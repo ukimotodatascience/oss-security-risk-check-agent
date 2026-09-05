@@ -36,5 +36,10 @@ class A1CommandInjectionRule:
         for detector in self._detectors:
             if len(records) >= max_records:
                 break
-            records.extend(detector.evaluate(target))
-        return dedupe_records(records)
+            records.extend(
+                detector.evaluate(target, max_records=max_records - len(records))
+            )
+            if len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return dedupe_records(records)[:max_records]

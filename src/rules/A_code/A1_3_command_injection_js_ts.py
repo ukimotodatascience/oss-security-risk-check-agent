@@ -147,7 +147,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
         return records
 
-    def _evaluate_js_ts_file(self, file_path: Path, target: Path) -> List[RiskRecord]:
+    def _evaluate_js_ts_file(
+        self, file_path: Path, target: Path, max_records: int = 500
+    ) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         try:
@@ -159,6 +161,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         )
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
+            if len(records) >= max_records:
+                return records[:max_records]
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
@@ -301,5 +305,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         for js_file in self._iter_js_ts_files(target):
             if len(records) >= max_records:
                 break
-            records.extend(self._evaluate_js_ts_file(js_file, target))
-        return dedupe_records(records)
+            records.extend(
+                self._evaluate_js_ts_file(
+                    js_file, target, max_records=max_records - len(records)
+                )
+            )
+            if len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return dedupe_records(records)[:max_records]

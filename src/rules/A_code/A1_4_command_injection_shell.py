@@ -28,7 +28,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if p.is_file() and p.suffix.lower() in self._SHELL_EXTENSIONS:
                 yield p
 
-    def _evaluate_shell_file(self, file_path: Path, target: Path) -> List[RiskRecord]:
+    def _evaluate_shell_file(
+        self, file_path: Path, target: Path, max_records: int = 500
+    ) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         try:
@@ -40,9 +42,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         )
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
+            if len(records) >= max_records:
+                return records[:max_records]
         tainted_names: Set[str] = set()
         lines = src.splitlines()
         for i, line in enumerate(lines, start=1):
+            if len(records) >= max_records:
+                break
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
@@ -262,5 +268,12 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         for shell_file in self._iter_shell_files(target):
             if len(records) >= max_records:
                 break
-            records.extend(self._evaluate_shell_file(shell_file, target))
-        return dedupe_records(records)
+            records.extend(
+                self._evaluate_shell_file(
+                    shell_file, target, max_records=max_records - len(records)
+                )
+            )
+            if len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return dedupe_records(records)[:max_records]
