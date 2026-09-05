@@ -24,7 +24,7 @@ class K1MissingLicenseRule:
         "none",
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         license_files = find_license_files(target)

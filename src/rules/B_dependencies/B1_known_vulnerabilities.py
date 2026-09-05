@@ -39,7 +39,7 @@ class B1KnownVulnerabilitiesRule:
             return Severity.MEDIUM
         return Severity.LOW
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         deps = collect_dependency_declarations(target)
 

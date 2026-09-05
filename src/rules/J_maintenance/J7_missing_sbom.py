@@ -62,7 +62,7 @@ class J7MissingSbomRule:
             unique.append(p)
         return unique
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         sbom_files = self._find_sbom_files(target)
 

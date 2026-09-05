@@ -71,7 +71,8 @@ class TrivyAdapter:
                 if proc.returncode == 0 and actual_out_size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
-                    return self.parse_json(data), True
+                    findings, is_full_success = self.parse_json_with_status(data)
+                    return findings, is_full_success
 
                 stderr_text = (
                     stderr_bytes.decode("utf-8", errors="replace")
@@ -99,6 +100,12 @@ class TrivyAdapter:
     def parse_json(
         self, data: Dict[str, Any], max_findings: int = 500
     ) -> List[Finding]:
+        findings, _ = self.parse_json_with_status(data, max_findings=max_findings)
+        return findings
+
+    def parse_json_with_status(
+        self, data: Dict[str, Any], max_findings: int = 500
+    ) -> tuple[List[Finding], bool]:
         findings: List[Finding] = []
         results = data.get("Results", [])
         truncated = False
@@ -170,19 +177,24 @@ class TrivyAdapter:
                 )
 
         if truncated:
-            findings.append(
-                Finding(
-                    category=Category.KNOWN_VULNERABILITIES,
-                    source="trivy",
-                    rule_id="TRIVY-FINDINGS-LIMIT-EXCEEDED",
-                    severity="LOW",
-                    title="Trivy Findings Limit Exceeded",
-                    description=f"Trivy scan generated over {max_findings} findings. Truncated excess findings.",
-                    remediation="Review target or narrow scan scope.",
+            for cat in (
+                Category.KNOWN_VULNERABILITIES,
+                Category.SECRETS,
+                Category.MISCONFIGURATION,
+            ):
+                findings.append(
+                    Finding(
+                        category=cat,
+                        source="trivy",
+                        rule_id="TRIVY-FINDINGS-LIMIT-EXCEEDED",
+                        severity="LOW",
+                        title="Trivy Findings Limit Exceeded",
+                        description=f"Trivy scan generated over {max_findings} findings. Truncated excess findings.",
+                        remediation="Review target or narrow scan scope.",
+                    )
                 )
-            )
 
-        return findings
+        return findings, not truncated
 
     def _get_mock_findings(self, repo_target: str) -> List[Finding]:
         """Trivy CLI が存在しない場合に安全なモック結果を返す"""

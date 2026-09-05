@@ -21,7 +21,7 @@ class J3MissingIssueTemplatesRule:
         ".gitlab/issue_templates/bug.md",
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for rel in self._TEMPLATE_FILES:

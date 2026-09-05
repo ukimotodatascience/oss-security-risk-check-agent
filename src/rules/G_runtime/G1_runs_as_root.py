@@ -30,7 +30,7 @@ class G1RunsAsRootRule:
             if p.is_file() and p.suffix.lower() in self._TEXT_EXTS:
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for dockerfile in self._iter_dockerfiles(target):

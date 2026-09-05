@@ -55,7 +55,7 @@ class B3SuspiciousPackagesRule:
             diff += 1
         return diff == 1
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for dep in collect_dependency_declarations(target):
             suspicious_reason = None

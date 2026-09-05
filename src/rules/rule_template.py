@@ -9,5 +9,5 @@ class RuleTemplate:
     title = "Example rule"
     severity = Severity.MEDIUM
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         return []

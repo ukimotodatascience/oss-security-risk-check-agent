@@ -40,7 +40,7 @@ class E1UnauthenticatedAdminEndpointsRule:
             if p.is_file() and p.suffix.lower() in self._TEXT_EXTS:
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):

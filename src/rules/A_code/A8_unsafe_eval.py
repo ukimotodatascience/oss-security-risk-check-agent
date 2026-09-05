@@ -117,7 +117,7 @@ class A8UnsafeEvalRule:
                                 changed = True
         return tainted
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for py_file in self._iter_py_files(target):

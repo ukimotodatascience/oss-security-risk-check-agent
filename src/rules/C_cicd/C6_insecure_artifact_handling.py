@@ -26,7 +26,7 @@ class C6InsecureArtifactHandlingRule:
         r"^\s*retention-days\s*:\s*(\d+)\s*$", re.IGNORECASE
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():

@@ -19,7 +19,7 @@ class C4UntrustedCheckoutRule:
     )
     _SECRETS_PATTERN = re.compile(r"\$\{\{\s*secrets\.[A-Za-z0-9_]+\s*\}\}")
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():

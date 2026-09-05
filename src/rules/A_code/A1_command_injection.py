@@ -31,7 +31,7 @@ class A1CommandInjectionRule:
             ShellCommandInjectionDetector(),
         )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for detector in self._detectors:
             records.extend(detector.evaluate(target))

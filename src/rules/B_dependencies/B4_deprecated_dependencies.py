@@ -30,7 +30,7 @@ class B4DeprecatedDependenciesRule:
         "left-pad": "歴史的に供給安定性リスクの事例がある依存です",
     }
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for dep in collect_dependency_declarations(target):

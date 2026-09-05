@@ -51,7 +51,7 @@ class D6MissingSecurityHeadersRule:
             if any(pat.search(full) for pat in self._TARGET_FILE_PATTERNS):
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         scanned = 0
         observed = {k: False for k in self._HEADER_PATTERNS}

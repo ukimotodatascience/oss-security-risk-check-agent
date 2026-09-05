@@ -45,7 +45,7 @@ class F2SecretFilesCommittedRule:
             return True
         return any(pat.match(name) for pat in self._SUSPICIOUS_NAME_PATTERNS)
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):

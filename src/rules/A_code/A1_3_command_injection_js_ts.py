@@ -296,7 +296,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
         )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for js_file in self._iter_js_ts_files(target):
             records.extend(self._evaluate_js_ts_file(js_file, target))

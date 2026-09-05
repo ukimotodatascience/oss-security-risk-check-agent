@@ -34,7 +34,7 @@ class J4LowBusFactorRule:
         lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
         return len(lines)
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         contributor_count = self._count_distinct_authors(target)
         if contributor_count <= 0:

@@ -25,7 +25,7 @@ class B6UnusedDependenciesRule:
         "scikit-learn": "sklearn",
     }
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         py_imports = {x.lower() for x in collect_python_imports(target)}
         js_imports = {x.lower() for x in collect_js_imports(target)}

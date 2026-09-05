@@ -26,7 +26,7 @@ class K5NoncommercialRestrictionRule:
         "cc by-nc",
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         dep_licenses = collect_dependency_licenses(target)

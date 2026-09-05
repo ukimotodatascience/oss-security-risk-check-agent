@@ -13,7 +13,7 @@ class B5MissingLockfileRule:
     title = "Missing Lockfile"
     severity = Severity.MEDIUM
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         lockfiles = discover_lockfiles(target)
 

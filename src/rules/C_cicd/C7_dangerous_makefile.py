@@ -23,7 +23,7 @@ class C7DangerousMakefileRule:
         re.compile(r"\bdocker\s+run\b[^\n\r]*--privileged\b", re.IGNORECASE),
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         makefiles = [
             p

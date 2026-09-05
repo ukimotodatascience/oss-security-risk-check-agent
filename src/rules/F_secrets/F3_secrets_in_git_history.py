@@ -23,7 +23,7 @@ class F3SecretsInGitHistoryRule:
 
     _MAX_OUTPUT_CHARS = 1_000_000
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         try:

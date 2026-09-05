@@ -25,7 +25,7 @@ class J2MissingSecurityPolicyRule:
         r"(?is)(security|vulnerability|脆弱性).{0,120}(report|contact|連絡|報告|disclosure)"
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for rel in self._SECURITY_FILES:

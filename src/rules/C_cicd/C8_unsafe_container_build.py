@@ -27,7 +27,7 @@ class C8UnsafeContainerBuildRule:
             return True
         return True
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):

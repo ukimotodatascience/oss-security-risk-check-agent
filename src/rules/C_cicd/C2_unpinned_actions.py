@@ -15,7 +15,7 @@ class C2UnpinnedActionsRule:
     _SHA_PIN = re.compile(r"^[0-9a-fA-F]{40}$")
     _USES_LINE = re.compile(r"^\s*uses\s*:\s*([^\s#]+)")
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():

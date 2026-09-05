@@ -474,7 +474,7 @@ def test_trivy_parse_json_max_findings_limit():
         ]
     }
     findings = adapter.parse_json(data, max_findings=500)
-    assert len(findings) == 501
+    assert len(findings) == 503
     assert findings[-1].rule_id == "TRIVY-FINDINGS-LIMIT-EXCEEDED"
 
 
@@ -541,3 +541,42 @@ def test_rule_based_scan_failure_propagates_to_all_categories():
     )
     for cat_res in res.categories.values():
         assert cat_res.evaluated is False
+
+
+def test_trivy_parse_json_with_status_returns_false_and_all_categories_truncated():
+    adapter = TrivyAdapter()
+    data = {
+        "Results": [
+            {
+                "Target": "package.json",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": f"CVE-2023-{i}",
+                        "Severity": "HIGH",
+                        "Title": f"Vuln {i}",
+                        "Description": f"Description {i}",
+                    }
+                    for i in range(600)
+                ],
+            }
+        ]
+    }
+    findings, is_full_success = adapter.parse_json_with_status(data, max_findings=500)
+    assert is_full_success is False
+    truncated_cats = {
+        f.category for f in findings if f.rule_id == "TRIVY-FINDINGS-LIMIT-EXCEEDED"
+    }
+    assert Category.KNOWN_VULNERABILITIES in truncated_cats
+    assert Category.SECRETS in truncated_cats
+    assert Category.MISCONFIGURATION in truncated_cats
+
+
+def test_rule_evaluate_signatures_support_max_records():
+    import inspect
+    from pathlib import Path
+    from src.rule_engine import load_all_rules
+
+    rules = load_all_rules(Path("."))
+    for r in rules:
+        sig = inspect.signature(r.evaluate)
+        assert "max_records" in sig.parameters

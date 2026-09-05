@@ -37,7 +37,7 @@ class H6ExpiredOrMissingTLSDocsRule:
             if any(pattern.search(rel) for pattern in self._DOC_FILE_PATTERNS):
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         doc_files = list(self._iter_doc_files(target))
 

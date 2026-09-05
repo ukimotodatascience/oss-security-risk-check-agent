@@ -74,7 +74,7 @@ class F1HardcodedSecretsRule:
         has_digit = any(c.isdigit() for c in value)
         return has_upper and has_lower and has_digit
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):
