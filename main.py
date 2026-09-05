@@ -78,14 +78,21 @@ class Main:
 
         if options.mvp:
             from src.orchestrator import MVPOrchestrator
+            from src.targets.url_validator import parse_github_repo_url
 
             target_url = (
                 options.target_url
                 or "https://github.com/ukimotodatascience/oss-security-risk-check-agent"
             )
+            try:
+                ref = parse_github_repo_url(target_url)
+                safe_url = f"https://github.com/{ref.owner}/{ref.repo}"
+            except Exception:
+                safe_url = target_url
+
             out_dir = Path(options.output_dir) if options.output_dir else None
 
-            print(f"[*] Running MVP OSS Security Scan for {target_url}...")
+            print(f"[*] Running MVP OSS Security Scan for {safe_url}...")
             orchestrator = MVPOrchestrator(root, cli_options=options)
             result = orchestrator.run_full_scan(
                 target_url, save_to_docs=True, output_dir=out_dir

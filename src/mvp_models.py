@@ -51,6 +51,7 @@ class CategoryResult(BaseModel):
     category: Category
     category_name: str
     score: float  # 0.0 ~ 10.0
+    evaluated: bool = True
     findings_count: int = 0
     findings: List[Finding] = Field(default_factory=list)
     summary: str = ""

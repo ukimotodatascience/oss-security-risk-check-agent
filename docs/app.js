@@ -158,7 +158,7 @@ document.addEventListener("DOMContentLoaded", () => {
         </div>
         <div class="cat-footer">
           <span>${escapeHtml(catData.summary || "")}</span>
-          <span class="findings-count-tag">${catData.findings_count || 0} 指摘</span>
+          <span class="findings-count-tag">${escapeHtml(catData.findings_count || 0)} 指摘</span>
         </div>
       `;
 

@@ -65,14 +65,14 @@ class ScorecardAdapter:
             if raw_score < 0:
                 continue
 
-            # 7点以上の合格項目はスコア計算用のraw_score保持のみで、Findingリストには追加しない（リスクとしてカウントしない）
-            if raw_score >= 7:
-                # 判定用スコア保持のために Finding オブジェクトは作成するが、severity="INFO"
-                severity = "INFO"
-                # 7点未満の指摘事項のみリストへ追加
-                continue
+            severity = "INFO"
+            if raw_score <= 3:
+                severity = "HIGH"
+            elif raw_score <= 6:
+                severity = "MEDIUM"
+            elif raw_score <= 8:
+                severity = "LOW"
 
-            severity = "HIGH" if raw_score <= 3 else "MEDIUM"
             detail_str = (
                 "; ".join(details[:3]) if isinstance(details, list) else str(details)
             )

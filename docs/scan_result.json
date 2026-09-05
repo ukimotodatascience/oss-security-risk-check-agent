@@ -1,7 +1,7 @@
 {
   "repository_url": "https://github.com/ukimotodatascience/oss-security-risk-check-agent",
-  "scanned_at": "2026-09-05 08:14:47 UTC",
-  "overall_score": 8.8,
+  "scanned_at": "2026-09-05 08:34:22 UTC",
+  "overall_score": 7.5,
   "status": "危険",
   "status_reason": "評価スコアが極めて低いカテゴリ (最小 0.0 点) が存在するため、足切りルールにより「危険」と判定されました。",
   "categories": {
@@ -9,6 +9,7 @@
       "category": "known_vulnerabilities",
       "category_name": "既知脆弱性",
       "score": 10.0,
+      "evaluated": true,
       "findings_count": 0,
       "findings": [],
       "summary": "検出された問題・懸念点はありません。"
@@ -17,6 +18,7 @@
       "category": "secrets",
       "category_name": "機密情報・Secret管理",
       "score": 10.0,
+      "evaluated": true,
       "findings_count": 0,
       "findings": [],
       "summary": "検出された問題・懸念点はありません。"
@@ -25,6 +27,7 @@
       "category": "misconfiguration",
       "category_name": "設定セキュリティ",
       "score": 10.0,
+      "evaluated": true,
       "findings_count": 0,
       "findings": [],
       "summary": "検出された問題・懸念点はありません。"
@@ -32,39 +35,44 @@
     "dependencies": {
       "category": "dependencies",
       "category_name": "依存関係・Supply Chain",
-      "score": 10.0,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "スキャナー未実行または評価不能です。"
     },
     "development": {
       "category": "development",
       "category_name": "開発・変更管理",
-      "score": 10.0,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "スキャナー未実行または評価不能です。"
     },
     "cicd": {
       "category": "cicd",
       "category_name": "CI/CD・リリースセキュリティ",
-      "score": 10.0,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "スキャナー未実行または評価不能です。"
     },
     "maintenance": {
       "category": "maintenance",
       "category_name": "プロジェクト保守・セキュリティ体制",
-      "score": 10.0,
+      "score": 0.0,
+      "evaluated": false,
       "findings_count": 0,
       "findings": [],
-      "summary": "検出された問題・懸念点はありません。"
+      "summary": "スキャナー未実行または評価不能です。"
     },
     "source_code": {
       "category": "source_code",
       "category_name": "ソースコードセキュリティ",
       "score": 0.0,
+      "evaluated": true,
       "findings_count": 135,
       "findings": [
         {

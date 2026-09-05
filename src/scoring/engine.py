@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from src.mvp_models import (
     CATEGORY_NAMES_JA,
@@ -29,30 +29,41 @@ class ScoringEngine:
                 cat_findings[Category.SOURCE_CODE].append(f)
 
         category_results: Dict[str, CategoryResult] = {}
-        scores: List[float] = []
+        valid_scores: List[float] = []
+        risk_findings: List[Finding] = []
 
         for cat in Category:
             c_findings = cat_findings[cat]
             cat_name = CATEGORY_NAMES_JA.get(cat, cat.value)
-            score, summary = self._calculate_category_score(cat, c_findings)
+            evaluated, score, summary, filtered_risk_findings = (
+                self._calculate_category_score(cat, c_findings)
+            )
 
             cat_res = CategoryResult(
                 category=cat,
                 category_name=cat_name,
-                score=round(score, 1),
-                findings_count=len(c_findings),
-                findings=c_findings,
+                score=round(score, 1) if score is not None else 0.0,
+                evaluated=evaluated,
+                findings_count=len(filtered_risk_findings),
+                findings=filtered_risk_findings,
                 summary=summary,
             )
             category_results[cat.value] = cat_res
-            scores.append(cat_res.score)
+            if evaluated and score is not None:
+                valid_scores.append(cat_res.score)
+            risk_findings.extend(filtered_risk_findings)
 
-        # 総合スコア = 8カテゴリの平均
-        overall_score = round(sum(scores) / len(scores), 1) if scores else 0.0
+        # 総合スコア = 評価成功カテゴリの平均
+        overall_score = (
+            round(sum(valid_scores) / len(valid_scores), 1) if valid_scores else 0.0
+        )
 
         # 足切りルールと総合判定
         status, status_reason = self._determine_overall_status(
-            scores, overall_score, findings
+            valid_scores,
+            overall_score,
+            risk_findings,
+            len(valid_scores) == len(Category),
         )
 
         return OverallResult(
@@ -62,39 +73,56 @@ class ScoringEngine:
             status=status,
             status_reason=status_reason,
             categories=category_results,
-            all_findings=findings,
+            all_findings=risk_findings,
         )
 
     def _calculate_category_score(
         self, category: Category, findings: List[Finding]
-    ) -> tuple[float, str]:
-        """カテゴリごとの 0〜10 点スコア算出"""
-        # Scorecard の raw_score が含まれる場合の優先集計
-        scorecard_scores = [
-            f.raw_score
-            for f in findings
-            if f.source == "scorecard" and f.raw_score is not None
+    ) -> Tuple[bool, float | None, str, List[Finding]]:
+        """カテゴリごとの 0〜10 点スコア算出とリスク Finding のフィルタリング"""
+        scorecard_findings = [
+            f for f in findings if f.source == "scorecard" and f.raw_score is not None
         ]
-        if scorecard_scores and category in (
+
+        # 1. Scorecard 対象カテゴリの場合
+        if category in (
             Category.DEPENDENCIES,
             Category.DEVELOPMENT,
             Category.CICD,
             Category.MAINTENANCE,
         ):
-            base_score = sum(scorecard_scores) / len(scorecard_scores)
-            summary = (
-                f"OpenSSF Scorecard の評価指標 {len(scorecard_scores)} 件から算出。"
-            )
-            return max(0.0, min(10.0, base_score)), summary
+            if not scorecard_findings:
+                # Scorecard スキャン未実行 / データなし
+                return False, None, "スキャナー未実行または評価不能です。", []
 
-        # 減点方式 (10.0 点から減点)
+            raw_scores = [
+                f.raw_score for f in scorecard_findings if f.raw_score is not None
+            ]
+            base_score = sum(raw_scores) / len(raw_scores)
+
+            # リスク指摘 (7点未満かつ非INFO) のみを抽出し、高スコア合格項目はリスク一覧から除外
+            risk_list = [
+                f
+                for f in findings
+                if f.severity.upper() != "INFO"
+                and (f.raw_score is None or f.raw_score < 7.0)
+            ]
+            summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
+            return True, max(0.0, min(10.0, base_score)), summary, risk_list
+
+        # 2. Trivy / Rule-based 対象カテゴリの場合
+        # アダプターが実行されデータが存在するか確認
+        # 完全にスキャナ非存在で空リストの場合は evaluated=False に対応
+        evaluated = True
+        risk_list = [f for f in findings if f.severity.upper() != "INFO"]
+
         base = 10.0
         critical_count = 0
         high_count = 0
         medium_count = 0
         low_count = 0
 
-        for f in findings:
+        for f in risk_list:
             sev = f.severity.upper()
             if sev == "CRITICAL":
                 base -= 3.0
@@ -110,18 +138,28 @@ class ScoringEngine:
                 low_count += 1
 
         final_score = max(0.0, min(10.0, base))
-        if len(findings) == 0:
+        if len(risk_list) == 0:
             summary = "検出された問題・懸念点はありません。"
         else:
-            summary = f"指摘事項 {len(findings)} 件 (Critical:{critical_count}, High:{high_count}, Med:{medium_count}, Low:{low_count})"
+            summary = f"指摘事項 {len(risk_list)} 件 (Critical:{critical_count}, High:{high_count}, Med:{medium_count}, Low:{low_count})"
 
-        return final_score, summary
+        return evaluated, final_score, summary, risk_list
 
     def _determine_overall_status(
-        self, scores: List[float], overall_score: float, findings: List[Finding]
-    ) -> tuple[OverallStatus, str]:
+        self,
+        valid_scores: List[float],
+        overall_score: float,
+        findings: List[Finding],
+        all_evaluated: bool,
+    ) -> Tuple[OverallStatus, str]:
         """足切りルールと判定ロジック"""
-        min_score = min(scores) if scores else 0.0
+        if not valid_scores:
+            return (
+                OverallStatus.MODERATE,
+                "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした。",
+            )
+
+        min_score = min(valid_scores)
         critical_count = sum(
             1 for f in findings if (f.severity or "").upper() == "CRITICAL"
         )
@@ -142,6 +180,11 @@ class ScoringEngine:
                 return (
                     OverallStatus.MODERATE,
                     f"総合スコアは高得点 ({overall_score:.1f}) ですが、一部のカテゴリで低い点数 ({min_score:.1f} 点) があるため「普通」判定に調整されました。",
+                )
+            if not all_evaluated:
+                return (
+                    OverallStatus.MODERATE,
+                    f"評価されたカテゴリは良好 ({overall_score:.1f} 点) ですが、一部の評価ツールが未実行のため最高判定を抑制しています。",
                 )
             return (
                 OverallStatus.SAFE,
