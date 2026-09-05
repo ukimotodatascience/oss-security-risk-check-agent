@@ -181,6 +181,13 @@ class MVPOrchestrator:
 
             scan_runner = SecurityScan(self.project_root, cli_options=effective_opts)
             scan_result = scan_runner.run()
+
+            if len(scan_result.records) == 0 and getattr(scan_result, "errors", None):
+                logger.warning(
+                    f"Rule-based scan returned 0 records with errors: {scan_result.errors}"
+                )
+                return [], False
+
             for rec in scan_result.records:
                 if rec.category in ("secrets", "dependencies", "cicd"):
                     continue

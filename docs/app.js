@@ -72,6 +72,21 @@ document.addEventListener("DOMContentLoaded", () => {
     if (typeof data.overall_score !== "number" || isNaN(data.overall_score)) return false;
     if (typeof data.status !== "string") return false;
     if (!data.categories || typeof data.categories !== "object") return false;
+
+    const requiredKeys = [
+      "known_vulnerabilities",
+      "secrets",
+      "misconfiguration",
+      "dependencies",
+      "development",
+      "cicd",
+      "maintenance",
+      "source_code"
+    ];
+    for (const key of requiredKeys) {
+      if (!data.categories[key] || typeof data.categories[key] !== "object") return false;
+    }
+
     const findingsArray = data.all_findings || data.findings;
     if (!Array.isArray(findingsArray)) return false;
     return true;

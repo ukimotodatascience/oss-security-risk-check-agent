@@ -91,9 +91,9 @@ class Main:
             target_url = options.target_url
             if not target_url:
                 try:
-                    from src.config import SecurityCheckConfig
+                    from src.config import ScanConfig
 
-                    cfg = SecurityCheckConfig(root, {})
+                    cfg = ScanConfig(root)
                     target_url = cfg.resolve_target_spec().repo_url
                 except Exception:
                     pass

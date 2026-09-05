@@ -31,16 +31,33 @@ class TrivyAdapter:
                     cmd, stdout=tmp_out, stderr=subprocess.PIPE, text=False
                 )
 
-                try:
-                    stderr_bytes = proc.communicate(timeout=120)[1]
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                import time
+
+                start_time = time.time()
+                timed_out = False
+                exceeded_size = False
+
+                while proc.poll() is None:
+                    if time.time() - start_time > 120:
+                        timed_out = True
+                        proc.kill()
+                        break
+                    size = tmp_out.tell()
+                    if size > max_output_bytes:
+                        exceeded_size = True
+                        proc.kill()
+                        break
+                    time.sleep(0.1)
+
+                stderr_bytes = proc.stderr.read() if proc.stderr else b""
+                proc.wait()
+
+                if timed_out:
                     logger.warning("Trivy CLI timed out after 120s.")
                     return [], False
 
                 size = tmp_out.tell()
-                if size > max_output_bytes:
+                if exceeded_size or size > max_output_bytes:
                     logger.warning(
                         f"Trivy CLI stdout size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
                     )
