@@ -87,15 +87,24 @@ class Main:
             try:
                 ref = parse_github_repo_url(target_url)
                 safe_url = f"https://github.com/{ref.owner}/{ref.repo}"
-            except Exception:
-                safe_url = target_url
+            except Exception as e:
+                print(f"[!] Error: Invalid target URL specified: {e}", file=sys.stderr)
+                sys.exit(1)
+
+            effective_options = CliOptions(
+                target_url=safe_url,
+                target_ref=options.target_ref,
+                target_subdir=options.target_subdir,
+                output_dir=options.output_dir,
+                mvp=options.mvp,
+            )
 
             out_dir = Path(options.output_dir) if options.output_dir else None
 
             print(f"[*] Running MVP OSS Security Scan for {safe_url}...")
-            orchestrator = MVPOrchestrator(root, cli_options=options)
+            orchestrator = MVPOrchestrator(root, cli_options=effective_options)
             result = orchestrator.run_full_scan(
-                target_url, save_to_docs=True, output_dir=out_dir
+                safe_url, save_to_docs=True, output_dir=out_dir
             )
             print(
                 f"[+] Scan completed! Overall Score: {result.overall_score}/10, Status: {result.status.value}"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.adapters.scorecard_adapter import ScorecardAdapter
 from src.adapters.trivy_adapter import TrivyAdapter
@@ -39,11 +39,17 @@ class MVPOrchestrator:
 
         logger.info(f"Starting MVP full scan for repository: {normalized_url}")
         all_findings: List[Finding] = []
+        scanner_status: Dict[str, bool] = {
+            "trivy": False,
+            "scorecard": False,
+            "rule_based": False,
+        }
 
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
         try:
             trivy_findings = self.trivy_adapter.run_scan(normalized_url)
             all_findings.extend(trivy_findings)
+            scanner_status["trivy"] = True
         except Exception as e:
             logger.error(f"Error during Trivy scan: {e}")
 
@@ -51,6 +57,8 @@ class MVPOrchestrator:
         try:
             scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
             all_findings.extend(scorecard_findings)
+            if scorecard_findings:
+                scanner_status["scorecard"] = True
         except Exception as e:
             logger.error(f"Error during Scorecard scan: {e}")
 
@@ -58,11 +66,14 @@ class MVPOrchestrator:
         try:
             rule_findings = self._run_rule_based_scan(normalized_url)
             all_findings.extend(rule_findings)
+            scanner_status["rule_based"] = True
         except Exception as e:
             logger.error(f"Error during Rule-based scan: {e}")
 
         # 5. スコアリングと総合判定
-        overall_result = self.scoring_engine.evaluate(normalized_url, all_findings)
+        overall_result = self.scoring_engine.evaluate(
+            normalized_url, all_findings, scanner_status=scanner_status
+        )
 
         # 6. JSON 保存
         if save_to_docs:
@@ -76,11 +87,9 @@ class MVPOrchestrator:
         try:
             from src.scan import SecurityScan
 
-            # SecurityScan へ CLI オプションを明示的に伝播
             scan_runner = SecurityScan(self.project_root, cli_options=self.cli_options)
             scan_result = scan_runner.run()
             for rec in scan_result.records:
-                # 既存カテゴリ名 'cicd', 'secrets', 'dependencies' と正しく比較して除外
                 if rec.category in ("secrets", "dependencies", "cicd"):
                     continue
 

@@ -34,7 +34,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const reader = new FileReader();
       reader.onload = (evt) => {
-        try:
+        try {
           const data = JSON.parse(evt.target.result);
           renderScanResult(data);
         } catch (err) {
@@ -61,9 +61,23 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       renderScanResult(data);
     } catch (err) {
-      console.warn("Could not load scan_result.json automatically. Rendering fallback/demo state.", err);
-      renderScanResult(getFallbackData());
+      console.warn("Could not load scan_result.json automatically.", err);
+      renderErrorState("スキャン結果データ (scan_result.json) を読み込めませんでした。JSONファイルを読み込むか再生成してください。");
     }
+  }
+
+  function renderErrorState(message) {
+    repoUrlEl.textContent = "Data Load Error";
+    scannedAtEl.textContent = "最終診断日時: N/A";
+    overallScoreNumEl.textContent = "0.0";
+    circleProgressEl.style.strokeDashoffset = "440";
+
+    statusBadgeEl.textContent = "評価不能";
+    statusBadgeEl.className = "status-badge status-unknown";
+    statusReasonEl.textContent = message;
+
+    categoriesGridEl.innerHTML = `<div class="empty-findings" style="grid-column: 1/-1;">診断データが読み込まれていません。</div>`;
+    findingsListEl.innerHTML = `<div class="empty-findings">${escapeHtml(message)}</div>`;
   }
 
   // 画面全体へのデータ反映
@@ -127,18 +141,27 @@ document.addEventListener("DOMContentLoaded", () => {
     categoryKeys.forEach(key => {
       const catData = categoriesObj[key] || {
         category_name: key,
-        score: 10.0,
+        score: 0.0,
+        evaluated: false,
         findings_count: 0,
-        summary: "データなし"
+        summary: "未評価"
       };
 
       const card = document.createElement("div");
       card.className = "category-card";
 
+      const evaluated = catData.evaluated !== false;
       const score = Number(catData.score || 0);
+
+      let scoreBadgeText = evaluated ? score.toFixed(1) : "N/A";
       let colorClass = "var(--color-safe)";
       let bgScoreClass = "var(--color-safe-bg)";
-      if (score < 5.0) {
+      let barWidth = evaluated ? (score * 10) : 0;
+
+      if (!evaluated) {
+        colorClass = "var(--text-dim)";
+        bgScoreClass = "rgba(255, 255, 255, 0.05)";
+      } else if (score < 5.0) {
         colorClass = "var(--color-danger)";
         bgScoreClass = "var(--color-danger-bg)";
       } else if (score < 7.5) {
@@ -146,19 +169,21 @@ document.addEventListener("DOMContentLoaded", () => {
         bgScoreClass = "var(--color-moderate-bg)";
       }
 
+      const countDisplay = catData.findings_count != null ? catData.findings_count : 0;
+
       card.innerHTML = `
         <div class="cat-header">
           <div class="cat-title">${escapeHtml(catData.category_name)}</div>
           <div class="cat-score-badge" style="color: ${colorClass}; background: ${bgScoreClass};">
-            ${score.toFixed(1)}
+            ${scoreBadgeText}
           </div>
         </div>
         <div class="cat-progress-bg">
-          <div class="cat-progress-bar" style="width: ${(score * 10)}%; background: ${colorClass};"></div>
+          <div class="cat-progress-bar" style="width: ${barWidth}%; background: ${colorClass};"></div>
         </div>
         <div class="cat-footer">
           <span>${escapeHtml(catData.summary || "")}</span>
-          <span class="findings-count-tag">${escapeHtml(catData.findings_count || 0)} 指摘</span>
+          <span class="findings-count-tag">${escapeHtml(countDisplay)} 指摘</span>
         </div>
       `;
 
@@ -197,17 +222,20 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
+    const ALLOWED_SEVS = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+
     filtered.forEach(f => {
       const card = document.createElement("div");
-      const sev = (f.severity || "INFO").toUpperCase();
-      card.className = `finding-card sev-${sev}`;
+      let rawSev = (f.severity || "INFO").toUpperCase();
+      let sevClass = ALLOWED_SEVS.includes(rawSev) ? rawSev : "INFO";
+      card.className = `finding-card sev-${sevClass}`;
 
       const targetHtml = f.target ? `<div class="finding-target">📄 ${escapeHtml(f.target)} ${f.location ? '(' + escapeHtml(f.location) + ')' : ''}</div>` : '';
       const remedHtml = f.remediation ? `<div class="finding-remediation">💡 対策案内: ${escapeHtml(f.remediation)}</div>` : '';
 
       card.innerHTML = `
         <div class="finding-meta">
-          <span class="sev-tag ${sev}">${sev}</span>
+          <span class="sev-tag ${sevClass}">${escapeHtml(rawSev)}</span>
           <span class="cat-pill">${escapeHtml(f.category || "")}</span>
           <span class="rule-id">${escapeHtml(f.rule_id || "")}</span>
           <span class="label-muted" style="margin-left: auto;">[${escapeHtml(f.source || "")}]</span>
@@ -223,36 +251,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function escapeHtml(str) {
-    if (!str) return "";
+    if (str === null || str === undefined) return "";
     return String(str)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
-  }
-
-  function getFallbackData() {
-    return {
-      repository_url: "https://github.com/ukimotodatascience/oss-security-risk-check-agent",
-      scanned_at: "2026-09-05 17:00:00 UTC",
-      overall_score: 7.8,
-      status: "安全",
-      status_reason: "全体としてセキュリティ対策・プロジェクト健全性が非常に良好です (7.8 点)。",
-      categories: {
-        known_vulnerabilities: { category_name: "既知脆弱性", score: 8.5, findings_count: 1, summary: "Trivyで1件のLow既知脆弱性検出" },
-        secrets: { category_name: "機密情報・Secret管理", score: 10.0, findings_count: 0, summary: "問題なし" },
-        misconfiguration: { category_name: "設定セキュリティ", score: 10.0, findings_count: 0, summary: "問題なし" },
-        dependencies: { category_name: "依存関係・Supply Chain", score: 7.0, findings_count: 1, summary: "Scorecard: 依存固定の向上を推薦" },
-        development: { category_name: "開発・変更管理", score: 9.0, findings_count: 0, summary: "Code Review / PR保護有効" },
-        cicd: { category_name: "CI/CD・リリースセキュリティ", score: 7.5, findings_count: 1, summary: "Scorecard: 最小権限トークン設定推奨" },
-        maintenance: { category_name: "プロジェクト保守体制", score: 9.0, findings_count: 0, summary: "SECURITY.md存在" },
-        source_code: { category_name: "ソースコードセキュリティ", score: 6.8, findings_count: 2, summary: "自作ルール: コード内改善点2件" }
-      },
-      all_findings: [
-        { category: "known_vulnerabilities", source: "trivy", rule_id: "CVE-2023-12345", severity: "LOW", title: "Minor dependency vulnerability", target: "package-lock.json", description: "Low severity vuln in demo dependency", remediation: "Update package to 1.2.3" },
-        { category: "source_code", source: "rule_based", rule_id: "RB-CMD-001", severity: "HIGH", title: "Command Injection Check", target: "src/utils/exec.py", location: "Line 15", description: "Subprocess shell call detected", remediation: "Avoid shell=True" }
-      ]
-    };
   }
 });

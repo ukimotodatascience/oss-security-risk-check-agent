@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from src.mvp_models import (
     CATEGORY_NAMES_JA,
@@ -17,8 +17,18 @@ class ScoringEngine:
     def __init__(self) -> None:
         pass
 
-    def evaluate(self, repo_url: str, findings: List[Finding]) -> OverallResult:
+    def evaluate(
+        self,
+        repo_url: str,
+        findings: List[Finding],
+        scanner_status: Optional[Dict[str, bool]] = None,
+    ) -> OverallResult:
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        status_map = scanner_status or {
+            "trivy": True,
+            "scorecard": True,
+            "rule_based": True,
+        }
 
         # カテゴリごとに Finding を分類
         cat_findings: Dict[Category, List[Finding]] = {cat: [] for cat in Category}
@@ -35,8 +45,9 @@ class ScoringEngine:
         for cat in Category:
             c_findings = cat_findings[cat]
             cat_name = CATEGORY_NAMES_JA.get(cat, cat.value)
+
             evaluated, score, summary, filtered_risk_findings = (
-                self._calculate_category_score(cat, c_findings)
+                self._calculate_category_score(cat, c_findings, status_map)
             )
 
             cat_res = CategoryResult(
@@ -77,30 +88,35 @@ class ScoringEngine:
         )
 
     def _calculate_category_score(
-        self, category: Category, findings: List[Finding]
+        self,
+        category: Category,
+        findings: List[Finding],
+        scanner_status: Dict[str, bool],
     ) -> Tuple[bool, float | None, str, List[Finding]]:
         """カテゴリごとの 0〜10 点スコア算出とリスク Finding のフィルタリング"""
-        scorecard_findings = [
-            f for f in findings if f.source == "scorecard" and f.raw_score is not None
-        ]
-
-        # 1. Scorecard 対象カテゴリの場合
+        # 1. Scorecard 対象カテゴリ
         if category in (
             Category.DEPENDENCIES,
             Category.DEVELOPMENT,
             Category.CICD,
             Category.MAINTENANCE,
         ):
+            if not scanner_status.get("scorecard", False):
+                return False, None, "Scorecard スキャナー未実行または評価不能です。", []
+
+            scorecard_findings = [
+                f
+                for f in findings
+                if f.source == "scorecard" and f.raw_score is not None
+            ]
             if not scorecard_findings:
-                # Scorecard スキャン未実行 / データなし
-                return False, None, "スキャナー未実行または評価不能です。", []
+                return False, None, "Scorecard 指標データが得られませんでした。", []
 
             raw_scores = [
                 f.raw_score for f in scorecard_findings if f.raw_score is not None
             ]
             base_score = sum(raw_scores) / len(raw_scores)
 
-            # リスク指摘 (7点未満かつ非INFO) のみを抽出し、高スコア合格項目はリスク一覧から除外
             risk_list = [
                 f
                 for f in findings
@@ -110,10 +126,25 @@ class ScoringEngine:
             summary = f"OpenSSF Scorecard 指標 {len(raw_scores)} 件から算出。"
             return True, max(0.0, min(10.0, base_score)), summary, risk_list
 
-        # 2. Trivy / Rule-based 対象カテゴリの場合
-        # アダプターが実行されデータが存在するか確認
-        # 完全にスキャナ非存在で空リストの場合は evaluated=False に対応
-        evaluated = True
+        # 2. Trivy 対象カテゴリ
+        if category in (
+            Category.KNOWN_VULNERABILITIES,
+            Category.SECRETS,
+            Category.MISCONFIGURATION,
+        ):
+            if not scanner_status.get("trivy", False):
+                return False, None, "Trivy スキャナー未実行または評価不能です。", []
+
+        # 3. ルールベース対象カテゴリ
+        if category == Category.SOURCE_CODE:
+            if not scanner_status.get("rule_based", False):
+                return (
+                    False,
+                    None,
+                    "ルールベーススキャナー未実行または評価不能です。",
+                    [],
+                )
+
         risk_list = [f for f in findings if f.severity.upper() != "INFO"]
 
         base = 10.0
@@ -143,7 +174,7 @@ class ScoringEngine:
         else:
             summary = f"指摘事項 {len(risk_list)} 件 (Critical:{critical_count}, High:{high_count}, Med:{medium_count}, Low:{low_count})"
 
-        return evaluated, final_score, summary, risk_list
+        return True, final_score, summary, risk_list
 
     def _determine_overall_status(
         self,
