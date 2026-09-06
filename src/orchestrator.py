@@ -240,8 +240,9 @@ class MVPOrchestrator:
             )
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
+        is_default_branch_ref = not target_ref or target_ref.strip().upper() == "HEAD"
         norm_subdir = _normalize_subdir(target_subdir)
-        if not target_ref and not norm_subdir:
+        if is_default_branch_ref and not norm_subdir:
             try:
                 scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
                 all_findings.extend(scorecard_findings)
@@ -497,14 +498,27 @@ class MVPOrchestrator:
                         getattr(scan_result, "loaded_rule_count", 0),
                     )
                     has_errors = bool(errors)
-                except (Exception, SystemExit) as e:
-                    logger.warning(f"Fallback SecurityScan.run() failed: {e}")
+                except SystemExit as e:
+                    logger.warning(f"Fallback SecurityScan.run() exited: {e}")
                     scan_result = None
                     records = []
                     errors = [
                         (
                             "NO-RULES-LOADED",
                             "Rule engine found 0 rules to execute.",
+                        )
+                    ]
+                    executed_count = 0
+                    has_errors = True
+                except Exception as e:
+                    logger.warning(f"Fallback SecurityScan.run() failed: {e}")
+                    scan_result = None
+                    records = []
+                    exc_type_name = type(e).__name__
+                    errors = [
+                        (
+                            "FALLBACK-SCAN-FAILED",
+                            f"Fallback scan failed: {exc_type_name}: {e}",
                         )
                     ]
                     executed_count = 0
@@ -754,6 +768,22 @@ class MVPOrchestrator:
                         )
                         continue
 
+                    if err_rule_id == "FALLBACK-SCAN-FAILED":
+                        if scanner_status is not None:
+                            scanner_status["rule_based"] = False
+                        findings.append(
+                            Finding(
+                                category=Category.SOURCE_CODE,
+                                source="rule_based",
+                                rule_id="FALLBACK-SCAN-FAILED-UNEVALUATED",
+                                severity="INFO",
+                                title="Fallback Scan Execution Failed",
+                                description=str(err_detail),
+                                remediation="Review target reference, network connection, or permissions.",
+                            )
+                        )
+                        continue
+
                     err_rule_str = str(err_rule_id)
                     if err_rule_str in rule_by_id:
                         raw_cat_str = str(rule_by_id[err_rule_str].category).lower()
@@ -885,8 +915,10 @@ class MVPOrchestrator:
         ):
             new_len = len(result_to_save.all_findings) // 2
             result_to_save.all_findings = result_to_save.all_findings[:new_len]
-            for cat_res in result_to_save.categories.values():
-                cat_res.findings = cat_res.findings[:new_len]
+            for cat_enum, cat_res in result_to_save.categories.items():
+                cat_res.findings = [
+                    f for f in result_to_save.all_findings if f.category == cat_enum
+                ]
             _sync_findings_counts(result_to_save)
             json_str = result_to_save.model_dump_json(indent=2)
 

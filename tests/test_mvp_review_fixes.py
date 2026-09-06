@@ -2147,3 +2147,139 @@ def test_target_options_initialized_before_snapshot_fetch_try_block(tmp_path):
         )
         assert result is not None
         assert result.status is not None
+
+
+def test_fallback_scan_general_exception_reported_as_cause():
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator()
+    scanner_status = {"rule_based": True}
+
+    with patch(
+        "src.scan.SecurityScan.run",
+        side_effect=RuntimeError("Connection refused to target host"),
+    ):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+            target_dir=None,
+        )
+        assert success is False
+        assert scanner_status["rule_based"] is False
+        fallback_errors = [
+            f for f in findings if f.rule_id == "FALLBACK-SCAN-FAILED-UNEVALUATED"
+        ]
+        assert len(fallback_errors) == 1
+        assert "Connection refused to target host" in fallback_errors[0].description
+
+
+def test_save_result_json_pass_2_keeps_categories_synced(tmp_path):
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import (
+        Category,
+        Finding,
+        OverallResult,
+        OverallStatus,
+        CategoryResult,
+    )
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    cat_secrets = CategoryResult(
+        category_name="secrets",
+        category=Category.SECRETS,
+        score=10.0,
+        evaluated=True,
+        findings=[],
+    )
+    cat_code = CategoryResult(
+        category_name="source_code",
+        category=Category.SOURCE_CODE,
+        score=10.0,
+        evaluated=True,
+        findings=[],
+    )
+
+    all_findings = []
+    # Add 100 secrets findings, 100 code findings with large descriptions
+    for i in range(100):
+        f = Finding(
+            category=Category.SECRETS,
+            source="rule_based",
+            rule_id=f"SEC-{i}",
+            severity="HIGH",
+            title=f"Secret {i}",
+            description="x" * 200000,
+        )
+        all_findings.append(f)
+        cat_secrets.findings.append(f)
+
+    for i in range(100):
+        f = Finding(
+            category=Category.SOURCE_CODE,
+            source="rule_based",
+            rule_id=f"CODE-{i}",
+            severity="MEDIUM",
+            title=f"Code {i}",
+            description="y" * 200000,
+        )
+        all_findings.append(f)
+        cat_code.findings.append(f)
+
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-06T00:00:00Z",
+        overall_score=10.0,
+        status=OverallStatus.SAFE,
+        categories={"secrets": cat_secrets, "source_code": cat_code},
+        all_findings=all_findings,
+    )
+
+    saved_path = orchestrator.save_result_json(result, output_dir=tmp_path)
+    assert saved_path.exists()
+
+    import json
+
+    with open(saved_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    all_ids = {f["rule_id"] for f in data["all_findings"]}
+    cat_secrets_ids = {f["rule_id"] for f in data["categories"]["secrets"]["findings"]}
+    cat_code_ids = {f["rule_id"] for f in data["categories"]["source_code"]["findings"]}
+
+    # All category findings MUST be subsets of all_findings!
+    assert cat_secrets_ids.issubset(all_ids)
+    assert cat_code_ids.issubset(all_ids)
+
+
+def test_scorecard_executed_when_ref_is_head(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": "HEAD",
+            "target_subdir": None,
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    with (
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(
+            orchestrator.scorecard_adapter, "run_scan", return_value=[]
+        ) as mock_scorecard,
+    ):
+        result = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert result is not None
+        mock_scorecard.assert_called_once()
