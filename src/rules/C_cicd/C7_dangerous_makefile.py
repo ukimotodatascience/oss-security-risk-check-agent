@@ -23,7 +23,7 @@ class C7DangerousMakefileRule:
         re.compile(r"\bdocker\s+run\b[^\n\r]*--privileged\b", re.IGNORECASE),
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         makefiles = [
             p
@@ -32,6 +32,8 @@ class C7DangerousMakefileRule:
         ]
 
         for mk in makefiles:
+            if len(records) >= max_records:
+                break
             try:
                 lines = mk.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -39,6 +41,8 @@ class C7DangerousMakefileRule:
 
             rel_path = str(mk.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
@@ -58,6 +62,8 @@ class C7DangerousMakefileRule:
                     continue
 
                 for pat in self._DANGEROUS_CMDS:
+                    if len(records) >= max_records:
+                        break
                     if pat.search(stripped):
                         records.append(
                             RiskRecord(

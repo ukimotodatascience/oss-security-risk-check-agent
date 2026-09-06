@@ -205,6 +205,9 @@ def test_run_all_b1_timeout_scoping(tmp_path, monkeypatch, caplog):
 
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("VULN_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("VULN_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("VULN_API_TIMEOUT_SEC", raising=False)
 
     # 35件の依存関係を含む requirements.txt を作成する
     req_file = tmp_path / "requirements.txt"
@@ -238,6 +241,9 @@ def test_run_all_b1_timeout_scoping_limit_300(tmp_path, monkeypatch, caplog):
 
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("VULN_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("VULN_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("VULN_API_TIMEOUT_SEC", raising=False)
 
     # 400件の依存関係を含む requirements.txt を作成する
     req_file = tmp_path / "requirements.txt"
@@ -262,6 +268,9 @@ def test_run_all_b1_timeout_scoping_recursive(tmp_path, monkeypatch, caplog):
 
     # RULE_TIMEOUT_SEC をアンセット状態にする
     monkeypatch.delenv("RULE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("VULN_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("VULN_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("VULN_API_TIMEOUT_SEC", raising=False)
 
     # 3階層下の深いディレクトリに 35件の依存関係を含む requirements.txt を作成する
     deep_dir = tmp_path / "apps" / "web" / "backend"

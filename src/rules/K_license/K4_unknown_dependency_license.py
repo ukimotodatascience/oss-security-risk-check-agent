@@ -26,7 +26,7 @@ class K4UnknownDependencyLicenseRule:
         "n/a",
     }
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         dep_licenses = collect_dependency_licenses(target)
         dep_decls = collect_dependency_declarations(target)
@@ -36,6 +36,8 @@ class K4UnknownDependencyLicenseRule:
         license_map = build_dependency_license_map(dep_licenses)
 
         for dep in dep_decls:
+            if len(records) >= max_records:
+                break
             lic = license_map.get(dep.name, "").strip()
             if not lic or lic.lower() in self._UNKNOWN_HINTS:
                 records.append(

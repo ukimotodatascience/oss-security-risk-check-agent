@@ -23,13 +23,15 @@ class C5DangerousWorkflowTriggersRule:
     )
     _SECRETS_PATTERN = re.compile(r"\$\{\{\s*secrets\.[A-Za-z0-9_]+\s*\}\}")
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 src = wf.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -38,6 +40,8 @@ class C5DangerousWorkflowTriggersRule:
             lines = src.splitlines()
             risky_line = None
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 low = line.strip().lower()
                 if any(event in low for event in self._RISKY_EVENTS):
                     risky_line = idx

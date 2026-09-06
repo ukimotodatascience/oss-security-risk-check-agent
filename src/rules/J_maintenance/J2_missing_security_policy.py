@@ -25,14 +25,18 @@ class J2MissingSecurityPolicyRule:
         r"(?is)(security|vulnerability|脆弱性).{0,120}(report|contact|連絡|報告|disclosure)"
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for rel in self._SECURITY_FILES:
+            if len(records) >= max_records:
+                break
             if (target / rel).is_file():
                 return records
 
         for readme_name in self._README_FILES:
+            if len(records) >= max_records:
+                break
             readme = target / readme_name
             if not readme.is_file():
                 continue

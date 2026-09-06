@@ -25,12 +25,14 @@ class B6UnusedDependenciesRule:
         "scikit-learn": "sklearn",
     }
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         py_imports = {x.lower() for x in collect_python_imports(target)}
         js_imports = {x.lower() for x in collect_js_imports(target)}
 
         for dep in collect_dependency_declarations(target):
+            if len(records) >= max_records:
+                break
             if dep.ecosystem == "python":
                 expected = self._KNOWN_PY_IMPORT_MAP.get(dep.name, dep.name).split(
                     ".", 1

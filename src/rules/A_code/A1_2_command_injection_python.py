@@ -28,9 +28,21 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
             if p.is_file():
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
+        seen_keys: set[tuple[str, int | None, str, str]] = set()
+
+        def _add_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message, str(rec.severity))
+            if key in seen_keys:
+                return False
+            seen_keys.add(key)
+            records.append(rec)
+            return True
+
         for py_file in self._iter_python_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -45,6 +57,8 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
             rel_path = str(py_file.relative_to(target))
 
             for scope in self._iter_analysis_scopes(tree):
+                if len(records) >= max_records:
+                    break
                 tainted_names = self._collect_tainted_names(
                     scope, aliases, taint_returning_functions
                 )
@@ -54,6 +68,8 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                 bool_bindings = self._collect_bool_bindings(scope)
 
                 for node in self._walk_scope_nodes(scope):
+                    if len(records) >= max_records:
+                        break
                     if not isinstance(node, ast.Call):
                         continue
 
@@ -81,7 +97,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                                 first_arg, (ast.Name, ast.Subscript, ast.Call)
                             )
                         ):
-                            records.append(
+                            _add_record(
                                 RiskRecord(
                                     rule_id=self.rule_id,
                                     category=self.category,
@@ -99,7 +115,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
 
                     if callee in self._PROCESS_EXEC_CALLS:
                         if has_external:
-                            records.append(
+                            _add_record(
                                 RiskRecord(
                                     rule_id=self.rule_id,
                                     category=self.category,
@@ -123,7 +139,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                             aliases,
                             taint_returning_functions,
                         ):
-                            records.append(
+                            _add_record(
                                 RiskRecord(
                                     rule_id=self.rule_id,
                                     category=self.category,
@@ -141,7 +157,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
 
                     shell_true = self._shell_true(node, bool_bindings)
                     if has_external and shell_true and is_string_build:
-                        records.append(
+                        _add_record(
                             RiskRecord(
                                 rule_id=self.rule_id,
                                 category=self.category,
@@ -160,7 +176,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                     if has_external and isinstance(
                         first_arg, (ast.Name, ast.Attribute, ast.Subscript)
                     ):
-                        records.append(
+                        _add_record(
                             RiskRecord(
                                 rule_id=self.rule_id,
                                 category=self.category,
@@ -183,7 +199,7 @@ class PythonCommandInjectionDetector(PythonSanitizerMixin, PythonSinkMixin):
                         and not shell_true
                         and isinstance(first_arg, (ast.List, ast.Tuple))
                     ):
-                        records.append(
+                        _add_record(
                             RiskRecord(
                                 rule_id=self.rule_id,
                                 category=self.category,

@@ -51,12 +51,14 @@ class D6MissingSecurityHeadersRule:
             if any(pat.search(full) for pat in self._TARGET_FILE_PATTERNS):
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         scanned = 0
         observed = {k: False for k in self._HEADER_PATTERNS}
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = file_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -64,6 +66,8 @@ class D6MissingSecurityHeadersRule:
 
             scanned += 1
             for key, pat in self._HEADER_PATTERNS.items():
+                if len(records) >= max_records:
+                    break
                 if pat.search(src):
                     observed[key] = True
 

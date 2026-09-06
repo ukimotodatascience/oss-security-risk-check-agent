@@ -15,13 +15,15 @@ class C2UnpinnedActionsRule:
     _SHA_PIN = re.compile(r"^[0-9a-fA-F]{40}$")
     _USES_LINE = re.compile(r"^\s*uses\s*:\s*([^\s#]+)")
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 lines = wf.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -29,6 +31,8 @@ class C2UnpinnedActionsRule:
 
             rel_path = str(wf.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 m = self._USES_LINE.match(line)
                 if not m:
                     continue

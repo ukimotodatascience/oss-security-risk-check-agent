@@ -120,10 +120,12 @@ class A7TemplateInjectionRule:
                                 changed = True
         return tainted
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for py_file in self._iter_py_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 src = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(src)
@@ -135,6 +137,8 @@ class A7TemplateInjectionRule:
             rel_path = str(py_file.relative_to(target))
 
             for node in ast.walk(tree):
+                if len(records) >= max_records:
+                    break
                 if not isinstance(node, ast.Call):
                     continue
                 callee = self._resolve_name(self._full_name(node.func), aliases)

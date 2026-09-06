@@ -24,7 +24,7 @@ class K1MissingLicenseRule:
         "none",
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         license_files = find_license_files(target)
@@ -45,6 +45,8 @@ class K1MissingLicenseRule:
             return records
 
         for file_path, lic in manifest_licenses:
+            if len(records) >= max_records:
+                break
             lower = lic.strip().lower()
             if any(marker in lower for marker in self._AMBIGUOUS_LICENSE_MARKERS):
                 records.append(

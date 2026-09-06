@@ -21,13 +21,15 @@ class C3ThirdPartyActionUsageRule:
         owner = target.split("@", 1)[0].split("/", 1)[0].lower()
         return owner not in {"actions", "github"}
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 lines = wf.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -36,6 +38,8 @@ class C3ThirdPartyActionUsageRule:
             third_party_count = 0
             first_line = None
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 m = self._USES_LINE.match(line)
                 if not m:
                     continue

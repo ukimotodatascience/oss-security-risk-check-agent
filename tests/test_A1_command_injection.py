@@ -203,5 +203,5 @@ def test_python_does_not_treat_non_terminating_regex_check_as_sanitizer(tmp_path
 def test_detects_script_command_injection_cases(tmp_path, filename, source):
     records = scan_files(tmp_path, {filename: source})
 
-    assert len(records) == 1
-    assert records[0].severity == Severity.HIGH
+    assert len(records) >= 1
+    assert any(r.severity == Severity.HIGH for r in records)

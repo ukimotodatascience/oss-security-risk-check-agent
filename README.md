@@ -31,6 +31,27 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+### 外部スキャナーのセットアップ (MVP モード利用時)
+
+MVP フルスキャン機能（`--mvp`）を利用する場合は、以下の外部ツールをインストールして PATH に配置することが推奨されます。外部ツールが存在しない場合、該当カテゴリは空結果（未評価）として処理されます。
+
+1. **Trivy** (既知脆弱性、機密情報、設定セキュリティの診断)
+   - **macOS**: `brew install trivy`
+   - **Linux (Debian/Ubuntu)**:
+     ```bash
+     sudo apt-get install wget apt-transport-https gnupg lsb-release
+     wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+     echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+     sudo apt-get update && sudo apt-get install trivy
+     ```
+   - **Windows**: `winget install AquaSecurity.Trivy` または Scoop / Binary
+   - 詳細: [Trivy Official Documentation](https://aquasecurity.github.io/trivy/latest/getting-started/installation/)
+
+2. **OpenSSF Scorecard** (開発プロセス、サプライチェーン、CI/CD の診断)
+   - **macOS / Linux**: `brew install scorecard`
+   - **Go 環境**: `go install github.com/ossf/scorecard/v4@latest`
+   - 詳細: [OpenSSF Scorecard Repository](https://github.com/ossf/scorecard)
+
 ### 環境変数設定
 
 `.env.example` をコピーして `.env` を作成します。
