@@ -1876,3 +1876,99 @@ def test_python_command_injection_deduplicates_at_insertion_time(tmp_path):
     detector = PythonCommandInjectionDetector()
     records = detector.evaluate(tmp_path, max_records=500)
     assert isinstance(records, list)
+
+
+def test_fallback_scan_path_empty_with_skipped_files_clears_records(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.models import RiskRecord, Severity
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    empty_scan_path = tmp_path / "empty_fallback"
+    empty_scan_path.mkdir()
+
+    mock_target = MagicMock()
+    mock_target.scan_path = empty_scan_path
+
+    # False positive record created by absence rule on empty dir
+    mock_rec = RiskRecord(
+        rule_id="K-1",
+        category="development",
+        severity=Severity.MEDIUM,
+        title="Missing LICENSE",
+        message="LICENSE file not found",
+    )
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = [mock_rec]
+    mock_scan_result.errors = []
+    mock_scan_result.target = mock_target
+    mock_scan_result.skipped_files = ("large_file.py",)
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+        )
+        assert success is False
+        assert scanner_status["rule_based"] is False
+        # K-1 absence finding MUST be cleared
+        k1_findings = [f for f in findings if f.rule_id == "K-1"]
+        assert len(k1_findings) == 0
+
+
+def test_save_result_json_does_not_mutate_original_result(tmp_path):
+    from src.mvp_models import (
+        Category,
+        CategoryResult,
+        Finding,
+        OverallResult,
+        OverallStatus,
+    )
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    # 50 findings with huge text fields
+    findings = [
+        Finding(
+            category=Category.KNOWN_VULNERABILITIES,
+            source="A" * 300,
+            rule_id="R" * 300,
+            severity="HIGH",
+            title="T" * 300,
+            location="L" * 300,
+            description="D" * 300,
+            remediation="REM" * 300,
+        )
+        for _ in range(50)
+    ]
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="Known Vulnerabilities",
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=list(findings),
+        findings_count=50,
+    )
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-06T15:00:00Z",
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=list(findings),
+        status=OverallStatus.SAFE,
+    )
+
+    out_file = orchestrator.save_result_json(
+        result, filename="test_immutability.json", output_dir=tmp_path
+    )
+    assert out_file.exists()
+
+    # The original result object MUST NOT have its text fields or findings count mutated!
+    assert len(result.all_findings) == 50
+    assert result.all_findings[0].description == "D" * 300
+    assert result.categories[Category.KNOWN_VULNERABILITIES].findings_count == 50

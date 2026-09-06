@@ -541,6 +541,18 @@ class MVPOrchestrator:
                             else skipped_list
                         )
                         if relevant_skipped:
+                            target_obj = getattr(scan_result, "target", None)
+                            scan_path = (
+                                getattr(target_obj, "scan_path", None)
+                                if target_obj
+                                else None
+                            )
+                            file_count = (
+                                sum(1 for p in scan_path.rglob("*") if p.is_file())
+                                if (scan_path and scan_path.exists())
+                                else None
+                            )
+
                             has_skipped_files = True
                             if scanner_status is not None:
                                 scanner_status["rule_based"] = False
@@ -556,6 +568,13 @@ class MVPOrchestrator:
                                         else str(cat).lower()
                                     )
                                     scanner_status[f"rule_based_{cat_key}"] = False
+
+                            if file_count == 0:
+                                logger.warning(
+                                    "Fallback scan path contains 0 files and all files were skipped due to size limits. Clearing rule records."
+                                )
+                                records = []
+
                             for cat in (
                                 Category.MISCONFIGURATION,
                                 Category.KNOWN_VULNERABILITIES,
@@ -573,6 +592,9 @@ class MVPOrchestrator:
                                         remediation="Review skipped files or increase fetch limits.",
                                     )
                                 )
+
+                            if file_count == 0:
+                                return findings, False
 
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
@@ -751,11 +773,16 @@ class MVPOrchestrator:
         filename: str = "scan_result.json",
         output_dir: Optional[Path] = None,
     ) -> Path:
+        import copy
+
         target_dir = output_dir or (self.project_root / "docs")
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / filename
 
-        json_str = result.model_dump_json(indent=2)
+        # Create isolated deep copy to prevent mutating the original caller's OverallResult object
+        result_to_save = copy.deepcopy(result)
+
+        json_str = result_to_save.model_dump_json(indent=2)
         MAX_FILE_BYTES = 10 * 1024 * 1024  # 10MB UI limit in docs/app.js
 
         def _truncate_finding(f: Finding, max_len: int = 200) -> None:
@@ -783,51 +810,58 @@ class MVPOrchestrator:
                 if isinstance(val, str) and len(val) > max_len:
                     setattr(res, attr, val[:max_len] + "...")
 
+        def _sync_findings_counts(res: OverallResult) -> None:
+            for cat_res in res.categories.values():
+                cat_res.findings_count = len(cat_res.findings)
+
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(
                 "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
-            _truncate_top_level_strings(result, 200)
+            _truncate_top_level_strings(result_to_save, 200)
             # Pass 1: truncate long text fields (including location, rule_id, source) to 200 chars
-            for f in result.all_findings:
+            for f in result_to_save.all_findings:
                 _truncate_finding(f, 200)
-            for cat_res in result.categories.values():
+            for cat_res in result_to_save.categories.values():
                 for f in cat_res.findings:
                     _truncate_finding(f, 200)
-            json_str = result.model_dump_json(indent=2)
+            json_str = result_to_save.model_dump_json(indent=2)
 
         # Pass 2: slice findings list until <= 10MB or 0 findings left
         while (
             len(json_str.encode("utf-8")) > MAX_FILE_BYTES
-            and len(result.all_findings) > 0
+            and len(result_to_save.all_findings) > 0
         ):
-            new_len = len(result.all_findings) // 2
-            result.all_findings = result.all_findings[:new_len]
-            for cat_res in result.categories.values():
+            new_len = len(result_to_save.all_findings) // 2
+            result_to_save.all_findings = result_to_save.all_findings[:new_len]
+            for cat_res in result_to_save.categories.values():
                 cat_res.findings = cat_res.findings[:new_len]
-            json_str = result.model_dump_json(indent=2)
+            _sync_findings_counts(result_to_save)
+            json_str = result_to_save.model_dump_json(indent=2)
 
         # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
-            _truncate_top_level_strings(result, 50)
-            for f in result.all_findings:
+            _truncate_top_level_strings(result_to_save, 50)
+            for f in result_to_save.all_findings:
                 _truncate_finding(f, 50)
-            for cat_res in result.categories.values():
+            for cat_res in result_to_save.categories.values():
                 for f in cat_res.findings:
                     _truncate_finding(f, 50)
                 if getattr(cat_res, "summary", None) and len(cat_res.summary) > 50:
                     cat_res.summary = cat_res.summary[:50] + "..."
-            json_str = result.model_dump_json(indent=2)
+            _sync_findings_counts(result_to_save)
+            json_str = result_to_save.model_dump_json(indent=2)
 
         encoded_bytes = json_str.encode("utf-8")
         if len(encoded_bytes) > MAX_FILE_BYTES:
             logger.warning(
                 "Scan result JSON exceeds 10MB after Pass 3. Clearing findings to guarantee limit."
             )
-            result.all_findings = []
-            for cat_res in result.categories.values():
+            result_to_save.all_findings = []
+            for cat_res in result_to_save.categories.values():
                 cat_res.findings = []
-            json_str = result.model_dump_json(indent=2)
+            _sync_findings_counts(result_to_save)
+            json_str = result_to_save.model_dump_json(indent=2)
             encoded_bytes = json_str.encode("utf-8")
 
         with open(target_path, "wb") as f:
