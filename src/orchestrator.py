@@ -854,8 +854,9 @@ class MVPOrchestrator:
                     )
                 ]
 
-            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when target_subdir is specified
-            if target_subdir:
+            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when a non-root target_subdir is specified
+            norm_sub = _normalize_subdir(target_subdir)
+            if norm_sub:
                 repo_root_rules = {"K-1", "J-2", "J-3", "J-7"}
                 findings = [
                     f

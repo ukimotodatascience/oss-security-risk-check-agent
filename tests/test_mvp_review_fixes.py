@@ -2433,3 +2433,38 @@ def test_scorecard_skipped_when_ref_is_lowercase_head_branch(tmp_path):
         assert result is not None
         # Scorecard should NOT be called because target_ref "head" is not exact "HEAD"
         mock_scorecard.assert_not_called()
+
+
+def test_repo_root_rules_retained_when_subdir_is_dot(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": ".", "output_dir": None},
+    )()
+    orchestrator.cli_options = mock_opts
+
+    rec_k1 = MagicMock(
+        category="development",
+        rule_id="K-1",
+        severity=MagicMock(value="MEDIUM"),
+        title="No license",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        with patch("src.rule_engine.run_all", return_value=([rec_k1], [], 1)):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status={"rule_based": True},
+                target_dir=tmp_path,
+            )
+
+    rule_ids = {f.rule_id for f in findings}
+    assert "K-1" in rule_ids
