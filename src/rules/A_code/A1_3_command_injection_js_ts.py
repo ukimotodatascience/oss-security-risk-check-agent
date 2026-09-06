@@ -52,6 +52,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
+        seen_ts_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
+
+        def _add_ts_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message or "", rec.severity)
+            if key not in seen_ts_keys:
+                seen_ts_keys.add(key)
+                records.append(rec)
+            return len(records) >= max_records
+
         for node in iter_ts_nodes(root):
             if len(records) >= max_records:
                 break
@@ -107,7 +116,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not is_known_sink:
                 continue
             if callee_tail in {"exec", "execSync"}:
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -117,10 +126,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=line,
                         message="External input reaches child_process command execution",
                     )
-                )
+                ):
+                    break
                 continue
             if callee_tail in {"execFile", "execFileSync", "fork"}:
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -130,11 +140,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=line,
                         message="External input reaches child_process file execution",
                     )
-                )
+                ):
+                    break
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
                 has_shell_true = "shell: true" in call_text or "shell:true" in call_text
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -146,7 +157,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if has_shell_true
                         else "External input reaches child_process spawn",
                     )
-                )
+                ):
+                    break
         return records
 
     def _evaluate_js_ts_file(
@@ -158,17 +170,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             src = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return records
-        tree_sitter_records = self._evaluate_js_ts_file_with_tree_sitter(
-            file_path, target, src, max_records=max_records
-        )
-        if tree_sitter_records is not None:
-            records.extend(tree_sitter_records)
-            if len(records) >= max_records:
-                return records[:max_records]
 
-        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = {
-            (r.file_path, r.line, r.message or "", r.severity) for r in records
-        }
+        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
 
         def _add_record(rec: RiskRecord) -> bool:
             key = (rec.file_path, rec.line, rec.message or "", rec.severity)
@@ -176,6 +179,14 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 seen_keys.add(key)
                 records.append(rec)
             return len(records) >= max_records
+
+        tree_sitter_records = self._evaluate_js_ts_file_with_tree_sitter(
+            file_path, target, src, max_records=max_records
+        )
+        if tree_sitter_records is not None:
+            for rec in tree_sitter_records:
+                if _add_record(rec):
+                    return records
 
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()

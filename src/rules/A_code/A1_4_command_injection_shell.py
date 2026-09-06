@@ -37,17 +37,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             src = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return records
-        tree_sitter_records = self._evaluate_shell_file_with_tree_sitter(
-            file_path, target, src, max_records=max_records
-        )
-
-        if tree_sitter_records is not None:
-            records.extend(tree_sitter_records)
-            if len(records) >= max_records:
-                return records[:max_records]
-        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = {
-            (r.file_path, r.line, r.message or "", r.severity) for r in records
-        }
+        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
 
         def _add_record(rec: RiskRecord) -> bool:
             key = (rec.file_path, rec.line, rec.message or "", rec.severity)
@@ -55,6 +45,15 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                 seen_keys.add(key)
                 records.append(rec)
             return len(records) >= max_records
+
+        tree_sitter_records = self._evaluate_shell_file_with_tree_sitter(
+            file_path, target, src, max_records=max_records
+        )
+
+        if tree_sitter_records is not None:
+            for rec in tree_sitter_records:
+                if _add_record(rec):
+                    return records
 
         tainted_names: Set[str] = set()
         lines = src.splitlines()
@@ -209,6 +208,15 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
+        seen_ts_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
+
+        def _add_ts_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message or "", rec.severity)
+            if key not in seen_ts_keys:
+                seen_ts_keys.add(key)
+                records.append(rec)
+            return len(records) >= max_records
+
         interesting_types = {
             "command",
             "command_substitution",
@@ -231,7 +239,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             if not self._shell_expands_external_input(text, tainted_names):
                 continue
             if re.search("\\beval\\b", text):
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -241,10 +249,11 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         line=line,
                         message="External input reaches shell eval",
                     )
-                )
+                ):
+                    break
                 continue
             if re.search("\\b(?:sh|bash|zsh|ksh)\\s+-c\\b", text):
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -254,12 +263,13 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         line=line,
                         message="External input reaches shell -c execution",
                     )
-                )
+                ):
+                    break
                 continue
             if getattr(node, "type", "") == "command_substitution" or re.search(
                 "\\$\\([^)]*\\$[^)]*\\)", text
             ):
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -269,7 +279,8 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
                         line=line,
                         message="External input reaches $() command substitution",
                     )
-                )
+                ):
+                    break
         return records
 
     def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:

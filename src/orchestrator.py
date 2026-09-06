@@ -679,7 +679,23 @@ class MVPOrchestrator:
                     else {}
                 )
                 errored_categories: set[Category] = set()
-                for err_rule_id, err_detail in errors:
+                for err_entry in errors:
+                    err_rule_id = err_entry[0]
+                    err_detail = err_entry[1]
+                    exc_type = getattr(err_entry, "exc_type", None) or (
+                        err_entry[2] if len(err_entry) > 2 and err_entry[2] else None
+                    )
+                    if not exc_type and err_detail:
+                        m = re.search(
+                            r"^(?:[a-zA-Z_][a-zA-Z0-9_]*\.)*([A-Z][A-Za-z0-9_]*(?:Error|Exception|Fault|Warning)?):",
+                            str(err_detail),
+                            re.MULTILINE,
+                        )
+                        if m:
+                            exc_type = m.group(1)
+                    if not exc_type:
+                        exc_type = "Rule execution error"
+
                     if err_rule_id == "GLOBAL_LIMIT":
                         if scanner_status is not None:
                             scanner_status["rule_based"] = False
@@ -725,19 +741,6 @@ class MVPOrchestrator:
                         err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
 
                     errored_categories.add(err_cat)
-
-                    err_lines = [
-                        ln.strip()
-                        for ln in (err_detail or "").splitlines()
-                        if ln.strip()
-                    ]
-                    last_line = err_lines[-1] if err_lines else ""
-                    exc_type = "Rule execution error"
-                    if last_line:
-                        parts = last_line.split(":", 1)
-                        candidate = parts[0].strip()
-                        if re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", candidate):
-                            exc_type = candidate
 
                     findings.append(
                         Finding(

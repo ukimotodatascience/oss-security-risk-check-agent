@@ -1972,3 +1972,67 @@ def test_save_result_json_does_not_mutate_original_result(tmp_path):
     assert len(result.all_findings) == 50
     assert result.all_findings[0].description == "D" * 300
     assert result.categories[Category.KNOWN_VULNERABILITIES].findings_count == 50
+
+
+def test_orchestrator_uses_structured_exc_type_without_traceback_parsing(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+    from src.rule_engine import RuleError
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    # Error message containing multiline text with secret pattern AKIA...
+    err_detail = (
+        "Traceback (most recent call last):\nValueError: failed\nAKIA1234567890ABCDEF"
+    )
+    mock_errors = [RuleError("A-1", err_detail, "ValueError")]
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = []
+    mock_scan_result.errors = mock_errors
+    mock_scan_result.skipped_files = ()
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+        )
+        unevaluated_findings = [f for f in findings if "A-1-UNEVALUATED" in f.rule_id]
+        assert len(unevaluated_findings) == 1
+        # Description MUST contain structured exception type 'ValueError' and MUST NOT contain 'AKIA'
+        assert "ValueError" in unevaluated_findings[0].description
+        assert "AKIA" not in unevaluated_findings[0].description
+
+
+def test_command_injection_js_ts_deduplicates_before_limit_check(tmp_path):
+    from unittest.mock import patch
+    from src.models import RiskRecord
+    from src.rules.A_code.A1_3_command_injection_js_ts import (
+        JsTsCommandInjectionDetector,
+    )
+
+    detector = JsTsCommandInjectionDetector()
+    rec1 = RiskRecord(
+        rule_id="A1_3",
+        category="source_code",
+        title="Cmd Inj",
+        severity=5,
+        file_path="app.js",
+        line=10,
+        message="External input reaches child_process command execution",
+    )
+    # 600 duplicates of rec1
+    mock_ts_records = [rec1] * 600
+
+    js_file = tmp_path / "app.js"
+    js_file.write_text("const cp = require('child_process'); cp.exec(input);")
+
+    with patch.object(
+        detector,
+        "_evaluate_js_ts_file_with_tree_sitter",
+        return_value=mock_ts_records,
+    ):
+        records = detector._evaluate_js_ts_file(js_file, tmp_path, max_records=500)
+        # Should deduplicate down to 1 record, NOT hit 500 records limit prematurely
+        assert len(records) == 1
