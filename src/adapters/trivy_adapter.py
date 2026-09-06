@@ -129,6 +129,31 @@ class TrivyAdapter:
                 if len(findings) >= max_findings:
                     truncated = True
                     break
+                pkg_name = vuln.get("PkgName", "")
+                installed_ver = vuln.get("InstalledVersion", "")
+                if pkg_name and installed_ver:
+                    loc = f"{pkg_name}@{installed_ver}"
+                elif pkg_name:
+                    loc = pkg_name
+                else:
+                    loc = installed_ver
+
+                raw_desc = vuln.get("Description", "")
+                if pkg_name and pkg_name.lower() not in raw_desc.lower():
+                    desc = f"Package: {pkg_name}\n{raw_desc}".strip()
+                else:
+                    desc = raw_desc
+
+                fixed_ver = vuln.get("FixedVersion")
+                if pkg_name and fixed_ver:
+                    remediation = f"Upgrade {pkg_name} to {fixed_ver}"
+                elif fixed_ver:
+                    remediation = f"Fixed in {fixed_ver}"
+                elif pkg_name:
+                    remediation = f"Upgrade {pkg_name}"
+                else:
+                    remediation = "Fixed version N/A"
+
                 findings.append(
                     Finding(
                         category=Category.KNOWN_VULNERABILITIES,
@@ -138,9 +163,9 @@ class TrivyAdapter:
                         title=vuln.get("Title")
                         or vuln.get("VulnerabilityID", "Vulnerability"),
                         target=target,
-                        location=vuln.get("InstalledVersion", ""),
-                        description=vuln.get("Description", ""),
-                        remediation=f"Fixed in {vuln.get('FixedVersion', 'N/A')}",
+                        location=loc,
+                        description=desc,
+                        remediation=remediation,
                     )
                 )
 

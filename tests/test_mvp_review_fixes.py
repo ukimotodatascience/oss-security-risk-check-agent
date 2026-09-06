@@ -582,7 +582,7 @@ def test_rule_evaluate_signatures_support_max_records():
         assert "max_records" in sig.parameters
 
 
-def test_rule_engine_exact_500_findings_triggers_global_limit():
+def test_rule_engine_exact_500_findings_does_not_trigger_global_limit():
     from pathlib import Path
     from concurrent.futures import Future
     from src.rule_engine import run_all
@@ -603,12 +603,12 @@ def test_rule_engine_exact_500_findings_triggers_global_limit():
         for _ in range(500)
     ]
     f500 = Future()
-    f500.set_result((True, mock_records_500, None))
+    f500.set_result((True, mock_records_500, False, None))
 
     with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f500):
         records, errors, executed = run_all(Path("."), rules=[rule])
         assert len(records) == 500
-        assert any(err[0] == "GLOBAL_LIMIT" for err in errors)
+        assert not any(err[0] == "GLOBAL_LIMIT" for err in errors)
 
 
 def test_orchestrator_excludes_b1_findings_when_trivy_succeeds():
@@ -750,3 +750,100 @@ def test_orchestrator_handles_skipped_file_object_safely():
             "https://github.com/owner/repo", save_to_docs=False
         )
         assert res is not None
+
+
+def test_is_in_subdir_nested_target_subdir():
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.targets.models import SkippedFile
+
+    orchestrator = MVPOrchestrator()
+    sf_nested = SkippedFile(path="repo-ref/services/api/big.bin", reason="size limit")
+    sf_other = SkippedFile(path="repo-ref/other/api/large.pdf", reason="size limit")
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch.return_value = Path(".")
+    mock_fetcher.skipped_files = (sf_nested, sf_other)
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+    ):
+        orchestrator.cli_options = type(
+            "Opt",
+            (),
+            {"target_ref": None, "target_subdir": "services/api", "output_dir": None},
+        )()
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        # Verify SKIPPED-FILES-LIMIT finding is present due to relevant skipped file in services/api
+        assert any(f.rule_id == "SKIPPED-FILES-LIMIT" for f in res.all_findings)
+
+
+def test_exact_500_rule_findings_not_truncated():
+    from pathlib import Path
+    from concurrent.futures import Future
+    from src import rule_engine
+    from src.models import RiskRecord, Severity
+    from src.rules.A_code.A8_unsafe_eval import A8UnsafeEvalRule
+
+    rule = A8UnsafeEvalRule()
+    mock_records_500 = [
+        RiskRecord(
+            rule_id=rule.rule_id,
+            category=rule.category,
+            title=rule.title,
+            severity=Severity.LOW,
+            file_path="foo.py",
+            line=1,
+            message="msg",
+        )
+        for _ in range(500)
+    ]
+    f500 = Future()
+    f500.set_result((True, mock_records_500, False, None))
+
+    with patch("concurrent.futures.ProcessPoolExecutor.submit", return_value=f500):
+        records, errors, executed = rule_engine.run_all(Path("."), rules=[rule])
+        assert len(records) == 500
+        assert not any(err[0] == "GLOBAL_LIMIT" for err in errors)
+
+
+def test_trivy_preserves_pkg_name():
+    from src.adapters.trivy_adapter import TrivyAdapter
+
+    adapter = TrivyAdapter()
+    data = {
+        "Results": [
+            {
+                "Target": "package-lock.json",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": "CVE-2022-24999",
+                        "PkgName": "express",
+                        "InstalledVersion": "4.17.1",
+                        "FixedVersion": "4.17.3",
+                        "Severity": "HIGH",
+                        "Title": "Prototype Pollution",
+                        "Description": "qs vulnerable to Prototype Pollution",
+                    }
+                ],
+            }
+        ]
+    }
+    findings = adapter.parse_json(data)
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.location == "express@4.17.1"
+    assert "express" in f.description
+    assert f.remediation == "Upgrade express to 4.17.3"

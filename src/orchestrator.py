@@ -93,9 +93,30 @@ class MVPOrchestrator:
                     p = (item.path if hasattr(item, "path") else str(item)).replace(
                         "\\", "/"
                     )
-                    norm_subdir = subdir.strip("/").lower()
-                    parts = [part for part in p.lower().split("/") if part]
-                    return norm_subdir in parts
+                    parts = [part for part in p.split("/") if part]
+                    if not parts:
+                        return False
+                    norm_subdir = subdir.replace("\\", "/").strip("/")
+                    if not norm_subdir:
+                        return True
+                    sub_lower = norm_subdir.lower()
+
+                    # Archive zip paths start with top-level directory (e.g. repo-ref/services/api/file.ext)
+                    # Candidate 1: relative path after stripping top-level archive directory
+                    rel_path = "/".join(parts[1:]) if len(parts) > 1 else ""
+                    if rel_path:
+                        rel_lower = rel_path.lower()
+                        if rel_lower == sub_lower or rel_lower.startswith(
+                            sub_lower + "/"
+                        ):
+                            return True
+
+                    # Candidate 2: raw path itself (if path was already relative)
+                    raw_lower = "/".join(parts).lower()
+                    if raw_lower == sub_lower or raw_lower.startswith(sub_lower + "/"):
+                        return True
+
+                    return False
 
                 relevant_skipped_files = (
                     [

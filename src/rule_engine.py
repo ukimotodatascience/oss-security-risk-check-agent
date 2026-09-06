@@ -494,8 +494,8 @@ def _evaluate_rule_in_process(
     target: Path,
     cache_dir: Path | None,
     cache_ttl: int | None,
-) -> Tuple[bool, List[RiskRecord], str | None]:
-    """子プロセス内でルールを評価し、(成功フラグ, 検知レコード, 例外詳細) を返す。"""
+) -> Tuple[bool, List[RiskRecord], bool, str | None]:
+    """子プロセス内でルールを評価し、(成功フラグ, 検知レコード, 打ち切りフラグ, 例外詳細) を返す。"""
     import copyreg
     import pickle
     import threading
@@ -512,15 +512,16 @@ def _evaluate_rule_in_process(
 
             sig = inspect.signature(rule.evaluate)
             if "max_records" in sig.parameters:
-                records = rule.evaluate(target, max_records=500)
+                records = rule.evaluate(target, max_records=501)
             else:
                 records = rule.evaluate(target)
-        if len(records) > 500:
+        is_truncated = len(records) > 500
+        if is_truncated:
             records = records[:500]
-        return True, records, None
+        return True, records, is_truncated, None
     except BaseException as e:
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        return False, [], tb
+        return False, [], False, tb
 
 
 _run_all_lock = threading.Lock()
@@ -545,12 +546,13 @@ def _evaluate_rule_thread(
     cache_dir: Path | None,
     cache_ttl: int | None,
     timeout_sec: float | None,
-) -> Tuple[str, List[RiskRecord], str | None, int, List[Tuple[int, str]]]:
+) -> Tuple[str, List[RiskRecord], bool, str | None, int, List[Tuple[int, str]]]:
     """1つのルールを個別のスレッドおよび個別の一時的 ProcessPoolExecutor で評価する。"""
     records: List[RiskRecord] = []
     error_tb: str | None = None
     executed_count = 1
     thread_logs: List[Tuple[int, str]] = []
+    is_truncated = False
 
     if _interrupted_event.is_set():
         raise RuntimeError("Scan interrupted")
@@ -657,8 +659,9 @@ def _evaluate_rule_thread(
                 cache_dir,
                 cache_ttl,
             )
-            success, found, tb = future.result(timeout=current_timeout)
+            success, found, is_trunc, tb = future.result(timeout=current_timeout)
             if success:
+                is_truncated = is_trunc
                 if found:
                     records.extend(found)
             else:
@@ -704,7 +707,7 @@ def _evaluate_rule_thread(
         else:
             _release_executor(executor)
 
-    return rule_id, records, error_tb, executed_count, thread_logs
+    return rule_id, records, is_truncated, error_tb, executed_count, thread_logs
 
 
 def run_all(
@@ -822,12 +825,18 @@ def run_all(
                     _run_callback(rule_id)
 
             records_by_rule: dict[str, List[RiskRecord]] = {}
+            rule_truncated_map: dict[str, bool] = {}
             for future in concurrent.futures.as_completed(futures):
                 rule_id = future_to_rule_id.get(future, "unknown")
                 try:
-                    rule_id_from_res, found_records, error_tb, count, thread_logs = (
-                        future.result()
-                    )
+                    (
+                        rule_id_from_res,
+                        found_records,
+                        is_trunc,
+                        error_tb,
+                        count,
+                        thread_logs,
+                    ) = future.result()
                     # ログメッセージをメインスレッド側で実際に出力
                     for level, msg in thread_logs:
                         logger.log(level, msg)
@@ -835,6 +844,8 @@ def run_all(
                     executed_count += count
                     if found_records:
                         records_by_rule[rule_id_from_res] = found_records
+                    if is_trunc:
+                        rule_truncated_map[rule_id_from_res] = True
                     if error_tb:
                         errors.append((rule_id_from_res, error_tb))
                     _run_callback(rule_id_from_res)
@@ -854,10 +865,10 @@ def run_all(
             truncated = False
             for rule in sorted_rules:
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
+                if rule_truncated_map.get(r_id, False):
+                    truncated = True
                 if r_id in records_by_rule:
                     rule_recs = records_by_rule[r_id]
-                    if len(rule_recs) >= max_limit:
-                        truncated = True
                     for rec in rule_recs:
                         if len(records) < max_limit:
                             records.append(rec)
@@ -872,6 +883,7 @@ def run_all(
                         )
                     )
                     break
+
         except BaseException as e:
             _interrupted_event.set()
             for f in futures:
