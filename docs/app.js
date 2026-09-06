@@ -33,6 +33,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const file = e.target.files[0];
       if (!file) return;
 
+      const loadId = ++currentLoadId;
       const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
       if (file.size > MAX_FILE_SIZE_BYTES) {
         alert("ファイルサイズが大きすぎます (上限: 10MB)。");
@@ -41,7 +42,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      const loadId = ++currentLoadId;
       const reader = new FileReader();
       reader.onload = (evt) => {
         if (loadId !== currentLoadId) return;
@@ -68,10 +68,19 @@ document.addEventListener("DOMContentLoaded", () => {
   // JSONデータのロード
   async function loadScanResult(url) {
     const loadId = ++currentLoadId;
+    const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
     try {
       const res = await fetch(url + "?t=" + Date.now());
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const data = await res.json();
+      const contentLength = res.headers.get("content-length");
+      if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE_BYTES) {
+        throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
+      }
+      const text = await res.text();
+      if (text.length > MAX_FILE_SIZE_BYTES) {
+        throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
+      }
+      const data = JSON.parse(text);
       if (loadId === currentLoadId) {
         renderScanResult(data);
       }

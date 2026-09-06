@@ -166,6 +166,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if len(records) >= max_records:
                 return records[:max_records]
 
+        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = {
+            (r.file_path, r.line, r.message or "", r.severity) for r in records
+        }
+
+        def _add_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message or "", rec.severity)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                records.append(rec)
+            return len(records) >= max_records
+
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
@@ -205,34 +216,30 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     tainted_names.add(var_name)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", stripped):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.MEDIUM,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process file execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.MEDIUM,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process file execution",
                     )
-                    if len(records) >= max_records:
+                    if _add_record(rec):
                         break
                 continue
             if self._is_known_third_party_shell_sink(stripped):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches shell command execution helper",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches shell command execution helper",
                     )
-                    if len(records) >= max_records:
+                    if _add_record(rec):
                         break
                 continue
             exec_names = child_process_sinks or {"exec", "execSync"}
@@ -246,18 +253,16 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
             ):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process command execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process command execution",
                     )
-                    if len(records) >= max_records:
+                    if _add_record(rec):
                         break
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
@@ -275,20 +280,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 has_shell_true = self._js_call_enables_shell(
                     stripped, shell_true_option_names
                 )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches child_process spawn with shell=true"
-                        if has_shell_true
-                        else "External input reaches child_process spawn",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches child_process spawn with shell=true"
+                    if has_shell_true
+                    else "External input reaches child_process spawn",
                 )
-                if len(records) >= max_records:
+                if _add_record(rec):
                     break
         return dedupe_records(records[:max_records])
 

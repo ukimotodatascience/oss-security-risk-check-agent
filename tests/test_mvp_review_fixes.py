@@ -985,8 +985,73 @@ def test_b1_known_vulnerabilities_caps_dependency_lookups():
         # Should query at most 500 dependencies in bulk_lookup
         query_list = mock_bulk.call_args[0][1]
         assert len(query_list) == 500
-        # Should append a truncation record so len(records) > 500
-        assert len(records) > 500
+        # Should append exactly one truncation record (records list length is 1 as pinned fake_deps had 0 vuln hits)
+        assert len(records) == 1
+        assert records[-1].file_path == "dependencies"
+        assert "打ち切りました" in records[-1].message
+
+
+def test_b1_deduplication_matches_primary_vuln_id(tmp_path):
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Finding, Category
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.skipped_files = []
+    mock_fetcher.fetch.return_value = tmp_path
+
+    # Trivy finding has CVE-2023-9999
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2023-9999",
+        severity="HIGH",
+        title="CVE-2023-9999",
+        description="Vulnerability description referencing GHSA-xxxx-yyyy-zzzz",
+    )
+
+    # B-1 finding has primary ID CVE-2023-9999, but description includes references to GHSA-xxxx-yyyy-zzzz
+    b1_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="B-1",
+        description="pkg 1.0 は既知脆弱性に該当する可能性があります [NVD:CVE-2023-9999] Summary refs: GHSA-xxxx-yyyy-zzzz",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(
+            orchestrator, "_run_rule_based_scan", return_value=([b1_finding], True)
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        # B-1 finding should be deduplicated based on primary ID match (CVE-2023-9999)
+        b1_results = [
+            f
+            for f in res.all_findings
+            if f.source == "rule_based" and f.rule_id == "B-1"
+        ]
+        assert len(b1_results) == 0
 
 
 def test_a1_3_command_injection_fallback_respects_max_records(tmp_path):

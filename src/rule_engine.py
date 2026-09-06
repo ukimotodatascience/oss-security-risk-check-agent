@@ -515,8 +515,10 @@ def _evaluate_rule_in_process(
                 records = rule.evaluate(target, max_records=501)
             else:
                 records = rule.evaluate(target)
-        is_truncated = len(records) > 500
-        if is_truncated:
+        is_truncated = len(records) > 500 or any(
+            "打ち切りました" in getattr(r, "message", "") for r in records
+        )
+        if len(records) > 500:
             records = records[:500]
         return True, records, is_truncated, None
     except BaseException as e:

@@ -264,18 +264,24 @@ class MVPOrchestrator:
                     and (f.rule_id == "B-1" or str(f.rule_id).startswith("B-1"))
                 )
                 if is_b1:
-                    text = f"{f.rule_id} {f.title} {f.description or ''}"
-                    b1_cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
-                    b1_ghsas = set(
-                        re.findall(
-                            r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}",
-                            text,
-                            re.IGNORECASE,
+                    text = f"{f.title} {f.description or ''}"
+                    main_m = re.search(r"\[[^\]]+:([A-Za-z0-9_-]+)\]", text)
+                    if main_m:
+                        main_id = main_m.group(1).upper()
+                        if main_id in trivy_vuln_ids:
+                            continue
+                    else:
+                        b1_cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
+                        b1_ghsas = set(
+                            re.findall(
+                                r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}",
+                                text,
+                                re.IGNORECASE,
+                            )
                         )
-                    )
-                    b1_ids = {v.upper() for v in (b1_cves | b1_ghsas)}
-                    if b1_ids and b1_ids.issubset(trivy_vuln_ids):
-                        continue
+                        b1_ids = {v.upper() for v in (b1_cves | b1_ghsas)}
+                        if b1_ids and any(v in trivy_vuln_ids for v in b1_ids):
+                            continue
                 filtered_findings.append(f)
             all_findings = filtered_findings
 

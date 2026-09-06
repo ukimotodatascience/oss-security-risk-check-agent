@@ -116,7 +116,9 @@ class B1KnownVulnerabilitiesRule:
                         )
                     )
 
-        if deps_truncated or len(records) > max_records:
+        if deps_truncated or len(records) >= max_records:
+            if len(records) >= max_records:
+                records = records[: max_records - 1]
             trunc_rec = RiskRecord(
                 rule_id=self.rule_id,
                 category=self.category,
@@ -127,7 +129,5 @@ class B1KnownVulnerabilitiesRule:
                 message=f"B-1: 依存関係の照会件数が上限 ({max_records}件) に達したため、残りの依存関係照会を打ち切りました。",
             )
             records.append(trunc_rec)
-            while len(records) <= max_records:
-                records.append(trunc_rec)
 
         return records
