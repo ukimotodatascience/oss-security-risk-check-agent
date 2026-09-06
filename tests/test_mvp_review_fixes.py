@@ -1823,6 +1823,12 @@ def test_scorecard_runs_when_subdir_normalizes_to_root():
     assert _normalize_subdir("foo/bar/../..") is None
     assert _normalize_subdir("src/backend") == "src/backend"
 
+    # Out of bounds and absolute paths MUST NOT normalize to None (repo root)
+    assert _normalize_subdir("../..") is not None
+    assert _normalize_subdir("/") is not None
+    assert _normalize_subdir("/etc/passwd") is not None
+    assert _normalize_subdir("a/../../b") is not None
+
 
 def test_save_result_json_truncates_top_level_strings(tmp_path):
     from src.mvp_models import Category, CategoryResult, OverallResult, OverallStatus

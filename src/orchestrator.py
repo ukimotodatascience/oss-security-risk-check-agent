@@ -18,14 +18,31 @@ logger = logging.getLogger(__name__)
 def _normalize_subdir(subdir: Optional[str]) -> Optional[str]:
     if not subdir:
         return None
-    parts = [pt for pt in subdir.replace("\\", "/").split("/") if pt and pt != "."]
+
+    raw_clean = subdir.replace("\\", "/").strip()
+    if not raw_clean or raw_clean == ".":
+        return None
+
+    is_absolute = raw_clean.startswith("/") or (
+        len(raw_clean) > 1 and raw_clean[1] == ":"
+    )
+
+    parts = [pt for pt in raw_clean.split("/") if pt and pt != "."]
     norm_parts: list[str] = []
+    is_out_of_bounds = is_absolute
+
     for pt in parts:
         if pt == "..":
             if norm_parts:
                 norm_parts.pop()
+            else:
+                is_out_of_bounds = True
         else:
             norm_parts.append(pt)
+
+    if is_out_of_bounds:
+        return subdir
+
     res = "/".join(norm_parts)
     return res if res else None
 
