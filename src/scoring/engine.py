@@ -56,7 +56,7 @@ class ScoringEngine:
                 score=round(score, 1) if score is not None else 0.0,
                 evaluated=evaluated,
                 findings_count=len(filtered_risk_findings),
-                findings=filtered_risk_findings,
+                findings=c_findings,
                 summary=summary,
             )
             category_results[cat.value] = cat_res
@@ -92,7 +92,7 @@ class ScoringEngine:
             status=status,
             status_reason=status_reason,
             categories=category_results,
-            all_findings=risk_findings,
+            all_findings=findings,
         )
 
     def _calculate_category_score(

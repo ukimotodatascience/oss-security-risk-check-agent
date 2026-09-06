@@ -118,10 +118,6 @@ class TrivyAdapter:
         truncated = False
 
         for result in results:
-            if len(findings) >= max_findings:
-                truncated = True
-                break
-
             target = result.get("Target", "")
 
             # 1. 既知脆弱性 (Vulnerabilities)
@@ -168,6 +164,8 @@ class TrivyAdapter:
                         remediation=remediation,
                     )
                 )
+            if truncated:
+                break
 
             # 2. Secret (Secrets)
             for secret in result.get("Secrets", []):
@@ -189,6 +187,8 @@ class TrivyAdapter:
                         remediation="Hardcoded secret should be removed and moved to environment variables or vault.",
                     )
                 )
+            if truncated:
+                break
 
             # 3. Misconfiguration (設定セキュリティ)
             for misconf in result.get("Misconfigurations", []):
@@ -207,6 +207,8 @@ class TrivyAdapter:
                         remediation=misconf.get("Resolution", ""),
                     )
                 )
+            if truncated:
+                break
 
         if truncated:
             for cat in (

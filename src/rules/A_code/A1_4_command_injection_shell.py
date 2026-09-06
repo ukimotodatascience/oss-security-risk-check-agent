@@ -38,8 +38,9 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         except (OSError, UnicodeDecodeError):
             return records
         tree_sitter_records = self._evaluate_shell_file_with_tree_sitter(
-            file_path, target, src
+            file_path, target, src, max_records=max_records
         )
+
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
             if len(records) >= max_records:
@@ -177,7 +178,7 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
         return False
 
     def _evaluate_shell_file_with_tree_sitter(
-        self, file_path: Path, target: Path, src: str
+        self, file_path: Path, target: Path, src: str, max_records: int = 500
     ) -> Optional[List[RiskRecord]]:
         """tree-sitter-bash が利用可能な場合、Shell の危険構文を構文木から補助検出する。"""
         parser = get_tree_sitter_parser(file_path.suffix.lower())
@@ -213,7 +214,10 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             key=lambda n: (getattr(n, "start_byte", 0), getattr(n, "end_byte", 0)),
         )
         for node in nodes:
+            if len(records) >= max_records:
+                break
             text = ts_node_text(src_bytes, node).strip()
+
             if not text or text.startswith("#"):
                 continue
             line = getattr(node, "start_point", (0, 0))[0] + 1

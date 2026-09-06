@@ -31,7 +31,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 yield p
 
     def _evaluate_js_ts_file_with_tree_sitter(
-        self, file_path: Path, target: Path, src: str
+        self, file_path: Path, target: Path, src: str, max_records: int = 500
     ) -> Optional[List[RiskRecord]]:
         """tree-sitter が利用可能な場合、JS/TS を構文木ベースで評価する。"""
         parser = get_tree_sitter_parser(file_path.suffix.lower())
@@ -53,6 +53,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         for node in iter_ts_nodes(root):
+            if len(records) >= max_records:
+                break
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
             if node_type in {
@@ -157,12 +159,13 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         except (OSError, UnicodeDecodeError):
             return records
         tree_sitter_records = self._evaluate_js_ts_file_with_tree_sitter(
-            file_path, target, src
+            file_path, target, src, max_records=max_records
         )
         if tree_sitter_records is not None:
             records.extend(tree_sitter_records)
             if len(records) >= max_records:
                 return records[:max_records]
+
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()

@@ -33,6 +33,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const file = e.target.files[0];
       if (!file) return;
 
+      const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        alert("ファイルサイズが大きすぎます (上限: 10MB)。");
+        renderErrorState("選択されたファイルサイズが上限 (10MB) を超えています。");
+        fileInputEl.value = "";
+        return;
+      }
+
       const loadId = ++currentLoadId;
       const reader = new FileReader();
       reader.onload = (evt) => {
@@ -78,7 +86,8 @@ document.addEventListener("DOMContentLoaded", () => {
   function validateScanData(data) {
     if (!data || typeof data !== "object" || Array.isArray(data)) return false;
     if (typeof data.repository_url !== "string") return false;
-    if (typeof data.overall_score !== "number" || isNaN(data.overall_score)) return false;
+    if (typeof data.overall_score !== "number" || !Number.isFinite(data.overall_score) || data.overall_score < 0 || data.overall_score > 10) return false;
+
     if (typeof data.status !== "string") return false;
     if (!data.categories || typeof data.categories !== "object" || Array.isArray(data.categories)) return false;
 

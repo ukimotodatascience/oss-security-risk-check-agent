@@ -287,8 +287,11 @@ def test_scorecard_deducts_other_rule_findings():
     )
     # Scorecard base score (10.0) minus HIGH rule finding (1.5) = 8.5
     assert res.categories["cicd"].score == 8.5
-    assert len(res.categories["cicd"].findings) == 1
-    assert res.categories["cicd"].findings[0].rule_id == "C1-CURL-PIPE-SHELL"
+    assert res.categories["cicd"].findings_count == 1
+    assert len(res.categories["cicd"].findings) == 2
+    assert any(
+        f.rule_id == "C1-CURL-PIPE-SHELL" for f in res.categories["cicd"].findings
+    )
 
 
 def test_rule_based_scan_with_target_dir(tmp_path):
@@ -847,3 +850,64 @@ def test_trivy_preserves_pkg_name():
     assert f.location == "express@4.17.1"
     assert "express" in f.description
     assert f.remediation == "Upgrade express to 4.17.3"
+
+
+def test_trivy_parse_json_empty_subsequent_results_not_truncated():
+    from src.adapters.trivy_adapter import TrivyAdapter
+
+    adapter = TrivyAdapter()
+    data = {
+        "Results": [
+            {
+                "Target": "package.json",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": f"CVE-2023-{i}",
+                        "Severity": "HIGH",
+                        "Title": f"Vuln {i}",
+                    }
+                    for i in range(500)
+                ],
+            },
+            {
+                "Target": "empty-file.json",
+                "Vulnerabilities": [],
+                "Secrets": [],
+                "Misconfigurations": [],
+            },
+        ]
+    }
+    findings, is_full_success = adapter.parse_json_with_status(data, max_findings=500)
+    assert len(findings) == 500
+    assert is_full_success is True
+    assert not any(f.rule_id == "TRIVY-FINDINGS-LIMIT-EXCEEDED" for f in findings)
+
+
+def test_scoring_engine_preserves_info_findings():
+    from src.scoring.engine import ScoringEngine
+    from src.mvp_models import Category, Finding
+
+    engine = ScoringEngine()
+    info_finding = Finding(
+        category=Category.SECRETS,
+        source="snapshot_fetcher",
+        rule_id="GIT-HISTORY-UNEVALUATED",
+        severity="INFO",
+        title="Git History Skipped",
+        description="Git history skipped",
+    )
+    result = engine.evaluate(
+        repo_url="https://github.com/owner/repo",
+        findings=[info_finding],
+        scanner_status={
+            "trivy": True,
+            "scorecard": True,
+            "rule_based": True,
+            "git_history": False,
+        },
+    )
+    assert any(f.rule_id == "GIT-HISTORY-UNEVALUATED" for f in result.all_findings)
+    assert any(
+        f.rule_id == "GIT-HISTORY-UNEVALUATED"
+        for f in result.categories[Category.SECRETS.value].findings
+    )
