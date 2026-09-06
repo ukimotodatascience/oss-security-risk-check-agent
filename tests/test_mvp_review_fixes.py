@@ -39,13 +39,14 @@ def test_trivy_adapter_local_path_mode():
         adapter.run_scan("/tmp/some_repo")
         cmd = mock_popen.call_args[0][0]
         assert cmd[1] == "fs"
-        assert cmd[4] == "/tmp/some_repo"
+        assert "--scanners" in cmd
+        assert cmd[-1] == "/tmp/some_repo"
 
         # Test URL triggers "repo" mode
         adapter.run_scan("https://github.com/owner/repo")
         cmd2 = mock_popen.call_args[0][0]
         assert cmd2[1] == "repo"
-        assert cmd2[4] == "https://github.com/owner/repo"
+        assert cmd2[-1] == "https://github.com/owner/repo"
 
 
 def test_main_cli_options_parse():
@@ -911,3 +912,78 @@ def test_scoring_engine_preserves_info_findings():
         f.rule_id == "GIT-HISTORY-UNEVALUATED"
         for f in result.categories[Category.SECRETS.value].findings
     )
+
+
+def test_is_in_subdir_normalizes_dot_segments():
+    from pathlib import Path
+    from unittest.mock import MagicMock
+    from src.orchestrator import MVPOrchestrator
+    from src.targets.models import SkippedFile
+
+    orchestrator = MVPOrchestrator()
+    sf_other = SkippedFile(path="repo-ref/other/big.bin", reason="size limit")
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch.return_value = Path(".")
+    mock_fetcher.skipped_files = (sf_other,)
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator.scorecard_adapter, "run_scan", return_value=[]),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+    ):
+        # Test target_subdir="services/../other"
+        orchestrator.cli_options = type(
+            "Opt",
+            (),
+            {
+                "target_ref": None,
+                "target_subdir": "services/../other",
+                "output_dir": None,
+            },
+        )()
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        assert any(f.rule_id == "SKIPPED-FILES-LIMIT" for f in res.all_findings)
+
+
+def test_b1_known_vulnerabilities_caps_dependency_lookups():
+    from pathlib import Path
+    from src.rules.B_dependencies.B1_known_vulnerabilities import (
+        B1KnownVulnerabilitiesRule,
+    )
+    from src.rules.B_dependencies._dependency_utils import DependencyDecl
+
+    rule = B1KnownVulnerabilitiesRule()
+    fake_deps = [
+        DependencyDecl(
+            ecosystem="npm",
+            name=f"pkg-{i}",
+            spec=f"1.0.{i}",
+            file_path="package.json",
+            line=i + 1,
+        )
+        for i in range(600)
+    ]
+
+    with (
+        patch(
+            "src.rules.B_dependencies.B1_known_vulnerabilities.collect_dependency_declarations",
+            return_value=fake_deps,
+        ),
+        patch.object(rule._lookup, "bulk_lookup", return_value={}) as mock_bulk,
+    ):
+        records = rule.evaluate(Path("."), max_records=500)
+        # Should query at most 500 dependencies in bulk_lookup
+        query_list = mock_bulk.call_args[0][1]
+        assert len(query_list) == 500
+        # Should append a truncation record so len(records) > 500
+        assert len(records) > 500

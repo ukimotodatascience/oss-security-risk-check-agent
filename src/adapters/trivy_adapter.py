@@ -28,7 +28,15 @@ class TrivyAdapter:
                 "http://"
             ) or repo_url_or_path.startswith("https://")
             scan_mode = "repo" if is_url else "fs"
-            cmd = [self.cli_path, scan_mode, "--format", "json"]
+            cmd = [
+                self.cli_path,
+                scan_mode,
+                "--format",
+                "json",
+                "--scanners",
+                "vuln,secret,misconfig",
+            ]
+
             if is_url and target_ref:
                 cmd.extend(["--branch", target_ref])
             cmd.append(repo_url_or_path)

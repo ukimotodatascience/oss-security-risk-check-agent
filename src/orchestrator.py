@@ -89,21 +89,37 @@ class MVPOrchestrator:
                     f"Fetched snapshot safely for Trivy scan at: {extracted_dir}"
                 )
 
-                def _is_in_subdir(item: Any, subdir: str) -> bool:
-                    p = (item.path if hasattr(item, "path") else str(item)).replace(
-                        "\\", "/"
-                    )
-                    parts = [part for part in p.split("/") if part]
-                    if not parts:
-                        return False
-                    norm_subdir = subdir.replace("\\", "/").strip("/")
-                    if not norm_subdir:
-                        return True
-                    sub_lower = norm_subdir.lower()
+                def _normalize_rel_path(p_str: str) -> str:
+                    parts = [
+                        pt
+                        for pt in p_str.replace("\\", "/").split("/")
+                        if pt and pt != "."
+                    ]
+                    norm_parts: list[str] = []
+                    for pt in parts:
+                        if pt == "..":
+                            if norm_parts:
+                                norm_parts.pop()
+                        else:
+                            norm_parts.append(pt)
+                    return "/".join(norm_parts)
 
-                    # Archive zip paths start with top-level directory (e.g. repo-ref/services/api/file.ext)
+                def _is_in_subdir(item: Any, subdir: str) -> bool:
+                    raw_path = item.path if hasattr(item, "path") else str(item)
+                    norm_item = _normalize_rel_path(raw_path)
+                    norm_sub = _normalize_rel_path(subdir)
+
+                    if not norm_sub:
+                        return True
+
+                    item_parts = [p for p in norm_item.split("/") if p]
+                    if not item_parts:
+                        return False
+
+                    sub_lower = norm_sub.lower()
+
                     # Candidate 1: relative path after stripping top-level archive directory
-                    rel_path = "/".join(parts[1:]) if len(parts) > 1 else ""
+                    rel_path = "/".join(item_parts[1:]) if len(item_parts) > 1 else ""
                     if rel_path:
                         rel_lower = rel_path.lower()
                         if rel_lower == sub_lower or rel_lower.startswith(
@@ -112,7 +128,7 @@ class MVPOrchestrator:
                             return True
 
                     # Candidate 2: raw path itself (if path was already relative)
-                    raw_lower = "/".join(parts).lower()
+                    raw_lower = "/".join(item_parts).lower()
                     if raw_lower == sub_lower or raw_lower.startswith(sub_lower + "/"):
                         return True
 

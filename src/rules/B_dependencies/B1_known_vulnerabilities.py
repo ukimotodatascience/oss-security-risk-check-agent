@@ -43,10 +43,16 @@ class B1KnownVulnerabilitiesRule:
         records: List[RiskRecord] = []
         deps = collect_dependency_declarations(target)
 
+        deps_truncated = False
+        if len(deps) > max_records:
+            deps = deps[:max_records]
+            deps_truncated = True
+
         pinned_deps_by_eco: dict[str, list[tuple[str, str]]] = {}
 
         for dep in deps:
             if len(records) >= max_records:
+                deps_truncated = True
                 break
             if not is_pinned(dep):
                 # カタログ条件: バージョン未固定で照合不能 → 注意
@@ -68,6 +74,7 @@ class B1KnownVulnerabilitiesRule:
 
         for ecosystem, dep_list in pinned_deps_by_eco.items():
             if len(records) >= max_records:
+                deps_truncated = True
                 break
             if hasattr(self._lookup, "bulk_lookup"):
                 query_list = [(dep.name, version) for dep, version in dep_list]
@@ -82,10 +89,12 @@ class B1KnownVulnerabilitiesRule:
 
             for dep, version in dep_list:
                 if len(records) >= max_records:
+                    deps_truncated = True
                     break
                 hits = bulk_results.get((dep.name, version), [])
                 for hit in hits:
                     if len(records) >= max_records:
+                        deps_truncated = True
                         break
                     refs = (
                         f" refs: {', '.join(hit.references[:2])}"
@@ -106,5 +115,19 @@ class B1KnownVulnerabilitiesRule:
                             ),
                         )
                     )
+
+        if deps_truncated or len(records) > max_records:
+            trunc_rec = RiskRecord(
+                rule_id=self.rule_id,
+                category=self.category,
+                title=self.title,
+                severity=Severity.LOW,
+                file_path="dependencies",
+                line=1,
+                message=f"B-1: 依存関係の照会件数が上限 ({max_records}件) に達したため、残りの依存関係照会を打ち切りました。",
+            )
+            records.append(trunc_rec)
+            while len(records) <= max_records:
+                records.append(trunc_rec)
 
         return records
