@@ -458,6 +458,11 @@ class MVPOrchestrator:
                 "license": Category.DEVELOPMENT,
                 "code": Category.SOURCE_CODE,
                 "source_code": Category.SOURCE_CODE,
+                "runtime": Category.SOURCE_CODE,
+                "crypto": Category.SOURCE_CODE,
+                "logging": Category.SOURCE_CODE,
+                "auth": Category.SOURCE_CODE,
+                "malware": Category.SOURCE_CODE,
             }
 
             for rec in records:
@@ -498,7 +503,7 @@ class MVPOrchestrator:
                             category=cat,
                             source="rule_based",
                             rule_id="FINDINGS-LIMIT-EXCEEDED",
-                            severity="LOW",
+                            severity="INFO",
                             title="Rule Findings Limit Exceeded",
                             description=f"Rule scan generated over {max_limit} findings. Truncated excess findings.",
                             remediation="Review findings or narrow scan scope.",
@@ -532,10 +537,11 @@ class MVPOrchestrator:
                             "D": Category.MISCONFIGURATION,
                             "E": Category.SOURCE_CODE,
                             "F": Category.SECRETS,
-                            "G": Category.MAINTENANCE,
-                            "H": Category.DEVELOPMENT,
-                            "J": Category.SOURCE_CODE,
-                            "K": Category.SOURCE_CODE,
+                            "G": Category.SOURCE_CODE,
+                            "H": Category.SOURCE_CODE,
+                            "I": Category.SOURCE_CODE,
+                            "J": Category.MAINTENANCE,
+                            "K": Category.DEVELOPMENT,
                             "L": Category.SOURCE_CODE,
                         }
                         err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
@@ -565,7 +571,7 @@ class MVPOrchestrator:
                         )
                     )
 
-            scan_success = not (len(records) == 0 and has_errors and not findings)
+            scan_success = not (len(records) == 0 and has_errors)
             return findings, scan_success
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")

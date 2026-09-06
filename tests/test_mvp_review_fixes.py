@@ -1570,7 +1570,7 @@ def test_rule_id_attribute_lookup_in_error_handling(tmp_path):
             "https://github.com/owner/repo",
             target_dir=tmp_path,
         )
-        assert success is True
+        assert success is False
         a1_err = [f for f in findings if f.rule_id == "A-1-UNEVALUATED"]
         assert len(a1_err) == 1
 
@@ -1601,3 +1601,33 @@ def test_fallback_scan_propagates_git_history_unevaluated(tmp_path):
         assert scanner_status["git_history"] is False
         git_findings = [f for f in findings if f.rule_id == "GIT-HISTORY-UNEVALUATED"]
         assert len(git_findings) == 2
+
+
+def test_rule_prefix_category_mappings_in_fallback(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    mock_errors = [
+        ("G-1", "RuntimeError: G failed"),
+        ("H-1", "ValueError: H failed"),
+        ("J-1", "KeyError: J failed"),
+        ("K-1", "TypeError: K failed"),
+    ]
+
+    with patch("src.rule_engine.run_all", return_value=([], mock_errors, 4)):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            target_dir=tmp_path,
+        )
+        assert success is False
+        g_finding = [f for f in findings if f.rule_id == "G-1-UNEVALUATED"][0]
+        h_finding = [f for f in findings if f.rule_id == "H-1-UNEVALUATED"][0]
+        j_finding = [f for f in findings if f.rule_id == "J-1-UNEVALUATED"][0]
+        k_finding = [f for f in findings if f.rule_id == "K-1-UNEVALUATED"][0]
+
+        assert g_finding.category == Category.SOURCE_CODE
+        assert h_finding.category == Category.SOURCE_CODE
+        assert j_finding.category == Category.MAINTENANCE
+        assert k_finding.category == Category.DEVELOPMENT
