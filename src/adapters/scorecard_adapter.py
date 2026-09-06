@@ -152,7 +152,7 @@ class ScorecardAdapter:
                     rule_id=f"SCORECARD-{name.upper()}",
                     severity=severity,
                     title=f"Scorecard: {name} (Score: {raw_score}/10)",
-                    description=f"{reason} {detail_str}".strip(),
+                    description=f"{reason} {detail_str}".strip()[:2000],
                     remediation=f"Improve OpenSSF Scorecard practice for {name}.",
                     raw_score=float(raw_score),
                 )

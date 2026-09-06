@@ -1631,3 +1631,85 @@ def test_rule_prefix_category_mappings_in_fallback(tmp_path):
         assert h_finding.category == Category.SOURCE_CODE
         assert j_finding.category == Category.MAINTENANCE
         assert k_finding.category == Category.DEVELOPMENT
+
+
+def test_errored_category_per_category_unevaluated_status(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    # B-1 record for DEPENDENCIES
+    mock_rec = MagicMock()
+    mock_rec.category = "known_vulnerabilities"
+    mock_rec.rule_id = "B-1"
+    mock_rec.severity.value = "HIGH"
+    mock_rec.title = "Vuln B-1"
+    mock_rec.file_path = "pom.xml"
+    mock_rec.line = 1
+    mock_rec.message = (
+        "pkg-x 1.0 は既知脆弱性に該当する可能性があります [GH:CVE-2024-0001]"
+    )
+
+    # A-1 error for SOURCE_CODE (all A rules failed)
+    mock_errors = [("A-1", "TimeoutError: A-1 timed out")]
+
+    with patch("src.rule_engine.run_all", return_value=([mock_rec], mock_errors, 1)):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+            target_dir=tmp_path,
+        )
+        assert success is True
+        assert scanner_status.get("rule_based_source_code") is False
+
+
+def test_trivy_dedup_runs_when_trivy_status_false(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2024-9999",
+        severity="HIGH",
+        title="Trivy CVE-2024-9999",
+        location="pkg-demo@1.0.0",
+        description="Package: pkg-demo\nHigh vulnerability",
+    )
+    b1_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="[GH:CVE-2024-9999] Vuln in pkg-demo",
+        description="pkg-demo 1.0.0 は既知脆弱性に該当する可能性があります [GH:CVE-2024-9999]",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=tmp_path,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], False),
+        ),
+        patch.object(
+            orchestrator,
+            "_run_rule_based_scan",
+            return_value=([b1_finding], True),
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        # B-1 finding MUST be deduplicated even though trivy status was False!
+        b1_findings = [f for f in res.all_findings if f.rule_id == "B-1"]
+        assert len(b1_findings) == 0

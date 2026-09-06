@@ -142,7 +142,7 @@ class TrivyAdapter:
                 else:
                     loc = installed_ver
 
-                raw_desc = vuln.get("Description", "")
+                raw_desc = vuln.get("Description", "")[:2000]
                 if pkg_name and pkg_name.lower() not in raw_desc.lower():
                     desc = f"Package: {pkg_name}\n{raw_desc}".strip()
                 else:
@@ -191,7 +191,9 @@ class TrivyAdapter:
                         title=title,
                         target=target,
                         location=f"Line {secret.get('StartLine', 0)}",
-                        description=f"Potential secret detected ({rule_id}: {title}). Match content redacted for security.",
+                        description=f"Potential secret detected ({rule_id}: {title}). Match content redacted for security."[
+                            :2000
+                        ],
                         remediation="Hardcoded secret should be removed and moved to environment variables or vault.",
                     )
                 )
@@ -211,7 +213,7 @@ class TrivyAdapter:
                         severity=misconf.get("Severity", "MEDIUM").upper(),
                         title=misconf.get("Title", "Configuration Issue"),
                         target=target,
-                        description=misconf.get("Description", ""),
+                        description=misconf.get("Description", "")[:2000],
                         remediation=misconf.get("Resolution", ""),
                     )
                 )

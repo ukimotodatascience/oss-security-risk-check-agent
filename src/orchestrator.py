@@ -236,8 +236,8 @@ class MVPOrchestrator:
             except Exception as e:
                 logger.error(f"Error during Rule-based fallback scan: {e}")
 
-        # Trivy 成功時は Trivy と重複する CVE/GHSA の B-1 ルール Finding のみを除外して二重減点を防止
-        if scanner_status.get("trivy"):
+        # Trivy 検出時は Trivy と重複する CVE/GHSA の B-1 ルール Finding を除外して二重減点を防止
+        if any(f.source == "trivy" for f in all_findings):
             import re
 
             trivy_vulns: set[tuple[str, str]] = set()
@@ -515,6 +515,7 @@ class MVPOrchestrator:
                     if "rules" in locals() and rules
                     else {}
                 )
+                errored_categories: set[Category] = set()
                 for err_rule_id, err_detail in errors:
                     if err_rule_id == "GLOBAL_LIMIT":
                         continue
@@ -546,6 +547,8 @@ class MVPOrchestrator:
                         }
                         err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
 
+                    errored_categories.add(err_cat)
+
                     err_lines = [
                         ln.strip()
                         for ln in (err_detail or "").splitlines()
@@ -571,6 +574,22 @@ class MVPOrchestrator:
                         )
                     )
 
+                record_categories = {
+                    f.category
+                    for f in findings
+                    if f.rule_id
+                    and not f.rule_id.endswith("-UNEVALUATED")
+                    and f.rule_id
+                    not in ("FINDINGS-LIMIT-EXCEEDED", "GIT-HISTORY-UNEVALUATED")
+                }
+                if scanner_status is not None:
+                    for ec in errored_categories:
+                        if ec not in record_categories:
+                            cat_key = (
+                                ec.value if hasattr(ec, "value") else str(ec).lower()
+                            )
+                            scanner_status[f"rule_based_{cat_key}"] = False
+
             scan_success = not (len(records) == 0 and has_errors)
             return findings, scan_success
         except Exception as e:
@@ -588,8 +607,23 @@ class MVPOrchestrator:
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / filename
 
+        json_str = result.model_dump_json(indent=2)
+        MAX_FILE_BYTES = 10 * 1024 * 1024  # 10MB UI limit in docs/app.js
+        if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
+            logger.warning(
+                "Scan result JSON exceeded 10MB limit. Truncating descriptions to fit."
+            )
+            for f in result.all_findings:
+                if f.description and len(f.description) > 300:
+                    f.description = f.description[:300] + "... (truncated)"
+            for cat_res in result.categories.values():
+                for f in cat_res.findings:
+                    if f.description and len(f.description) > 300:
+                        f.description = f.description[:300] + "... (truncated)"
+            json_str = result.model_dump_json(indent=2)
+
         with open(target_path, "w", encoding="utf-8") as f:
-            f.write(result.model_dump_json(indent=2))
+            f.write(json_str)
 
         logger.info(f"Saved scan result JSON to: {target_path}")
         return target_path

@@ -105,7 +105,12 @@ class ScoringEngine:
         is_primary_ok = True
         scanner_msg = ""
 
-        rule_based_ok = scanner_status.get("rule_based", False)
+        cat_key = (
+            category.value if hasattr(category, "value") else str(category).lower()
+        )
+        rule_based_ok = scanner_status.get("rule_based", False) and scanner_status.get(
+            f"rule_based_{cat_key}", True
+        )
         git_history_ok = scanner_status.get("git_history", True)
 
         # 1. Scorecard 対象カテゴリ
