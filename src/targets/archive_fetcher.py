@@ -118,7 +118,14 @@ class ArchiveSnapshotFetcher:
         norm_item = "/".join(norm_parts)
 
         sub_parts = [p for p in subdir.replace("\\", "/").split("/") if p and p != "."]
-        norm_sub = "/".join(sub_parts)
+        norm_sub_parts: list[str] = []
+        for pt in sub_parts:
+            if pt == "..":
+                if norm_sub_parts:
+                    norm_sub_parts.pop()
+            else:
+                norm_sub_parts.append(pt)
+        norm_sub = "/".join(norm_sub_parts)
         if not norm_sub:
             return True
 

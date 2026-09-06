@@ -1467,3 +1467,137 @@ def test_archive_fetcher_all_files_skipped_in_subdir(tmp_path):
             ret_dir = fetcher.fetch(spec, tmp_path)
             assert ret_dir.exists()
             assert ret_dir.name == "services"
+
+
+def test_archive_fetcher_is_in_subdir_normalizes_dot_dot():
+    from src.targets.archive_fetcher import ArchiveSnapshotFetcher, SkippedFile
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=1000000,
+        max_extracted_bytes=1000000,
+        max_files=1000,
+        max_single_file_bytes=1000000,
+        timeout_sec=30,
+    )
+    sf = SkippedFile(
+        path="repo-main/other/large.bin",
+        size_bytes=1000000,
+        reason="file_size_exceeded",
+    )
+    # subdir 'services/../other' should resolve to 'other' and match sf
+    assert fetcher._is_in_subdir(sf, "services/../other") is True
+
+
+def test_trivy_location_rsplit_scoped_npm_package(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    # Scoped package @babel/core@7.12.3
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2024-5555",
+        severity="HIGH",
+        title="Trivy Vuln",
+        location="@babel/core@7.12.3",
+        description="High vulnerability",
+    )
+    # B-1 for DIFFERENT package 'other-pkg' with same CVE-2024-5555
+    b1_finding_other = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="[GH:CVE-2024-5555] Vuln in other-pkg",
+        description="other-pkg 1.0.0 は既知脆弱性に該当する可能性があります [GH:CVE-2024-5555]",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=tmp_path,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(
+            orchestrator,
+            "_run_rule_based_scan",
+            return_value=([b1_finding_other], True),
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        b1_retained = [f for f in res.all_findings if f.rule_id == "B-1"]
+        # other-pkg MUST be retained because trivy was for @babel/core
+        assert len(b1_retained) == 1
+        assert "other-pkg" in b1_retained[0].description
+
+
+def test_rule_id_attribute_lookup_in_error_handling(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    # Mock rule class with rule_id attribute (NOT id)
+    mock_rule = MagicMock()
+    mock_rule.rule_id = "A-1"
+    mock_rule.category = "code"
+
+    mock_errors = [("A-1", "Traceback ...\nTimeoutError: Rule execution timed out")]
+
+    with (
+        patch("src.rule_engine.load_all_rules", return_value=[mock_rule]),
+        patch(
+            "src.rule_engine.run_all",
+            return_value=([], mock_errors, 1),
+        ),
+    ):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            target_dir=tmp_path,
+        )
+        assert success is True
+        a1_err = [f for f in findings if f.rule_id == "A-1-UNEVALUATED"]
+        assert len(a1_err) == 1
+
+
+def test_fallback_scan_propagates_git_history_unevaluated(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    mock_target = MagicMock()
+    mock_target.fetch_mode = "github_archive_zipball"
+    mock_target.local_dir = tmp_path
+
+    mock_scan_res = MagicMock()
+    mock_scan_res.records = []
+    mock_scan_res.errors = []
+    mock_scan_res.target = mock_target
+
+    scanner_status = {"git_history": True}
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_res):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+            target_dir=None,  # triggers fallback SecurityScan
+        )
+        assert scanner_status["git_history"] is False
+        git_findings = [f for f in findings if f.rule_id == "GIT-HISTORY-UNEVALUATED"]
+        assert len(git_findings) == 2

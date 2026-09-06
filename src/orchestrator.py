@@ -255,7 +255,10 @@ class MVPOrchestrator:
                     )
                     tf_pkg = ""
                     if f.location:
-                        tf_pkg = f.location.split("@")[0].strip().lower()
+                        if "@" in f.location:
+                            tf_pkg = f.location.rsplit("@", 1)[0].strip().lower()
+                        else:
+                            tf_pkg = f.location.strip().lower()
                     if not tf_pkg and f.description:
                         pm = re.search(
                             r"Package:\s*([^\s\n]+)", f.description, re.IGNORECASE
@@ -403,6 +406,33 @@ class MVPOrchestrator:
                 errors = getattr(scan_result, "errors", []) or []
                 has_errors = bool(errors)
 
+                target_obj = getattr(scan_result, "target", None)
+                is_zipball = (
+                    target_obj
+                    and getattr(target_obj, "fetch_mode", "")
+                    == "github_archive_zipball"
+                )
+                no_git = (
+                    target_obj
+                    and hasattr(target_obj, "local_dir")
+                    and target_obj.local_dir
+                    and not (target_obj.local_dir / ".git").exists()
+                )
+                if (is_zipball or no_git) and scanner_status is not None:
+                    scanner_status["git_history"] = False
+                    for cat in (Category.SECRETS, Category.MAINTENANCE):
+                        findings.append(
+                            Finding(
+                                category=cat,
+                                source="snapshot_fetcher",
+                                rule_id="GIT-HISTORY-UNEVALUATED",
+                                severity="INFO",
+                                title="Git History Check Skipped (Snapshot Only)",
+                                description="Scan performed on archive snapshot without .git directory. Commit history and deleted secrets were not evaluated.",
+                                remediation="Run scan on full git repository clone for commit history evaluation.",
+                            )
+                        )
+
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
 
@@ -476,7 +506,7 @@ class MVPOrchestrator:
                     )
             if errors:
                 rule_by_id = (
-                    {str(r.id): r for r in rules}
+                    {str(getattr(r, "rule_id", getattr(r, "id", ""))): r for r in rules}
                     if "rules" in locals() and rules
                     else {}
                 )
@@ -535,7 +565,8 @@ class MVPOrchestrator:
                         )
                     )
 
-            return findings, not has_errors
+            scan_success = not (len(records) == 0 and has_errors and not findings)
+            return findings, scan_success
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")
 
