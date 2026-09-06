@@ -2036,3 +2036,114 @@ def test_command_injection_js_ts_deduplicates_before_limit_check(tmp_path):
         records = detector._evaluate_js_ts_file(js_file, tmp_path, max_records=500)
         # Should deduplicate down to 1 record, NOT hit 500 records limit prematurely
         assert len(records) == 1
+
+
+def test_partial_rule_error_with_zero_records_does_not_fail_scan(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = []
+    mock_scan_result.errors = [("A-1", "TimeoutError")]
+    mock_scan_result.executed_rule_count = 50
+    mock_scan_result.skipped_files = ()
+    mock_scan_result.scanned_file_count = 10
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+        )
+        # 49 out of 50 rules succeeded (returned 0 findings). Scan overall MUST succeed.
+        assert success is True
+
+
+def test_fallback_scan_path_empty_using_scanned_file_count_clears_records(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.models import RiskRecord, Severity
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    deleted_scan_path = tmp_path / "deleted_dir"
+
+    mock_target = MagicMock()
+    mock_target.scan_path = deleted_scan_path
+
+    mock_rec = RiskRecord(
+        rule_id="K-1",
+        category="development",
+        severity=Severity.MEDIUM,
+        title="Missing LICENSE",
+        message="LICENSE file not found",
+    )
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = [mock_rec]
+    mock_scan_result.errors = []
+    mock_scan_result.target = mock_target
+    mock_scan_result.skipped_files = ("large_file.py",)
+    mock_scan_result.scanned_file_count = 0  # Pre-computed count before deletion!
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+        )
+        assert success is False
+        assert scanner_status["rule_based"] is False
+        # K-1 absence finding MUST be cleared because scanned_file_count == 0
+        k1_findings = [f for f in findings if f.rule_id == "K-1"]
+        assert len(k1_findings) == 0
+
+
+def test_fallback_zero_rules_loaded_returns_no_rules_finding(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    with patch("src.rule_engine.load_all_rules", return_value=[]):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+            target_dir=None,
+        )
+        assert success is False
+        assert scanner_status["rule_based"] is False
+        no_rules = [f for f in findings if f.rule_id == "NO-RULES-LOADED"]
+        assert len(no_rules) == 1
+
+
+def test_target_options_initialized_before_snapshot_fetch_try_block(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": "main",
+            "target_subdir": "sub",
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    # Force ScanConfig to raise an exception during snapshot fetch setup
+    with patch(
+        "src.config.ScanConfig.resolve_remote_fetch_limits",
+        side_effect=RuntimeError("Config failure"),
+    ):
+        # Must NOT raise UnboundLocalError! Should handle gracefully and return result.
+        result = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert result is not None
+        assert result.status is not None

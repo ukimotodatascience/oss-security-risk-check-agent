@@ -81,6 +81,14 @@ class MVPOrchestrator:
 
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
         # ArchiveSnapshotFetcher を使用して安全上限 (ダウンロード・解凍サイズ、ファイル数) を適用
+        target_ref = (
+            getattr(self.cli_options, "target_ref", None) if self.cli_options else None
+        )
+        target_subdir = (
+            getattr(self.cli_options, "target_subdir", None)
+            if self.cli_options
+            else None
+        )
         rule_scan_executed = False
         try:
             from src.config import ScanConfig
@@ -97,17 +105,6 @@ class MVPOrchestrator:
                 max_single_file_bytes=limits.max_single_file_bytes,
                 timeout_sec=limits.timeout_sec,
                 github_token=config.resolve_github_token(),
-            )
-
-            target_ref = (
-                getattr(self.cli_options, "target_ref", None)
-                if self.cli_options
-                else None
-            )
-            target_subdir = (
-                getattr(self.cli_options, "target_subdir", None)
-                if self.cli_options
-                else None
             )
 
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -395,6 +392,7 @@ class MVPOrchestrator:
         has_skipped_files = False
         try:
             from main import CliOptions
+            from src.rule_engine import load_all_rules, run_all
             from src.scan import SecurityScan
 
             target_ref = (
@@ -413,6 +411,7 @@ class MVPOrchestrator:
                 else None
             )
 
+            executed_count = 0
             if target_dir and target_dir.exists():
                 file_count = sum(1 for p in target_dir.rglob("*") if p.is_file())
                 has_skipped_in_status = bool(
@@ -448,7 +447,6 @@ class MVPOrchestrator:
                     return findings, False
 
                 from src.config import ScanConfig
-                from src.rule_engine import load_all_rules, run_all
                 from src.rules.B_dependencies.vuln_sources import VulnLookupService
 
                 config = ScanConfig(self.project_root, self.cli_options)
@@ -458,7 +456,7 @@ class MVPOrchestrator:
                     cache_dir=config.resolve_vuln_cache_dir(),
                     cache_ttl=config.resolve_vuln_cache_ttl(),
                 ):
-                    records, errors, _ = run_all(target_dir, rules)
+                    records, errors, executed_count = run_all(target_dir, rules)
                 has_errors = bool(errors)
 
                 if not rules:
@@ -489,10 +487,28 @@ class MVPOrchestrator:
                 scan_runner = SecurityScan(
                     self.project_root, cli_options=effective_opts, persist_report=False
                 )
-                scan_result = scan_runner.run()
-                records = scan_result.records
-                errors = getattr(scan_result, "errors", []) or []
-                has_errors = bool(errors)
+                try:
+                    scan_result = scan_runner.run()
+                    records = scan_result.records
+                    errors = getattr(scan_result, "errors", []) or []
+                    executed_count = getattr(
+                        scan_result,
+                        "executed_rule_count",
+                        getattr(scan_result, "loaded_rule_count", 0),
+                    )
+                    has_errors = bool(errors)
+                except (Exception, SystemExit) as e:
+                    logger.warning(f"Fallback SecurityScan.run() failed: {e}")
+                    scan_result = None
+                    records = []
+                    errors = [
+                        (
+                            "NO-RULES-LOADED",
+                            "Rule engine found 0 rules to execute.",
+                        )
+                    ]
+                    executed_count = 0
+                    has_errors = True
 
                 # 履歴・省略ファイルの情報を伝播
                 target_obj = getattr(scan_result, "target", None)
@@ -547,11 +563,21 @@ class MVPOrchestrator:
                                 if target_obj
                                 else None
                             )
-                            file_count = (
-                                sum(1 for p in scan_path.rglob("*") if p.is_file())
-                                if (scan_path and scan_path.exists())
-                                else None
+                            file_count = getattr(
+                                scan_result, "scanned_file_count", None
                             )
+                            if not isinstance(file_count, int) or isinstance(
+                                file_count, bool
+                            ):
+                                file_count = None
+
+                            if file_count is None and scan_path is not None:
+                                if scan_path.exists():
+                                    file_count = sum(
+                                        1 for p in scan_path.rglob("*") if p.is_file()
+                                    )
+                                else:
+                                    file_count = 0
 
                             has_skipped_files = True
                             if scanner_status is not None:
@@ -696,6 +722,22 @@ class MVPOrchestrator:
                     if not exc_type:
                         exc_type = "Rule execution error"
 
+                    if err_rule_id == "NO-RULES-LOADED":
+                        if scanner_status is not None:
+                            scanner_status["rule_based"] = False
+                        findings.append(
+                            Finding(
+                                category=Category.SOURCE_CODE,
+                                source="rule_based",
+                                rule_id="NO-RULES-LOADED",
+                                severity="INFO",
+                                title="No Security Rules Loaded",
+                                description="Rule engine found 0 rules to execute.",
+                                remediation="Ensure security rules are properly configured in project root.",
+                            )
+                        )
+                        continue
+
                     if err_rule_id == "GLOBAL_LIMIT":
                         if scanner_status is not None:
                             scanner_status["rule_based"] = False
@@ -759,10 +801,16 @@ class MVPOrchestrator:
                         cat_key = ec.value if hasattr(ec, "value") else str(ec).lower()
                         scanner_status[f"rule_based_{cat_key}"] = False
 
+            non_global_errors = [e for e in errors if e[0] != "GLOBAL_LIMIT"]
+            if not isinstance(executed_count, int) or isinstance(executed_count, bool):
+                executed_count = max(1, len(records) + len(errors))
+
+            all_rules_failed = (
+                executed_count == 0 or len(non_global_errors) >= executed_count
+            ) and len(records) == 0
+
             scan_success = not (
-                (len(records) == 0 and has_errors)
-                or has_global_limit
-                or has_skipped_files
+                all_rules_failed or has_global_limit or has_skipped_files
             )
             return findings, scan_success
         except Exception as e:
