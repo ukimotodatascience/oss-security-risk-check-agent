@@ -358,6 +358,7 @@ class MVPOrchestrator:
     ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
+        has_skipped_files = False
         try:
             from main import CliOptions
             from src.scan import SecurityScan
@@ -455,36 +456,56 @@ class MVPOrchestrator:
                         )
 
                 skipped = getattr(scan_result, "skipped_files", None)
-                if isinstance(skipped, list) and skipped:
-                    relevant_skipped = (
-                        [
-                            f
-                            for f in skipped
-                            if ArchiveSnapshotFetcher._is_in_subdir(f, target_subdir)
-                        ]
-                        if target_subdir
-                        else skipped
-                    )
-                    if relevant_skipped:
-                        if scanner_status is not None:
-                            scanner_status["rule_based"] = False
-                        for cat in (
-                            Category.MISCONFIGURATION,
-                            Category.KNOWN_VULNERABILITIES,
-                            Category.SECRETS,
-                            Category.SOURCE_CODE,
-                        ):
-                            findings.append(
-                                Finding(
-                                    category=cat,
-                                    source="snapshot_fetcher",
-                                    rule_id="SKIPPED-FILES-LIMIT",
-                                    severity="INFO",
-                                    title="Files Skipped Due to Limits",
-                                    description=f"Snapshot fetcher skipped {len(relevant_skipped)} files due to size limits.",
-                                    remediation="Review skipped files or increase fetch limits.",
+                if skipped and not isinstance(skipped, (str, bytes)):
+                    try:
+                        skipped_list = list(skipped)
+                    except Exception:
+                        skipped_list = []
+                    if skipped_list:
+                        relevant_skipped = (
+                            [
+                                f
+                                for f in skipped_list
+                                if ArchiveSnapshotFetcher._is_in_subdir(
+                                    f, target_subdir
                                 )
-                            )
+                            ]
+                            if target_subdir
+                            else skipped_list
+                        )
+                        if relevant_skipped:
+                            has_skipped_files = True
+                            if scanner_status is not None:
+                                scanner_status["rule_based"] = False
+                                for cat in (
+                                    Category.MISCONFIGURATION,
+                                    Category.KNOWN_VULNERABILITIES,
+                                    Category.SECRETS,
+                                    Category.SOURCE_CODE,
+                                ):
+                                    cat_key = (
+                                        cat.value
+                                        if hasattr(cat, "value")
+                                        else str(cat).lower()
+                                    )
+                                    scanner_status[f"rule_based_{cat_key}"] = False
+                            for cat in (
+                                Category.MISCONFIGURATION,
+                                Category.KNOWN_VULNERABILITIES,
+                                Category.SECRETS,
+                                Category.SOURCE_CODE,
+                            ):
+                                findings.append(
+                                    Finding(
+                                        category=cat,
+                                        source="snapshot_fetcher",
+                                        rule_id="SKIPPED-FILES-LIMIT",
+                                        severity="INFO",
+                                        title="Files Skipped Due to Limits",
+                                        description=f"Snapshot fetcher skipped {len(relevant_skipped)} files due to size limits.",
+                                        remediation="Review skipped files or increase fetch limits.",
+                                    )
+                                )
 
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
@@ -646,7 +667,11 @@ class MVPOrchestrator:
                         cat_key = ec.value if hasattr(ec, "value") else str(ec).lower()
                         scanner_status[f"rule_based_{cat_key}"] = False
 
-            scan_success = not ((len(records) == 0 and has_errors) or has_global_limit)
+            scan_success = not (
+                (len(records) == 0 and has_errors)
+                or has_global_limit
+                or has_skipped_files
+            )
             return findings, scan_success
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")
@@ -665,41 +690,53 @@ class MVPOrchestrator:
 
         json_str = result.model_dump_json(indent=2)
         MAX_FILE_BYTES = 10 * 1024 * 1024  # 10MB UI limit in docs/app.js
+
+        def _truncate_finding(f: Finding, max_len: int = 200) -> None:
+            for attr in (
+                "description",
+                "title",
+                "target",
+                "remediation",
+                "location",
+                "rule_id",
+                "source",
+            ):
+                val = getattr(f, attr, None)
+                if isinstance(val, str) and len(val) > max_len:
+                    setattr(f, attr, val[:max_len] + "...")
+
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(
                 "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
-            # Pass 1: truncate long text fields to 200 chars
+            # Pass 1: truncate long text fields (including location, rule_id, source) to 200 chars
             for f in result.all_findings:
-                if f.description and len(f.description) > 200:
-                    f.description = f.description[:200] + "..."
-                if f.title and len(f.title) > 200:
-                    f.title = f.title[:200] + "..."
-                if f.target and len(f.target) > 200:
-                    f.target = f.target[:200] + "..."
-                if f.remediation and len(f.remediation) > 200:
-                    f.remediation = f.remediation[:200] + "..."
+                _truncate_finding(f, 200)
             for cat_res in result.categories.values():
                 for f in cat_res.findings:
-                    if f.description and len(f.description) > 200:
-                        f.description = f.description[:200] + "..."
-                    if f.title and len(f.title) > 200:
-                        f.title = f.title[:200] + "..."
-                    if f.target and len(f.target) > 200:
-                        f.target = f.target[:200] + "..."
-                    if f.remediation and len(f.remediation) > 200:
-                        f.remediation = f.remediation[:200] + "..."
+                    _truncate_finding(f, 200)
             json_str = result.model_dump_json(indent=2)
 
-        # Pass 2: slice findings list if still > 10MB
+        # Pass 2: slice findings list until <= 10MB or 0 findings left
         while (
             len(json_str.encode("utf-8")) > MAX_FILE_BYTES
-            and len(result.all_findings) > 100
+            and len(result.all_findings) > 0
         ):
             new_len = len(result.all_findings) // 2
             result.all_findings = result.all_findings[:new_len]
             for cat_res in result.categories.values():
                 cat_res.findings = cat_res.findings[:new_len]
+            json_str = result.model_dump_json(indent=2)
+
+        # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
+        if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
+            for f in result.all_findings:
+                _truncate_finding(f, 50)
+            for cat_res in result.categories.values():
+                for f in cat_res.findings:
+                    _truncate_finding(f, 50)
+                if getattr(cat_res, "summary", None) and len(cat_res.summary) > 50:
+                    cat_res.summary = cat_res.summary[:50] + "..."
             json_str = result.model_dump_json(indent=2)
 
         with open(target_path, "w", encoding="utf-8") as f:

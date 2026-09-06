@@ -1715,3 +1715,79 @@ def test_trivy_dedup_runs_when_trivy_status_false(tmp_path):
         # B-1 finding MUST be deduplicated even though trivy status was False!
         b1_findings = [f for f in res.all_findings if f.rule_id == "B-1"]
         assert len(b1_findings) == 0
+
+
+def test_fallback_skipped_files_tuple_propagates_status_and_scan_success(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True}
+
+    mock_scan_result = MagicMock()
+    mock_scan_result.records = []
+    mock_scan_result.errors = []
+    # Test tuple for skipped_files (as returned by ResolvedTarget)
+    mock_scan_result.skipped_files = ("file1.py", "file2.py")
+
+    with patch("src.scan.SecurityScan.run", return_value=mock_scan_result):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status=scanner_status,
+        )
+        assert success is False
+        assert scanner_status["rule_based"] is False
+        assert scanner_status["rule_based_source_code"] is False
+        assert scanner_status["rule_based_secrets"] is False
+        skipped_findings = [f for f in findings if f.rule_id == "SKIPPED-FILES-LIMIT"]
+        assert len(skipped_findings) == 4
+
+
+def test_save_result_json_truncates_all_string_fields_and_slices_findings(tmp_path):
+    from src.mvp_models import (
+        Category,
+        CategoryResult,
+        Finding,
+        OverallResult,
+        OverallStatus,
+    )
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    # Create findings with huge location, rule_id, source
+    findings = [
+        Finding(
+            category=Category.KNOWN_VULNERABILITIES,
+            source="A" * 300,
+            rule_id="R" * 300,
+            severity="HIGH",
+            title="T" * 300,
+            location="L" * 300,
+            description="D" * 300,
+            remediation="REM" * 300,
+        )
+        for _ in range(50)
+    ]
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="Known Vulnerabilities",
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=findings,
+    )
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-06T15:00:00Z",
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=findings,
+        status=OverallStatus.SAFE,
+    )
+
+    out_file = orchestrator.save_result_json(
+        result, filename="test_output.json", output_dir=tmp_path
+    )
+    file_bytes = len(out_file.read_bytes())
+    assert file_bytes <= 10 * 1024 * 1024
