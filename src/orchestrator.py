@@ -159,7 +159,7 @@ class MVPOrchestrator:
                                 category=cat,
                                 source="snapshot_fetcher",
                                 rule_id="SKIPPED-FILES-LIMIT",
-                                severity="LOW",
+                                severity="INFO",
                                 title="Large Files Skipped During Fetch",
                                 description=f"{len(relevant_skipped_files)} file(s) in target scope were skipped due to size limits during snapshot fetch.",
                                 remediation="Review large files individually for secrets or vulnerabilities.",

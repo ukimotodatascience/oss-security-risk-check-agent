@@ -186,6 +186,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if buffer:
             statements.append((start_line, buffer))
         for i, stripped in statements:
+            if len(records) >= max_records:
+                break
             self._register_child_process_imports(stripped, child_process_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
@@ -214,6 +216,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             message="External input reaches child_process file execution",
                         )
                     )
+                    if len(records) >= max_records:
+                        break
                 continue
             if self._is_known_third_party_shell_sink(stripped):
                 if self._js_has_external_input(stripped, tainted_names):
@@ -228,6 +232,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             message="External input reaches shell command execution helper",
                         )
                     )
+                    if len(records) >= max_records:
+                        break
                 continue
             exec_names = child_process_sinks or {"exec", "execSync"}
             if any(
@@ -251,6 +257,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             message="External input reaches child_process command execution",
                         )
                     )
+                    if len(records) >= max_records:
+                        break
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if any(
@@ -280,7 +288,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         else "External input reaches child_process spawn",
                     )
                 )
-        return dedupe_records(records)
+                if len(records) >= max_records:
+                    break
+        return dedupe_records(records[:max_records])
 
     @staticmethod
     def _js_options_enable_shell(text: str) -> bool:

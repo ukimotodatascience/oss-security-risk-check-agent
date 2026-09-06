@@ -987,3 +987,62 @@ def test_b1_known_vulnerabilities_caps_dependency_lookups():
         assert len(query_list) == 500
         # Should append a truncation record so len(records) > 500
         assert len(records) > 500
+
+
+def test_a1_3_command_injection_fallback_respects_max_records(tmp_path):
+    from src.rules.A_code.A1_3_command_injection_js_ts import (
+        JsTsCommandInjectionDetector,
+    )
+
+    rule = JsTsCommandInjectionDetector()
+    # Generate a JS file with many exec calls that trigger regex fallback
+    lines = ['const execa = require("execa");']
+    for i in range(10):
+        lines.append(f"const input{i} = req.query.arg;")
+        lines.append(f"execa.command(input{i});")
+
+    js_file = tmp_path / "test.js"
+    js_file.write_text("\n".join(lines), encoding="utf-8")
+
+    # Force tree-sitter to return None so fallback path is executed
+    with patch.object(rule, "_evaluate_js_ts_file_with_tree_sitter", return_value=None):
+        records = rule._evaluate_js_ts_file(js_file, tmp_path, max_records=3)
+        assert len(records) <= 3
+
+
+def test_skipped_files_limit_severity_is_info(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+    mock_fetcher = MagicMock()
+    mock_fetcher.skipped_files = ["large.bin"]
+    mock_fetcher.fetch.return_value = tmp_path
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([], False),
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], False)),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        skipped_findings = [
+            f for f in res.all_findings if f.rule_id == "SKIPPED-FILES-LIMIT"
+        ]
+        assert len(skipped_findings) > 0
+        for f in skipped_findings:
+            assert f.severity == "INFO"
