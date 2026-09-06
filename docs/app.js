@@ -53,6 +53,12 @@ document.addEventListener("DOMContentLoaded", () => {
           renderErrorState("選択されたファイルの解析に失敗しました: " + err.message);
         }
       };
+      reader.onerror = () => {
+        if (loadId !== currentLoadId) return;
+        alert("ファイルの読み込み中にエラーが発生しました。");
+        renderErrorState("選択されたファイルの読み込み中にエラーが発生しました。");
+        fileInputEl.value = "";
+      };
       reader.readAsText(file);
     });
   }
@@ -76,10 +82,30 @@ document.addEventListener("DOMContentLoaded", () => {
       if (contentLength && parseInt(contentLength, 10) > MAX_FILE_SIZE_BYTES) {
         throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
       }
-      const text = await res.text();
-      if (text.length > MAX_FILE_SIZE_BYTES) {
-        throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
+
+      let text = "";
+      if (res.body && typeof res.body.getReader === "function") {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let totalBytes = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.byteLength;
+          if (totalBytes > MAX_FILE_SIZE_BYTES) {
+            reader.cancel();
+            throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
+          }
+          text += decoder.decode(value, { stream: true });
+        }
+        text += decoder.decode();
+      } else {
+        text = await res.text();
+        if (text.length > MAX_FILE_SIZE_BYTES) {
+          throw new Error("自動読み込みデータのサイズが上限 (10MB) を超えています。");
+        }
       }
+
       const data = JSON.parse(text);
       if (loadId === currentLoadId) {
         renderScanResult(data);

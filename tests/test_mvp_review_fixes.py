@@ -1111,3 +1111,61 @@ def test_skipped_files_limit_severity_is_info(tmp_path):
         assert len(skipped_findings) > 0
         for f in skipped_findings:
             assert f.severity == "INFO"
+
+
+def test_a1_4_command_injection_shell_fallback_deduplicates_findings(tmp_path):
+    from src.rules.A_code.A1_4_command_injection_shell import (
+        ShellCommandInjectionDetector,
+    )
+
+    rule = ShellCommandInjectionDetector()
+    lines = ["# shell script"]
+    for i in range(10):
+        lines.append(f'eval "echo $input{i}"')
+
+    sh_file = tmp_path / "test.sh"
+    sh_file.write_text("\n".join(lines), encoding="utf-8")
+
+    with patch.object(rule, "_evaluate_shell_file_with_tree_sitter", return_value=None):
+        records = rule._evaluate_shell_file(sh_file, tmp_path, max_records=3)
+        assert len(records) <= 3
+
+
+def test_orchestrator_serializes_rule_errors_as_info_findings(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.skipped_files = []
+    mock_fetcher.fetch.return_value = tmp_path
+
+    # Simulate run_all returning a rule execution error
+    mock_errors = [("A-8", "TimeoutError: Rule execution timed out after 30 seconds.")]
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([], True),
+        ),
+        patch("src.rule_engine.run_all", return_value=([], mock_errors, 1)),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        err_findings = [f for f in res.all_findings if f.rule_id == "A-8-UNEVALUATED"]
+        assert len(err_findings) == 1
+        assert err_findings[0].severity == "INFO"
+        assert "TimeoutError" in err_findings[0].description

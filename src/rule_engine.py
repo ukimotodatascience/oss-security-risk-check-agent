@@ -864,20 +864,25 @@ def run_all(
 
             # ルールの自然な順序（sorted_rulesの順）で結果レコードを結合（上限500件）
             max_limit = 500
-            truncated = False
+            global_limit_reached = False
             for rule in sorted_rules:
                 r_id = getattr(rule, "rule_id", type(rule).__name__)
                 if rule_truncated_map.get(r_id, False):
-                    truncated = True
+                    errors.append(
+                        (
+                            r_id,
+                            f"Rule {r_id} reached internal record limit and was truncated.",
+                        )
+                    )
                 if r_id in records_by_rule:
                     rule_recs = records_by_rule[r_id]
                     for rec in rule_recs:
                         if len(records) < max_limit:
                             records.append(rec)
                         else:
-                            truncated = True
+                            global_limit_reached = True
                             break
-                if truncated:
+                if global_limit_reached:
                     errors.append(
                         (
                             "GLOBAL_LIMIT",

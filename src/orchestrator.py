@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -376,7 +377,6 @@ class MVPOrchestrator:
 
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
-                return [], False
 
             # Finding 数上限チェック (500件上限)
             max_limit = 500
@@ -444,6 +444,42 @@ class MVPOrchestrator:
                             title="Rule Findings Limit Exceeded",
                             description=f"Rule scan generated over {max_limit} findings. Truncated excess findings.",
                             remediation="Review findings or narrow scan scope.",
+                        )
+                    )
+            if errors:
+                for err_rule_id, err_detail in errors:
+                    if err_rule_id == "GLOBAL_LIMIT":
+                        continue
+                    clean_msg = (
+                        err_detail.splitlines()[0]
+                        if err_detail
+                        else "Rule execution error"
+                    )
+                    clean_msg = re.sub(
+                        r"(ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|NVD_API_KEY=\S+|OSV_API_KEY=\S+|[A-Za-z0-9_-]{20,}=)",
+                        "[REDACTED]",
+                        clean_msg,
+                    )
+                    prefix = str(err_rule_id)[0].upper() if err_rule_id else ""
+                    prefix_to_cat = {
+                        "A": Category.SOURCE_CODE,
+                        "B": Category.DEPENDENCIES,
+                        "C": Category.CICD,
+                        "D": Category.DEVELOPMENT,
+                        "E": Category.SOURCE_CODE,
+                        "F": Category.SECRETS,
+                        "L": Category.SOURCE_CODE,
+                    }
+                    err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
+                    findings.append(
+                        Finding(
+                            category=err_cat,
+                            source="rule_based",
+                            rule_id=f"{err_rule_id}-UNEVALUATED",
+                            severity="INFO",
+                            title=f"Rule {err_rule_id} Execution Unevaluated",
+                            description=f"Rule {err_rule_id} failed during execution: {clean_msg[:200]}",
+                            remediation="Review rule execution settings, timeouts, or system resources.",
                         )
                     )
 
