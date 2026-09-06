@@ -418,8 +418,10 @@ def test_b1_rule_mapped_to_known_vulnerabilities():
         title="Vulnerable Dep",
         message="CVE-2023-1234",
     )
+    from unittest.mock import MagicMock
+
     with (
-        patch("src.rule_engine.load_all_rules", return_value=[]),
+        patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]),
         patch("src.rule_engine.run_all", return_value=([mock_rec], [], 1)),
     ):
         findings, success = orchestrator._run_rule_based_scan(

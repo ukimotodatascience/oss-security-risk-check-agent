@@ -9,6 +9,7 @@ from src.adapters.scorecard_adapter import ScorecardAdapter
 from src.adapters.trivy_adapter import TrivyAdapter
 from src.mvp_models import Category, Finding, OverallResult
 from src.scoring.engine import ScoringEngine
+from src.targets.archive_fetcher import ArchiveSnapshotFetcher
 from src.targets.url_validator import parse_github_repo_url
 
 logger = logging.getLogger(__name__)
@@ -384,12 +385,31 @@ class MVPOrchestrator:
 
                 config = ScanConfig(self.project_root, self.cli_options)
                 rules = load_all_rules(self.project_root)
+
                 with VulnLookupService.use_config(
                     cache_dir=config.resolve_vuln_cache_dir(),
                     cache_ttl=config.resolve_vuln_cache_ttl(),
                 ):
                     records, errors, _ = run_all(target_dir, rules)
                 has_errors = bool(errors)
+
+                if not rules:
+                    logger.warning("No security rules loaded from rule engine.")
+                    if scanner_status is not None:
+                        scanner_status["rule_based"] = False
+                    findings.append(
+                        Finding(
+                            category=Category.SOURCE_CODE,
+                            source="rule_based",
+                            rule_id="NO-RULES-LOADED",
+                            severity="INFO",
+                            title="No Security Rules Loaded",
+                            description="Rule engine found 0 rules to execute.",
+                            remediation="Ensure security rules are properly configured in project root.",
+                        )
+                    )
+                    if not records and not errors:
+                        return findings, False
             else:
                 effective_opts = CliOptions(
                     target_url=repo_url,
@@ -406,6 +426,7 @@ class MVPOrchestrator:
                 errors = getattr(scan_result, "errors", []) or []
                 has_errors = bool(errors)
 
+                # 履歴・省略ファイルの情報を伝播
                 target_obj = getattr(scan_result, "target", None)
                 is_zipball = (
                     target_obj
@@ -432,6 +453,38 @@ class MVPOrchestrator:
                                 remediation="Run scan on full git repository clone for commit history evaluation.",
                             )
                         )
+
+                skipped = getattr(scan_result, "skipped_files", None)
+                if isinstance(skipped, list) and skipped:
+                    relevant_skipped = (
+                        [
+                            f
+                            for f in skipped
+                            if ArchiveSnapshotFetcher._is_in_subdir(f, target_subdir)
+                        ]
+                        if target_subdir
+                        else skipped
+                    )
+                    if relevant_skipped:
+                        if scanner_status is not None:
+                            scanner_status["rule_based"] = False
+                        for cat in (
+                            Category.MISCONFIGURATION,
+                            Category.KNOWN_VULNERABILITIES,
+                            Category.SECRETS,
+                            Category.SOURCE_CODE,
+                        ):
+                            findings.append(
+                                Finding(
+                                    category=cat,
+                                    source="snapshot_fetcher",
+                                    rule_id="SKIPPED-FILES-LIMIT",
+                                    severity="INFO",
+                                    title="Files Skipped Due to Limits",
+                                    description=f"Snapshot fetcher skipped {len(relevant_skipped)} files due to size limits.",
+                                    remediation="Review skipped files or increase fetch limits.",
+                                )
+                            )
 
             if len(records) == 0 and has_errors:
                 logger.warning("Rule-based scan returned 0 records with errors.")
@@ -518,7 +571,21 @@ class MVPOrchestrator:
                 errored_categories: set[Category] = set()
                 for err_rule_id, err_detail in errors:
                     if err_rule_id == "GLOBAL_LIMIT":
+                        if scanner_status is not None:
+                            scanner_status["rule_based"] = False
+                        findings.append(
+                            Finding(
+                                category=Category.SOURCE_CODE,
+                                source="rule_based",
+                                rule_id="GLOBAL-LIMIT-EXCEEDED",
+                                severity="INFO",
+                                title="Rule Scan Global Limit Exceeded",
+                                description="Rule engine hit global limit of 500 records. Scan was truncated and remaining rules were skipped.",
+                                remediation="Review findings or narrow scan scope.",
+                            )
+                        )
                         continue
+
                     err_rule_str = str(err_rule_id)
                     if err_rule_str in rule_by_id:
                         raw_cat_str = str(rule_by_id[err_rule_str].category).lower()
@@ -574,23 +641,12 @@ class MVPOrchestrator:
                         )
                     )
 
-                record_categories = {
-                    f.category
-                    for f in findings
-                    if f.rule_id
-                    and not f.rule_id.endswith("-UNEVALUATED")
-                    and f.rule_id
-                    not in ("FINDINGS-LIMIT-EXCEEDED", "GIT-HISTORY-UNEVALUATED")
-                }
                 if scanner_status is not None:
                     for ec in errored_categories:
-                        if ec not in record_categories:
-                            cat_key = (
-                                ec.value if hasattr(ec, "value") else str(ec).lower()
-                            )
-                            scanner_status[f"rule_based_{cat_key}"] = False
+                        cat_key = ec.value if hasattr(ec, "value") else str(ec).lower()
+                        scanner_status[f"rule_based_{cat_key}"] = False
 
-            scan_success = not (len(records) == 0 and has_errors)
+            scan_success = not ((len(records) == 0 and has_errors) or has_global_limit)
             return findings, scan_success
         except Exception as e:
             logger.warning(f"Local rule-based scan skipped or failed: {e}")
@@ -611,15 +667,39 @@ class MVPOrchestrator:
         MAX_FILE_BYTES = 10 * 1024 * 1024  # 10MB UI limit in docs/app.js
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(
-                "Scan result JSON exceeded 10MB limit. Truncating descriptions to fit."
+                "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
+            # Pass 1: truncate long text fields to 200 chars
             for f in result.all_findings:
-                if f.description and len(f.description) > 300:
-                    f.description = f.description[:300] + "... (truncated)"
+                if f.description and len(f.description) > 200:
+                    f.description = f.description[:200] + "..."
+                if f.title and len(f.title) > 200:
+                    f.title = f.title[:200] + "..."
+                if f.target and len(f.target) > 200:
+                    f.target = f.target[:200] + "..."
+                if f.remediation and len(f.remediation) > 200:
+                    f.remediation = f.remediation[:200] + "..."
             for cat_res in result.categories.values():
                 for f in cat_res.findings:
-                    if f.description and len(f.description) > 300:
-                        f.description = f.description[:300] + "... (truncated)"
+                    if f.description and len(f.description) > 200:
+                        f.description = f.description[:200] + "..."
+                    if f.title and len(f.title) > 200:
+                        f.title = f.title[:200] + "..."
+                    if f.target and len(f.target) > 200:
+                        f.target = f.target[:200] + "..."
+                    if f.remediation and len(f.remediation) > 200:
+                        f.remediation = f.remediation[:200] + "..."
+            json_str = result.model_dump_json(indent=2)
+
+        # Pass 2: slice findings list if still > 10MB
+        while (
+            len(json_str.encode("utf-8")) > MAX_FILE_BYTES
+            and len(result.all_findings) > 100
+        ):
+            new_len = len(result.all_findings) // 2
+            result.all_findings = result.all_findings[:new_len]
+            for cat_res in result.categories.values():
+                cat_res.findings = cat_res.findings[:new_len]
             json_str = result.model_dump_json(indent=2)
 
         with open(target_path, "w", encoding="utf-8") as f:
