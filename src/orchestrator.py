@@ -240,7 +240,7 @@ class MVPOrchestrator:
             )
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
-        is_default_branch_ref = not target_ref or target_ref.strip().upper() == "HEAD"
+        is_default_branch_ref = not target_ref or target_ref.strip() == "HEAD"
         norm_subdir = _normalize_subdir(target_subdir)
         if is_default_branch_ref and not norm_subdir:
             try:
@@ -838,6 +838,38 @@ class MVPOrchestrator:
             all_rules_failed = (
                 executed_count == 0 or len(non_global_errors) >= executed_count
             ) and len(records) == 0
+
+            # Remove J-5 (release tag check) when git history is not evaluated / .git is missing
+            no_git = (target_dir and not (target_dir / ".git").exists()) or (
+                scanner_status is not None
+                and scanner_status.get("git_history") is False
+            )
+            if no_git:
+                findings = [
+                    f
+                    for f in findings
+                    if not (
+                        f.source == "rule_based"
+                        and (f.rule_id == "J-5" or str(f.rule_id).startswith("J-5"))
+                    )
+                ]
+
+            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when target_subdir is specified
+            if target_subdir:
+                repo_root_rules = {"K-1", "J-2", "J-3", "J-7"}
+                findings = [
+                    f
+                    for f in findings
+                    if not (
+                        f.source == "rule_based"
+                        and (
+                            f.rule_id in repo_root_rules
+                            or any(
+                                str(f.rule_id).startswith(r) for r in repo_root_rules
+                            )
+                        )
+                    )
+                ]
 
             scan_success = not (
                 all_rules_failed or has_global_limit or has_skipped_files

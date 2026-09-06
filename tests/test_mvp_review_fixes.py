@@ -2283,3 +2283,153 @@ def test_scorecard_executed_when_ref_is_head(tmp_path):
         )
         assert result is not None
         mock_scorecard.assert_called_once()
+
+
+def test_repo_root_rules_excluded_on_target_subdir_scan(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    (tmp_path / "sub").mkdir()
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "sub", "output_dir": None},
+    )()
+    orchestrator.cli_options = mock_opts
+
+    rec_k1 = MagicMock(
+        category="development",
+        rule_id="K-1",
+        severity=MagicMock(value="MEDIUM"),
+        title="No license",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+    rec_j2 = MagicMock(
+        category="maintenance",
+        rule_id="J-2",
+        severity=MagicMock(value="INFO"),
+        title="No policy",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+    rec_j3 = MagicMock(
+        category="maintenance",
+        rule_id="J-3",
+        severity=MagicMock(value="INFO"),
+        title="No template",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+    rec_j7 = MagicMock(
+        category="maintenance",
+        rule_id="J-7",
+        severity=MagicMock(value="INFO"),
+        title="No SBOM",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+    rec_a1 = MagicMock(
+        category="source_code",
+        rule_id="A-1",
+        severity=MagicMock(value="HIGH"),
+        title="Unsafe eval",
+        file_path="main.py",
+        line=10,
+        message="msg",
+    )
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        with patch(
+            "src.rule_engine.run_all",
+            return_value=([rec_k1, rec_j2, rec_j3, rec_j7, rec_a1], [], 5),
+        ):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status={"rule_based": True},
+                target_dir=tmp_path / "sub",
+            )
+
+    rule_ids = {f.rule_id for f in findings}
+    assert "K-1" not in rule_ids
+    assert "J-2" not in rule_ids
+    assert "J-3" not in rule_ids
+    assert "J-7" not in rule_ids
+    assert "A-1" in rule_ids
+
+
+def test_j5_release_tag_rule_excluded_when_no_git(tmp_path):
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    (tmp_path / "app").mkdir()
+    # tmp_path / "app" does NOT have .git
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        rec_j5 = MagicMock(
+            category="maintenance",
+            rule_id="J-5",
+            severity=MagicMock(value="MEDIUM"),
+            title="No release tag",
+            file_path=".",
+            line=1,
+            message="msg",
+        )
+        rec_a1 = MagicMock(
+            category="source_code",
+            rule_id="A-1",
+            severity=MagicMock(value="HIGH"),
+            title="Unsafe eval",
+            file_path="main.py",
+            line=10,
+            message="msg",
+        )
+        with patch("src.rule_engine.run_all", return_value=([rec_j5, rec_a1], [], 2)):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status={"git_history": False},
+                target_dir=tmp_path / "app",
+            )
+
+    rule_ids = {f.rule_id for f in findings}
+    assert "J-5" not in rule_ids
+    assert "A-1" in rule_ids
+
+
+def test_scorecard_skipped_when_ref_is_lowercase_head_branch(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": "head",  # lowercase "head" branch
+            "target_subdir": None,
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    with (
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(
+            orchestrator.scorecard_adapter, "run_scan", return_value=[]
+        ) as mock_scorecard,
+    ):
+        result = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert result is not None
+        # Scorecard should NOT be called because target_ref "head" is not exact "HEAD"
+        mock_scorecard.assert_not_called()
