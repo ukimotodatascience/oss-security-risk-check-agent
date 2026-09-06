@@ -957,6 +957,7 @@ def test_is_in_subdir_normalizes_dot_segments():
 
 def test_b1_known_vulnerabilities_caps_dependency_lookups():
     from pathlib import Path
+    from src.models import Severity
     from src.rules.B_dependencies.B1_known_vulnerabilities import (
         B1KnownVulnerabilitiesRule,
     )
@@ -989,6 +990,7 @@ def test_b1_known_vulnerabilities_caps_dependency_lookups():
         assert len(records) == 1
         assert records[-1].file_path == "dependencies"
         assert "打ち切りました" in records[-1].message
+        assert records[-1].severity == Severity.INFO
 
 
 def test_b1_deduplication_matches_primary_vuln_id(tmp_path):
@@ -1146,8 +1148,13 @@ def test_orchestrator_serializes_rule_errors_as_info_findings(tmp_path):
     mock_fetcher.skipped_files = []
     mock_fetcher.fetch.return_value = tmp_path
 
-    # Simulate run_all returning a rule execution error
-    mock_errors = [("A-8", "TimeoutError: Rule execution timed out after 30 seconds.")]
+    # Simulate run_all returning a rule execution traceback
+    mock_errors = [
+        (
+            "A-8",
+            'Traceback (most recent call last):\n  File "rule.py", line 10, in evaluate\nTimeoutError: Rule execution timed out after 30 seconds.',
+        )
+    ]
 
     with (
         patch(

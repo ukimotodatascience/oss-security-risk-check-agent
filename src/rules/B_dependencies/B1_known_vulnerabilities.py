@@ -123,7 +123,7 @@ class B1KnownVulnerabilitiesRule:
                 rule_id=self.rule_id,
                 category=self.category,
                 title=self.title,
-                severity=Severity.LOW,
+                severity=Severity.INFO,
                 file_path="dependencies",
                 line=1,
                 message=f"B-1: 依存関係の照会件数が上限 ({max_records}件) に達したため、残りの依存関係照会を打ち切りました。",

@@ -450,11 +450,12 @@ class MVPOrchestrator:
                 for err_rule_id, err_detail in errors:
                     if err_rule_id == "GLOBAL_LIMIT":
                         continue
-                    clean_msg = (
-                        err_detail.splitlines()[0]
-                        if err_detail
-                        else "Rule execution error"
-                    )
+                    err_lines = [
+                        ln.strip()
+                        for ln in (err_detail or "").splitlines()
+                        if ln.strip()
+                    ]
+                    clean_msg = err_lines[-1] if err_lines else "Rule execution error"
                     clean_msg = re.sub(
                         r"(ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|NVD_API_KEY=\S+|OSV_API_KEY=\S+|[A-Za-z0-9_-]{20,}=)",
                         "[REDACTED]",

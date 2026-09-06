@@ -216,17 +216,11 @@ class ShellCommandInjectionDetector(ShellSourceMixin):
             "redirected_statement",
             "variable_assignment",
         }
-        nodes = sorted(
-            [
-                n
-                for n in iter_ts_nodes(root)
-                if getattr(n, "type", "") in interesting_types
-            ],
-            key=lambda n: (getattr(n, "start_byte", 0), getattr(n, "end_byte", 0)),
-        )
-        for node in nodes:
+        for node in iter_ts_nodes(root):
             if len(records) >= max_records:
                 break
+            if getattr(node, "type", "") not in interesting_types:
+                continue
             text = ts_node_text(src_bytes, node).strip()
 
             if not text or text.startswith("#"):
