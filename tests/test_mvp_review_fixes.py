@@ -1281,3 +1281,189 @@ def test_js_app_findings_limits_defined():
     content = js_file.read_text(encoding="utf-8")
     assert "if (findingsArray.length > 10000) return false;" in content
     assert "const MAX_RENDER_FINDINGS = 1000;" in content
+
+
+def test_rule_error_category_mapping_and_sanitization(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.skipped_files = []
+    mock_fetcher.fetch.return_value = tmp_path
+
+    # Simulate errors for B-1 and D-1 rules
+    mock_errors = [
+        ("B-1", "Traceback ...\n  File 'x.py'\nValueError: Bad value secret=AKIA12345"),
+        ("D-1", "Traceback ...\nTimeoutError: Rule execution timed out"),
+    ]
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([], True),
+        ),
+        patch("src.rule_engine.run_all", return_value=([], mock_errors, 2)),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        b1_err = [f for f in res.all_findings if f.rule_id == "B-1-UNEVALUATED"][0]
+        assert b1_err.category == Category.KNOWN_VULNERABILITIES
+        assert b1_err.description == "Rule B-1 failed during execution: ValueError"
+
+        d1_err = [f for f in res.all_findings if f.rule_id == "D-1-UNEVALUATED"][0]
+        assert d1_err.category == Category.MISCONFIGURATION
+        assert d1_err.description == "Rule D-1 failed during execution: TimeoutError"
+
+
+def test_trivy_findings_limit_exceeded_severity_info():
+    from src.adapters.trivy_adapter import TrivyAdapter
+
+    adapter = TrivyAdapter()
+    # Mock data with > 500 findings to trigger limit
+    results = {
+        "Results": [
+            {
+                "Target": "package-lock.json",
+                "Vulnerabilities": [
+                    {
+                        "VulnerabilityID": f"CVE-2024-{i}",
+                        "Severity": "HIGH",
+                        "Title": f"Vuln {i}",
+                        "PkgName": "foo",
+                        "InstalledVersion": "1.0.0",
+                    }
+                    for i in range(501)
+                ],
+            }
+        ]
+    }
+    findings = adapter.parse_json(results, max_findings=500)
+    limit_findings = [
+        f for f in findings if f.rule_id == "TRIVY-FINDINGS-LIMIT-EXCEEDED"
+    ]
+    assert len(limit_findings) == 3
+    for f in limit_findings:
+        assert f.severity == "INFO"
+
+
+def test_trivy_b1_dedup_matches_package_name(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    # Trivy detected CVE-2024-1000 for package 'pkg-a'
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2024-1000",
+        severity="HIGH",
+        title="Trivy CVE-2024-1000",
+        location="pkg-a@1.0.0",
+        description="Package: pkg-a\nHigh vulnerability",
+    )
+
+    # B-1 detected CVE-2024-1000 for package 'pkg-b' (different package!)
+    b1_finding_b = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="[GH:CVE-2024-1000] Vulnerability in pkg-b",
+        description="pkg-b 2.0.0 は既知脆弱性に該当する可能性があります [GH:CVE-2024-1000]",
+    )
+
+    # B-1 detected CVE-2024-1000 for package 'pkg-a' (same package!)
+    b1_finding_a = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="[GH:CVE-2024-1000] Vulnerability in pkg-a",
+        description="pkg-a 1.0.0 は既知脆弱性に該当する可能性があります [GH:CVE-2024-1000]",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=tmp_path,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(
+            orchestrator,
+            "_run_rule_based_scan",
+            return_value=([b1_finding_b, b1_finding_a], True),
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        b1_retained = [f for f in res.all_findings if f.rule_id == "B-1"]
+        # pkg-a should be deduplicated, but pkg-b MUST be retained!
+        assert len(b1_retained) == 1
+        assert "pkg-b" in b1_retained[0].description
+
+
+def test_archive_fetcher_all_files_skipped_in_subdir(tmp_path):
+    from src.targets.archive_fetcher import ArchiveSnapshotFetcher, SkippedFile
+    from src.targets.models import ScanTargetSpec
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=1000000,
+        max_extracted_bytes=1000000,
+        max_files=1000,
+        max_single_file_bytes=1000000,
+        timeout_sec=30,
+    )
+    fetcher.skipped_files = (
+        SkippedFile(
+            path="repo-main/services/large.bin",
+            size_bytes=100000000,
+            reason="file_size_exceeded",
+        ),
+    )
+
+    extracted_root = tmp_path / "source"
+    extracted_root.mkdir(parents=True)
+
+    with patch("src.targets.archive_fetcher.safe_extract_zip") as mock_extract:
+        mock_extract.return_value = (extracted_root, fetcher.skipped_files)
+        with patch.object(fetcher, "_download_limited"):
+            # Dummy zip file
+            zip_file = tmp_path / "source.zip"
+            zip_file.write_bytes(b"dummy")
+
+            spec = ScanTargetSpec(
+                repo_url="https://github.com/owner/repo",
+                source_type="remote_archive",
+                subdir="services",
+            )
+            ret_dir = fetcher.fetch(spec, tmp_path)
+            assert ret_dir.exists()
+            assert ret_dir.name == "services"

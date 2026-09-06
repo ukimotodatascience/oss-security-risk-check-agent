@@ -240,7 +240,8 @@ class MVPOrchestrator:
         if scanner_status.get("trivy"):
             import re
 
-            trivy_vuln_ids: set[str] = set()
+            trivy_vulns: set[tuple[str, str]] = set()
+            trivy_vuln_ids_global: set[str] = set()
             for f in all_findings:
                 if f.source == "trivy":
                     text = f"{f.rule_id} {f.title}"
@@ -252,7 +253,20 @@ class MVPOrchestrator:
                             re.IGNORECASE,
                         )
                     )
-                    trivy_vuln_ids.update(v.upper() for v in (cves | ghsas))
+                    tf_pkg = ""
+                    if f.location:
+                        tf_pkg = f.location.split("@")[0].strip().lower()
+                    if not tf_pkg and f.description:
+                        pm = re.search(
+                            r"Package:\s*([^\s\n]+)", f.description, re.IGNORECASE
+                        )
+                        if pm:
+                            tf_pkg = pm.group(1).strip().lower()
+
+                    for v in cves | ghsas:
+                        v_upper = v.upper()
+                        trivy_vulns.add((v_upper, tf_pkg))
+                        trivy_vuln_ids_global.add(v_upper)
 
             filtered_findings: List[Finding] = []
             for f in all_findings:
@@ -263,11 +277,15 @@ class MVPOrchestrator:
                 )
                 if is_b1:
                     text = f"{f.title} {f.description or ''}"
+                    b1_pkg = ""
+                    if f.description:
+                        m_pkg = re.match(r"^([^\s\[:]+)", f.description.strip())
+                        if m_pkg:
+                            b1_pkg = m_pkg.group(1).strip().lower()
+
                     main_m = re.search(r"\[[^\]]+:([A-Za-z0-9_-]+)\]", text)
                     if main_m:
-                        main_id = main_m.group(1).upper()
-                        if main_id in trivy_vuln_ids:
-                            continue
+                        b1_ids = {main_m.group(1).upper()}
                     else:
                         b1_cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
                         b1_ghsas = set(
@@ -278,8 +296,21 @@ class MVPOrchestrator:
                             )
                         )
                         b1_ids = {v.upper() for v in (b1_cves | b1_ghsas)}
-                        if b1_ids and any(v in trivy_vuln_ids for v in b1_ids):
-                            continue
+
+                    is_dup = False
+                    for vid in b1_ids:
+                        if b1_pkg and (vid, b1_pkg) in trivy_vulns:
+                            is_dup = True
+                            break
+                        elif (vid, "") in trivy_vulns:
+                            is_dup = True
+                            break
+                        elif not b1_pkg and vid in trivy_vuln_ids_global:
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+
                 filtered_findings.append(f)
             all_findings = filtered_findings
 
@@ -444,31 +475,54 @@ class MVPOrchestrator:
                         )
                     )
             if errors:
+                rule_by_id = (
+                    {str(r.id): r for r in rules}
+                    if "rules" in locals() and rules
+                    else {}
+                )
                 for err_rule_id, err_detail in errors:
                     if err_rule_id == "GLOBAL_LIMIT":
                         continue
+                    err_rule_str = str(err_rule_id)
+                    if err_rule_str in rule_by_id:
+                        raw_cat_str = str(rule_by_id[err_rule_str].category).lower()
+                    else:
+                        raw_cat_str = ""
+
+                    if err_rule_str == "B-1" or err_rule_str.startswith("B-1"):
+                        err_cat = Category.KNOWN_VULNERABILITIES
+                    elif raw_cat_str in RULE_CAT_TO_MVP_CAT:
+                        err_cat = RULE_CAT_TO_MVP_CAT[raw_cat_str]
+                    else:
+                        prefix = err_rule_str[0].upper() if err_rule_str else ""
+                        prefix_to_cat = {
+                            "A": Category.SOURCE_CODE,
+                            "B": Category.DEPENDENCIES,
+                            "C": Category.CICD,
+                            "D": Category.MISCONFIGURATION,
+                            "E": Category.SOURCE_CODE,
+                            "F": Category.SECRETS,
+                            "G": Category.MAINTENANCE,
+                            "H": Category.DEVELOPMENT,
+                            "J": Category.SOURCE_CODE,
+                            "K": Category.SOURCE_CODE,
+                            "L": Category.SOURCE_CODE,
+                        }
+                        err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
+
                     err_lines = [
                         ln.strip()
                         for ln in (err_detail or "").splitlines()
                         if ln.strip()
                     ]
-                    clean_msg = err_lines[-1] if err_lines else "Rule execution error"
-                    clean_msg = re.sub(
-                        r"(ghp_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|NVD_API_KEY=\S+|OSV_API_KEY=\S+|[A-Za-z0-9_-]{20,}=)",
-                        "[REDACTED]",
-                        clean_msg,
-                    )
-                    prefix = str(err_rule_id)[0].upper() if err_rule_id else ""
-                    prefix_to_cat = {
-                        "A": Category.SOURCE_CODE,
-                        "B": Category.DEPENDENCIES,
-                        "C": Category.CICD,
-                        "D": Category.DEVELOPMENT,
-                        "E": Category.SOURCE_CODE,
-                        "F": Category.SECRETS,
-                        "L": Category.SOURCE_CODE,
-                    }
-                    err_cat = prefix_to_cat.get(prefix, Category.SOURCE_CODE)
+                    last_line = err_lines[-1] if err_lines else ""
+                    exc_type = "Rule execution error"
+                    if last_line:
+                        parts = last_line.split(":", 1)
+                        candidate = parts[0].strip()
+                        if re.match(r"^[A-Za-z_][A-Za-z0-9_.]*$", candidate):
+                            exc_type = candidate
+
                     findings.append(
                         Finding(
                             category=err_cat,
@@ -476,7 +530,7 @@ class MVPOrchestrator:
                             rule_id=f"{err_rule_id}-UNEVALUATED",
                             severity="INFO",
                             title=f"Rule {err_rule_id} Execution Unevaluated",
-                            description=f"Rule {err_rule_id} failed during execution: {clean_msg[:200]}",
+                            description=f"Rule {err_rule_id} failed during execution: {exc_type}",
                             remediation="Review rule execution settings, timeouts, or system resources.",
                         )
                     )

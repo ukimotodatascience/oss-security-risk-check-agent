@@ -93,10 +93,49 @@ class ArchiveSnapshotFetcher:
             if root != subdir and root not in subdir.parents:
                 raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")
             if not subdir.is_dir():
+                # もし全ファイルがサイズ上限等で省略されていた場合、空ディレクトリを作成して正常返却
+                if self.skipped_files and any(
+                    self._is_in_subdir(sf, spec.subdir) for sf in self.skipped_files
+                ):
+                    subdir.mkdir(parents=True, exist_ok=True)
+                    return subdir
                 raise ValueError(f"TARGET_SUBDIR が存在しません: {spec.subdir}")
             return subdir
 
         return extracted_root
+
+    @staticmethod
+    def _is_in_subdir(item: Any, subdir: str) -> bool:
+        raw_path = item.path if hasattr(item, "path") else str(item)
+        parts = [p for p in raw_path.replace("\\", "/").split("/") if p and p != "."]
+        norm_parts: list[str] = []
+        for pt in parts:
+            if pt == "..":
+                if norm_parts:
+                    norm_parts.pop()
+            else:
+                norm_parts.append(pt)
+        norm_item = "/".join(norm_parts)
+
+        sub_parts = [p for p in subdir.replace("\\", "/").split("/") if p and p != "."]
+        norm_sub = "/".join(sub_parts)
+        if not norm_sub:
+            return True
+
+        item_parts = [p for p in norm_item.split("/") if p]
+        if not item_parts:
+            return False
+
+        rel_path = "/".join(item_parts[1:]) if len(item_parts) > 1 else ""
+        if rel_path:
+            if rel_path == norm_sub or rel_path.startswith(norm_sub + "/"):
+                return True
+
+        raw_path_str = "/".join(item_parts)
+        if raw_path_str == norm_sub or raw_path_str.startswith(norm_sub + "/"):
+            return True
+
+        return False
 
     def _download_limited(self, url: str, dest: Path) -> None:
         headers = {"User-Agent": self.USER_AGENT}

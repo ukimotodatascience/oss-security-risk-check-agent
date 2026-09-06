@@ -229,7 +229,7 @@ class TrivyAdapter:
                         category=cat,
                         source="trivy",
                         rule_id="TRIVY-FINDINGS-LIMIT-EXCEEDED",
-                        severity="LOW",
+                        severity="INFO",
                         title="Trivy Findings Limit Exceeded",
                         description=f"Trivy scan generated over {max_findings} findings. Truncated excess findings.",
                         remediation="Review target or narrow scan scope.",
