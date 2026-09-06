@@ -15,6 +15,21 @@ from src.targets.url_validator import parse_github_repo_url
 logger = logging.getLogger(__name__)
 
 
+def _normalize_subdir(subdir: Optional[str]) -> Optional[str]:
+    if not subdir:
+        return None
+    parts = [pt for pt in subdir.replace("\\", "/").split("/") if pt and pt != "."]
+    norm_parts: list[str] = []
+    for pt in parts:
+        if pt == "..":
+            if norm_parts:
+                norm_parts.pop()
+        else:
+            norm_parts.append(pt)
+    res = "/".join(norm_parts)
+    return res if res else None
+
+
 class MVPOrchestrator:
     def __init__(
         self, project_root: Optional[Path] = None, cli_options: Optional[Any] = None
@@ -145,8 +160,9 @@ class MVPOrchestrator:
 
                 if relevant_skipped_files:
                     logger.warning(
-                        f"ArchiveSnapshotFetcher skipped {len(relevant_skipped_files)} files in target scope due to size limits."
+                        f"Snapshot fetcher skipped {len(relevant_skipped_files)} files in target scope."
                     )
+                    scanner_status["has_skipped_files"] = True
                     for cat in (
                         Category.MISCONFIGURATION,
                         Category.KNOWN_VULNERABILITIES,
@@ -159,9 +175,9 @@ class MVPOrchestrator:
                                 source="snapshot_fetcher",
                                 rule_id="SKIPPED-FILES-LIMIT",
                                 severity="INFO",
-                                title="Large Files Skipped During Fetch",
-                                description=f"{len(relevant_skipped_files)} file(s) in target scope were skipped due to size limits during snapshot fetch.",
-                                remediation="Review large files individually for secrets or vulnerabilities.",
+                                title="Files Skipped Due to Limits",
+                                description=f"Snapshot fetcher skipped {len(relevant_skipped_files)} files due to size limits.",
+                                remediation="Review skipped files or increase fetch limits.",
                             )
                         )
 
@@ -210,7 +226,8 @@ class MVPOrchestrator:
             )
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
-        if not target_ref and not target_subdir:
+        norm_subdir = _normalize_subdir(target_subdir)
+        if not target_ref and not norm_subdir:
             try:
                 scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
                 all_findings.extend(scorecard_findings)
@@ -380,6 +397,39 @@ class MVPOrchestrator:
             )
 
             if target_dir and target_dir.exists():
+                file_count = sum(1 for p in target_dir.rglob("*") if p.is_file())
+                has_skipped_in_status = bool(
+                    scanner_status and scanner_status.get("has_skipped_files")
+                )
+                if file_count == 0 and (has_skipped_files or has_skipped_in_status):
+                    logger.warning(
+                        "Target directory contains 0 files and all files were skipped due to size limits."
+                    )
+                    if scanner_status is not None:
+                        scanner_status["rule_based"] = False
+                        for cat in (
+                            Category.MISCONFIGURATION,
+                            Category.KNOWN_VULNERABILITIES,
+                            Category.SECRETS,
+                            Category.SOURCE_CODE,
+                        ):
+                            cat_key = (
+                                cat.value if hasattr(cat, "value") else str(cat).lower()
+                            )
+                            scanner_status[f"rule_based_{cat_key}"] = False
+                    findings.append(
+                        Finding(
+                            category=Category.SOURCE_CODE,
+                            source="rule_based",
+                            rule_id="ALL-FILES-SKIPPED-LIMIT",
+                            severity="INFO",
+                            title="Target Directory Empty (All Files Skipped)",
+                            description="Target directory contains no files to scan because all files were skipped due to size limits.",
+                            remediation="Check target path or increase fetch limits.",
+                        )
+                    )
+                    return findings, False
+
                 from src.config import ScanConfig
                 from src.rule_engine import load_all_rules, run_all
                 from src.rules.B_dependencies.vuln_sources import VulnLookupService
@@ -705,10 +755,22 @@ class MVPOrchestrator:
                 if isinstance(val, str) and len(val) > max_len:
                     setattr(f, attr, val[:max_len] + "...")
 
+        def _truncate_top_level_strings(res: OverallResult, max_len: int = 200) -> None:
+            for attr in (
+                "repository_url",
+                "scanned_ref",
+                "scanned_subdir",
+                "status_reason",
+            ):
+                val = getattr(res, attr, None)
+                if isinstance(val, str) and len(val) > max_len:
+                    setattr(res, attr, val[:max_len] + "...")
+
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(
                 "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
+            _truncate_top_level_strings(result, 200)
             # Pass 1: truncate long text fields (including location, rule_id, source) to 200 chars
             for f in result.all_findings:
                 _truncate_finding(f, 200)
@@ -730,6 +792,7 @@ class MVPOrchestrator:
 
         # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
+            _truncate_top_level_strings(result, 50)
             for f in result.all_findings:
                 _truncate_finding(f, 50)
             for cat_res in result.categories.values():
@@ -739,8 +802,19 @@ class MVPOrchestrator:
                     cat_res.summary = cat_res.summary[:50] + "..."
             json_str = result.model_dump_json(indent=2)
 
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(json_str)
+        encoded_bytes = json_str.encode("utf-8")
+        if len(encoded_bytes) > MAX_FILE_BYTES:
+            logger.warning(
+                "Scan result JSON exceeds 10MB after Pass 3. Clearing findings to guarantee limit."
+            )
+            result.all_findings = []
+            for cat_res in result.categories.values():
+                cat_res.findings = []
+            json_str = result.model_dump_json(indent=2)
+            encoded_bytes = json_str.encode("utf-8")
+
+        with open(target_path, "wb") as f:
+            f.write(encoded_bytes)
 
         logger.info(f"Saved scan result JSON to: {target_path}")
         return target_path

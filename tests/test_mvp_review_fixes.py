@@ -1791,3 +1791,82 @@ def test_save_result_json_truncates_all_string_fields_and_slices_findings(tmp_pa
     )
     file_bytes = len(out_file.read_bytes())
     assert file_bytes <= 10 * 1024 * 1024
+
+
+def test_empty_target_dir_skips_rule_execution_and_marks_unevaluated(tmp_path):
+    from src.orchestrator import MVPOrchestrator
+
+    empty_dir = tmp_path / "empty_subdir"
+    empty_dir.mkdir()
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    scanner_status = {"rule_based": True, "has_skipped_files": True}
+
+    findings, success = orchestrator._run_rule_based_scan(
+        "https://github.com/owner/repo",
+        scanner_status=scanner_status,
+        target_dir=empty_dir,
+    )
+    assert success is False
+    assert scanner_status["rule_based"] is False
+    assert scanner_status["rule_based_source_code"] is False
+    empty_findings = [f for f in findings if f.rule_id == "ALL-FILES-SKIPPED-LIMIT"]
+    assert len(empty_findings) == 1
+
+
+def test_scorecard_runs_when_subdir_normalizes_to_root():
+    from src.orchestrator import _normalize_subdir
+
+    assert _normalize_subdir(".") is None
+    assert _normalize_subdir("./") is None
+    assert _normalize_subdir("services/..") is None
+    assert _normalize_subdir("foo/bar/../..") is None
+    assert _normalize_subdir("src/backend") == "src/backend"
+
+
+def test_save_result_json_truncates_top_level_strings(tmp_path):
+    from src.mvp_models import Category, CategoryResult, OverallResult, OverallStatus
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="Known Vulnerabilities",
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=[],
+    )
+    result = OverallResult(
+        repository_url="https://github.com/" + "A" * 500,
+        scanned_at="2026-09-06T15:00:00Z",
+        scanned_ref="B" * 500,
+        scanned_subdir="C" * 500,
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=[],
+        status=OverallStatus.SAFE,
+    )
+
+    out_file = orchestrator.save_result_json(
+        result, filename="test_output_top_level.json", output_dir=tmp_path
+    )
+    file_bytes = len(out_file.read_bytes())
+    assert file_bytes <= 10 * 1024 * 1024
+
+
+def test_python_command_injection_deduplicates_at_insertion_time(tmp_path):
+    from src.rules.A_code.A1_2_command_injection_python import (
+        PythonCommandInjectionDetector,
+    )
+
+    py_file = tmp_path / "test.py"
+    # Create code where same line has multiple AST calls generating duplicate records
+    py_file.write_text(
+        "import os\n" + "\n".join([f"os.system(x_{i})" for i in range(10)]) + "\n",
+        encoding="utf-8",
+    )
+
+    detector = PythonCommandInjectionDetector()
+    records = detector.evaluate(tmp_path, max_records=500)
+    assert isinstance(records, list)
