@@ -117,20 +117,17 @@ class MVPOrchestrator:
                     if not item_parts:
                         return False
 
-                    sub_lower = norm_sub.lower()
-
                     # Candidate 1: relative path after stripping top-level archive directory
                     rel_path = "/".join(item_parts[1:]) if len(item_parts) > 1 else ""
                     if rel_path:
-                        rel_lower = rel_path.lower()
-                        if rel_lower == sub_lower or rel_lower.startswith(
-                            sub_lower + "/"
-                        ):
+                        if rel_path == norm_sub or rel_path.startswith(norm_sub + "/"):
                             return True
 
                     # Candidate 2: raw path itself (if path was already relative)
-                    raw_lower = "/".join(item_parts).lower()
-                    if raw_lower == sub_lower or raw_lower.startswith(sub_lower + "/"):
+                    raw_path_str = "/".join(item_parts)
+                    if raw_path_str == norm_sub or raw_path_str.startswith(
+                        norm_sub + "/"
+                    ):
                         return True
 
                     return False
@@ -246,7 +243,7 @@ class MVPOrchestrator:
             trivy_vuln_ids: set[str] = set()
             for f in all_findings:
                 if f.source == "trivy":
-                    text = f"{f.rule_id} {f.title} {f.description or ''}"
+                    text = f"{f.rule_id} {f.title}"
                     cves = set(re.findall(r"CVE-\d{4}-\d+", text, re.IGNORECASE))
                     ghsas = set(
                         re.findall(

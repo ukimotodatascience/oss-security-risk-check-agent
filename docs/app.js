@@ -147,6 +147,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const findingsArray = data.all_findings || data.findings;
     if (!Array.isArray(findingsArray)) return false;
+    if (findingsArray.length > 10000) return false;
     for (const f of findingsArray) {
       if (!f || typeof f !== "object" || Array.isArray(f)) return false;
       if (typeof f.category !== "string") return false;
@@ -354,8 +355,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const ALLOWED_SEVS = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+    const MAX_RENDER_FINDINGS = 1000;
+    const toRender = filtered.slice(0, MAX_RENDER_FINDINGS);
 
-    filtered.forEach(f => {
+    toRender.forEach(f => {
       const card = document.createElement("div");
       let rawSev = (f.severity || "INFO").toUpperCase();
       let sevClass = ALLOWED_SEVS.includes(rawSev) ? rawSev : "INFO";
@@ -379,6 +382,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
       findingsListEl.appendChild(card);
     });
+
+    if (filtered.length > MAX_RENDER_FINDINGS) {
+      const truncateNotice = document.createElement("div");
+      truncateNotice.className = "empty-findings";
+      truncateNotice.textContent = `表示上限 (${MAX_RENDER_FINDINGS} 件) を超えたため、一部の指摘事項の表示を省略しています (全 ${filtered.length} 件)。`;
+      findingsListEl.appendChild(truncateNotice);
+    }
   }
 
   function escapeHtml(str) {

@@ -1176,3 +1176,108 @@ def test_orchestrator_serializes_rule_errors_as_info_findings(tmp_path):
         assert len(err_findings) == 1
         assert err_findings[0].severity == "INFO"
         assert "TimeoutError" in err_findings[0].description
+
+
+def test_is_in_subdir_case_sensitive(tmp_path):
+    from unittest.mock import MagicMock, patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "services", "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    mock_fetcher = MagicMock()
+    # File in 'Services/big.bin' (uppercase S) vs target_subdir='services'
+    mock_fetcher.skipped_files = [
+        "repo-main/Services/big.bin",
+        "repo-main/services/valid.bin",
+    ]
+    mock_fetcher.fetch.return_value = tmp_path
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher",
+            return_value=mock_fetcher,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([], False),
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], False)),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        # Only 'repo-main/services/valid.bin' matches 'services' scope
+        skipped = [f for f in res.all_findings if f.rule_id == "SKIPPED-FILES-LIMIT"]
+        assert len(skipped) == 4  # 4 categories for 1 relevant file
+
+
+def test_trivy_vuln_ids_extracted_from_headers_only(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+    from src.mvp_models import Category, Finding
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": None, "output_dir": None},
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    trivy_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="trivy",
+        rule_id="CVE-2024-1111",
+        severity="HIGH",
+        title="Trivy Vuln CVE-2024-1111",
+        description="This vulnerability references CVE-2024-9999 in notes.",
+    )
+    # B-1 finding for CVE-2024-9999 should NOT be discarded because CVE-2024-9999 was only in trivy's description!
+    b1_finding = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="[CVE-2024-9999] High Vulnerability",
+        description="Dependency vulnerability",
+    )
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            return_value=tmp_path,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter,
+            "run_scan_with_status",
+            return_value=([trivy_finding], True),
+        ),
+        patch.object(
+            orchestrator,
+            "_run_rule_based_scan",
+            return_value=([b1_finding], True),
+        ),
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        rule_b1s = [f for f in res.all_findings if f.rule_id == "B-1"]
+        assert len(rule_b1s) == 1
+        assert "CVE-2024-9999" in rule_b1s[0].title
+
+
+def test_js_app_findings_limits_defined():
+    from pathlib import Path
+
+    js_file = Path("docs/app.js")
+    assert js_file.exists()
+    content = js_file.read_text(encoding="utf-8")
+    assert "if (findingsArray.length > 10000) return false;" in content
+    assert "const MAX_RENDER_FINDINGS = 1000;" in content
