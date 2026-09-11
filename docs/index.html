@@ -21,11 +21,11 @@
         <span class="badge-mvp">MVP v1.0</span>
       </div>
       <div class="nav-links">
-        <button id="btn-load-sample" class="btn btn-secondary">サンプルの結果を読み込み</button>
-        <label for="file-input" class="btn btn-outline">
-          📁 JSONファイルを読込
-          <input type="file" id="file-input" accept=".json" style="display: none;">
-        </label>
+        <form id="url-search-form" style="display: flex; gap: 8px; align-items: center;">
+          <input type="url" id="github-url-input" class="select-input" placeholder="https://github.com/owner/repo" style="width: 300px;" required>
+          <button type="submit" id="btn-scan" class="btn btn-secondary" style="white-space: nowrap;">🔍 診断実行</button>
+        </form>
+        <button id="btn-load-sample" class="btn btn-outline" style="white-space: nowrap;">サンプル結果</button>
       </div>
     </div>
   </nav>
@@ -62,7 +62,7 @@
             <span id="overall-status-badge" class="status-badge status-unknown">判定中...</span>
           </div>
           <p id="overall-status-reason" class="status-reason-text">
-            JSONデータを選択するか、スキャン結果をロードして総合リスク評価を確認してください。
+            GitHub リポジトリの URL を入力して診断を実行するか、サンプル結果をロードして総合リスク評価を確認してください。
           </p>
 
           <div class="risk-legend">

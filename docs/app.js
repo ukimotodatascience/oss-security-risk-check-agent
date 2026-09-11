@@ -16,9 +16,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const categoryFilterEl = document.getElementById("category-filter");
   const severityFilterEl = document.getElementById("severity-filter");
   const btnLoadSampleEl = document.getElementById("btn-load-sample");
-  const fileInputEl = document.getElementById("file-input");
+  const githubUrlInputEl = document.getElementById("github-url-input");
+  const urlSearchFormEl = document.getElementById("url-search-form");
 
-  // Initial Load: scan_result.json を取得
+  // Initial Load: URL パラメータか default scan_result.json を取得
+  const urlParams = new URLSearchParams(window.location.search);
+  const repoParam = urlParams.get("repo") || urlParams.get("url");
+  if (repoParam && githubUrlInputEl) {
+    githubUrlInputEl.value = repoParam;
+  }
   loadScanResult("scan_result.json");
 
   // Event Listeners
@@ -28,39 +34,41 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  if (fileInputEl) {
-    fileInputEl.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-
-      const loadId = ++currentLoadId;
-      const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
-      if (file.size > MAX_FILE_SIZE_BYTES) {
-        alert("ファイルサイズが大きすぎます (上限: 10MB)。");
-        renderErrorState("選択されたファイルサイズが上限 (10MB) を超えています。");
-        fileInputEl.value = "";
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        if (loadId !== currentLoadId) return;
-        try {
-          const data = JSON.parse(evt.target.result);
-          renderScanResult(data);
-        } catch (err) {
-          alert("有効なJSONファイルを選択してください: " + err.message);
-          renderErrorState("選択されたファイルの解析に失敗しました: " + err.message);
-        }
-      };
-      reader.onerror = () => {
-        if (loadId !== currentLoadId) return;
-        alert("ファイルの読み込み中にエラーが発生しました。");
-        renderErrorState("選択されたファイルの読み込み中にエラーが発生しました。");
-        fileInputEl.value = "";
-      };
-      reader.readAsText(file);
+  if (urlSearchFormEl) {
+    urlSearchFormEl.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const rawUrl = githubUrlInputEl ? githubUrlInputEl.value.trim() : "";
+      handleGithubUrlSubmit(rawUrl);
     });
+  }
+
+  function parseGithubUrl(urlStr) {
+    if (!urlStr) return null;
+    const match = urlStr.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/]+)/i);
+    if (!match) return null;
+    const owner = match[1];
+    const repo = match[2].replace(/\.git$/i, "");
+    return { owner, repo, fullUrl: `https://github.com/${owner}/${repo}` };
+  }
+
+  function handleGithubUrlSubmit(urlStr) {
+    const parsed = parseGithubUrl(urlStr);
+    if (!parsed) {
+      alert("有効な GitHub リポジトリ URL (例: https://github.com/owner/repo) を入力してください。");
+      return;
+    }
+
+    // URLの更新 (History API)
+    const newUrl = new URL(window.location.href);
+    newUrl.searchParams.set("repo", parsed.fullUrl);
+    window.history.pushState({}, "", newUrl);
+
+    // ロード済みのデータが該当リポジトリのものであれば表示、そうでなければ再ロード
+    if (currentScanData && currentScanData.repository_url && currentScanData.repository_url.toLowerCase() === parsed.fullUrl.toLowerCase()) {
+      renderScanResult(currentScanData);
+    } else {
+      loadScanResult("scan_result.json", parsed.fullUrl);
+    }
   }
 
   if (categoryFilterEl) {
@@ -72,7 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // JSONデータのロード
-  async function loadScanResult(url) {
+  async function loadScanResult(url, expectedTargetUrl = null) {
     const loadId = ++currentLoadId;
     const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
     try {
@@ -109,11 +117,18 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = JSON.parse(text);
       if (loadId === currentLoadId) {
         renderScanResult(data);
+        if (expectedTargetUrl && data.repository_url && data.repository_url.toLowerCase() !== expectedTargetUrl.toLowerCase()) {
+          if (statusReasonEl) {
+            statusReasonEl.textContent = `指定された URL (${expectedTargetUrl}) の最新スキャン結果は未検出です。GitHub Actions でスキャンを実行・更新してください。(表示中: ${data.repository_url})`;
+          }
+        }
       }
     } catch (err) {
       if (loadId === currentLoadId) {
         console.warn("Could not load scan_result.json automatically.", err);
-        renderErrorState("スキャン結果データ (scan_result.json) を読み込めませんでした。JSONファイルを読み込むか再生成してください。");
+        renderErrorState(expectedTargetUrl
+          ? `指定されたリポジトリ (${expectedTargetUrl}) の診断結果データを読み込めませんでした。`
+          : "スキャン結果データ (scan_result.json) を読み込めませんでした。GitHub URL を指定して診断を実行してください。");
       }
     }
   }
