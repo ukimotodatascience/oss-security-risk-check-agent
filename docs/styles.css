@@ -114,7 +114,27 @@ body {
 
 .nav-links {
   display: flex;
+  align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+.url-search-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 260px;
+}
+
+.url-input {
+  width: 300px;
+  max-width: 100%;
+}
+
+.btn-scan, .btn-sample {
+  white-space: nowrap;
 }
 
 /* Buttons */
@@ -589,6 +609,20 @@ body {
 
 /* Responsive Breakpoints */
 @media (max-width: 768px) {
+  .nav-container {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .nav-links {
+    width: 100%;
+  }
+  .url-search-form {
+    width: 100%;
+  }
+  .url-input {
+    width: 100%;
+  }
   .overall-grid {
     grid-template-columns: 1fr;
     gap: 24px;

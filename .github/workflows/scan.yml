@@ -28,16 +28,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0d713683868197791244f772413e110757d54e43 # v5.3.0
         with:
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+
+      - name: Install Trivy scanner
+        uses: aquasecurity/setup-trivy@v0.2.2
+        with:
+          version: 'latest'
 
       - name: Install dependencies
         run: |
@@ -46,18 +51,27 @@ jobs:
           if [ -f requirements-dev.txt ]; then python -m pip install -r requirements-dev.txt; fi
 
       - name: Run MVP Scan
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_SUBDIR: ${{ inputs.target_subdir }}
         run: |
-          CMD="python main.py \"${{ inputs.target_url }}\" --mvp --output-dir docs/"
-          if [ -n "${{ inputs.target_ref }}" ]; then
-            CMD="$CMD --ref \"${{ inputs.target_ref }}\""
-          fi
-          if [ -n "${{ inputs.target_subdir }}" ]; then
-            CMD="$CMD --subdir \"${{ inputs.target_subdir }}\""
-          fi
-          eval $CMD
+          python -c '
+          import os, subprocess, sys
+          url = os.environ.get("TARGET_URL", "").strip()
+          ref = os.environ.get("TARGET_REF", "").strip()
+          subdir = os.environ.get("TARGET_SUBDIR", "").strip()
+          cmd = [sys.executable, "main.py", url, "--mvp", "--output-dir", "docs/"]
+          if ref:
+              cmd.extend(["--ref", ref])
+          if subdir:
+              cmd.extend(["--subdir", subdir])
+          print(f"Running command: {cmd}")
+          subprocess.run(cmd, check=True)
+          '
 
       - name: Commit and push scan results
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@e592800268700f57bdc76e05f6a2bc70350a6007 # v5.0.0
         with:
           commit_message: 'chore(scan): update scan_result.json via workflow_dispatch'
           file_pattern: 'docs/scan_result.json'

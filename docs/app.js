@@ -22,14 +22,26 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initial Load: URL パラメータか default scan_result.json を取得
   const urlParams = new URLSearchParams(window.location.search);
   const repoParam = urlParams.get("repo") || urlParams.get("url");
-  if (repoParam && githubUrlInputEl) {
-    githubUrlInputEl.value = repoParam;
+  let initialExpectedUrl = null;
+  if (repoParam) {
+    const parsedInitial = parseGithubUrl(repoParam);
+    if (parsedInitial) {
+      if (githubUrlInputEl) {
+        githubUrlInputEl.value = parsedInitial.fullUrl;
+      }
+      initialExpectedUrl = parsedInitial.fullUrl;
+    }
   }
-  loadScanResult("scan_result.json");
+  loadScanResult("scan_result.json", initialExpectedUrl);
 
   // Event Listeners
   if (btnLoadSampleEl) {
     btnLoadSampleEl.addEventListener("click", () => {
+      if (githubUrlInputEl) githubUrlInputEl.value = "";
+      const newUrl = new URL(window.location.href);
+      newUrl.searchParams.delete("repo");
+      newUrl.searchParams.delete("url");
+      window.history.pushState({}, "", newUrl);
       loadScanResult("scan_result.json");
     });
   }
@@ -44,11 +56,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function parseGithubUrl(urlStr) {
     if (!urlStr) return null;
-    const match = urlStr.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/]+)/i);
-    if (!match) return null;
-    const owner = match[1];
-    const repo = match[2].replace(/\.git$/i, "");
-    return { owner, repo, fullUrl: `https://github.com/${owner}/${repo}` };
+    let cleanUrl = urlStr.trim();
+    if (!/^https?:\/\//i.test(cleanUrl)) {
+      cleanUrl = "https://" + cleanUrl;
+    }
+    try {
+      const parsedUrl = new URL(cleanUrl);
+      const host = parsedUrl.hostname.toLowerCase();
+      if (host !== "github.com" && host !== "www.github.com") {
+        return null;
+      }
+      const parts = parsedUrl.pathname.split("/").filter(Boolean);
+      if (parts.length < 2) return null;
+      const owner = parts[0];
+      const repo = parts[1].replace(/\.git$/i, "");
+      if (!owner || !repo) return null;
+      return { owner, repo, fullUrl: `https://github.com/${owner}/${repo}` };
+    } catch (e) {
+      return null;
+    }
   }
 
   function handleGithubUrlSubmit(urlStr) {
@@ -119,15 +145,17 @@ document.addEventListener("DOMContentLoaded", () => {
         renderScanResult(data);
         if (expectedTargetUrl && data.repository_url && data.repository_url.toLowerCase() !== expectedTargetUrl.toLowerCase()) {
           if (statusReasonEl) {
-            statusReasonEl.textContent = `指定された URL (${expectedTargetUrl}) の最新スキャン結果は未検出です。GitHub Actions でスキャンを実行・更新してください。(表示中: ${data.repository_url})`;
+            const workflowUrl = "https://github.com/ukimotodatascience/oss-security-risk-check-agent/actions/workflows/scan.yml";
+            statusReasonEl.innerHTML = `指定された URL (<strong>${escapeHtml(expectedTargetUrl)}</strong>) の最新診断データはまだ生成されていません。<br/><a href="${workflowUrl}" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline;">👉 こちらの GitHub Actions</a> からオンデマンドスキャンを実行・更新してください。(表示中: ${escapeHtml(data.repository_url)})`;
           }
         }
       }
     } catch (err) {
       if (loadId === currentLoadId) {
         console.warn("Could not load scan_result.json automatically.", err);
+        const workflowUrl = "https://github.com/ukimotodatascience/oss-security-risk-check-agent/actions/workflows/scan.yml";
         renderErrorState(expectedTargetUrl
-          ? `指定されたリポジトリ (${expectedTargetUrl}) の診断結果データを読み込めませんでした。`
+          ? `指定されたリポジトリ (${escapeHtml(expectedTargetUrl)}) の診断結果データを読み込めませんでした。<a href="${workflowUrl}" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: underline;">GitHub Actions</a> でスキャンを実行してください。`
           : "スキャン結果データ (scan_result.json) を読み込めませんでした。GitHub URL を指定して診断を実行してください。");
       }
     }
