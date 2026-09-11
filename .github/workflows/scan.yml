@@ -20,6 +20,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   scan:
@@ -40,9 +42,18 @@ jobs:
             requirements-dev.txt
 
       - name: Install Trivy scanner
-        uses: aquasecurity/setup-trivy@v0.2.2
+        uses: aquasecurity/setup-trivy@b4737d2f9b8c0a87a2a07c42738416d860d5ed70 # v0.2.2 SHA pinned
         with:
-          version: 'latest'
+          version: 'v0.58.2'
+
+      - name: Install Scorecard CLI
+        run: |
+          SCORECARD_VERSION="v4.13.1"
+          curl -sSL "https://github.com/ossf/scorecard/releases/download/${SCORECARD_VERSION}/scorecard_4.13.1_linux_amd64.tar.gz" -o scorecard.tar.gz
+          tar -xzf scorecard.tar.gz
+          sudo mv scorecard_linux_amd64 /usr/local/bin/scorecard
+          sudo chmod +x /usr/local/bin/scorecard
+          scorecard --version || true
 
       - name: Install dependencies
         run: |
@@ -71,7 +82,19 @@ jobs:
           '
 
       - name: Commit and push scan results
-        uses: stefanzweifel/git-auto-commit-action@e592800268700f57bdc76e05f6a2bc70350a6007 # v5.0.0
+        uses: stefanzweifel/git-auto-commit-action@e592800268700f57bdc76e05f6a2bc70350a6007 # v5.0.0 SHA pinned
         with:
           commit_message: 'chore(scan): update scan_result.json via workflow_dispatch'
           file_pattern: 'docs/scan_result.json'
+
+      - name: Setup Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffbe0e8f2d5469feb88d8 # v3.0.1
+        with:
+          path: 'docs/'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
