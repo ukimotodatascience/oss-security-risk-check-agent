@@ -51,9 +51,9 @@ jobs:
           SCORECARD_VERSION="v4.13.1"
           curl -sSL "https://github.com/ossf/scorecard/releases/download/${SCORECARD_VERSION}/scorecard_4.13.1_linux_amd64.tar.gz" -o scorecard.tar.gz
           tar -xzf scorecard.tar.gz
-          sudo mv scorecard_linux_amd64 /usr/local/bin/scorecard
+          sudo mv scorecard /usr/local/bin/scorecard
           sudo chmod +x /usr/local/bin/scorecard
-          scorecard --version || true
+          scorecard version || true
 
       - name: Install dependencies
         run: |
@@ -66,6 +66,8 @@ jobs:
           TARGET_URL: ${{ inputs.target_url }}
           TARGET_REF: ${{ inputs.target_ref }}
           TARGET_SUBDIR: ${{ inputs.target_subdir }}
+          GITHUB_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -c '
           import os, subprocess, sys
