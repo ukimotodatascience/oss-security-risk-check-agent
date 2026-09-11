@@ -2759,3 +2759,136 @@ def test_h6_expired_cert_finding_retained_on_target_subdir_scan(tmp_path):
     assert len(h6_findings) == 1
     assert h6_findings[0].target == "sub/README.md"
     assert h6_findings[0].severity == "HIGH"
+
+
+def test_early_target_subdir_normalization(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": None,
+            "target_subdir": " . ",
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    captured_spec = []
+
+    def mock_fetch(spec, tmpdir):
+        captured_spec.append(spec)
+        return tmp_path
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            side_effect=mock_fetch,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(
+            orchestrator.scorecard_adapter, "run_scan", return_value=[]
+        ) as mock_scorecard,
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        assert len(captured_spec) == 1
+        # Spec subdir MUST be stripped to "."
+        assert captured_spec[0].subdir == "."
+        # self.cli_options.target_subdir MUST be stripped to "."
+        assert orchestrator.cli_options.target_subdir == "."
+        # Scorecard MUST be called because " . " normalized to "." (repo root)
+        mock_scorecard.assert_called_once()
+
+
+def test_save_result_json_truncates_category_name_and_refuses_oversized(tmp_path):
+    import pytest
+    from unittest.mock import patch
+    from src.mvp_models import Category, CategoryResult, OverallResult, OverallStatus
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="X" * 1000,
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=[],
+    )
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-11T00:00:00Z",
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=[],
+        status=OverallStatus.SAFE,
+    )
+
+    # When JSON size triggers truncation, category_name is truncated
+    original_dump = OverallResult.model_dump_json
+
+    def mock_dump(self_obj, *args, **kwargs):
+        res_str = original_dump(self_obj, *args, **kwargs)
+        if "X" * 1000 in res_str:
+            return res_str + (" " * (10 * 1024 * 1024 + 100))
+        return res_str
+
+    with patch.object(
+        OverallResult, "model_dump_json", autospec=True, side_effect=mock_dump
+    ):
+        out_file = orchestrator.save_result_json(
+            result, filename="test_cat_trunc.json", output_dir=tmp_path
+        )
+        import json
+
+        with open(out_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert len(data["categories"]["known_vulnerabilities"]["category_name"]) <= 203
+
+    # If encoded_bytes stays > 10MB after all truncation attempts, raise ValueError
+    with patch.object(
+        OverallResult,
+        "model_dump_json",
+        return_value="x" * (10 * 1024 * 1024 + 100),
+    ):
+        with pytest.raises(ValueError, match="exceeds maximum 10MB limit"):
+            orchestrator.save_result_json(
+                result, filename="test_oversized.json", output_dir=tmp_path
+            )
+
+
+def test_h6_omitted_on_subdir_scan_marks_source_code_scanner_status_false(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    (tmp_path / "sub").mkdir()
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "sub", "output_dir": None},
+    )()
+    orchestrator.cli_options = mock_opts
+
+    scanner_status = {"rule_based": True, "rule_based_source_code": True}
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        with patch("src.rule_engine.run_all", return_value=([], [], 0)):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status=scanner_status,
+                target_dir=tmp_path / "sub",
+            )
+
+    # rule_based_source_code MUST be set to False because H-6 root doc check was omitted
+    assert scanner_status["rule_based_source_code"] is False

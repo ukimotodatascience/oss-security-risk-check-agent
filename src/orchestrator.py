@@ -92,11 +92,21 @@ class MVPOrchestrator:
                 object.__setattr__(self.cli_options, "target_ref", target_ref)
             except Exception:
                 pass
-        target_subdir = (
+        raw_subdir = (
             getattr(self.cli_options, "target_subdir", None)
             if self.cli_options
             else None
         )
+        target_subdir = (
+            raw_subdir.strip()
+            if isinstance(raw_subdir, str) and raw_subdir.strip()
+            else None
+        )
+        if self.cli_options and hasattr(self.cli_options, "target_subdir"):
+            try:
+                object.__setattr__(self.cli_options, "target_subdir", target_subdir)
+            except Exception:
+                pass
         rule_scan_executed = False
         try:
             from src.config import ScanConfig
@@ -419,11 +429,21 @@ class MVPOrchestrator:
                     object.__setattr__(self.cli_options, "target_ref", target_ref)
                 except Exception:
                     pass
-            target_subdir = (
+            raw_subdir = (
                 getattr(self.cli_options, "target_subdir", None)
                 if self.cli_options
                 else None
             )
+            target_subdir = (
+                raw_subdir.strip()
+                if isinstance(raw_subdir, str) and raw_subdir.strip()
+                else None
+            )
+            if self.cli_options and hasattr(self.cli_options, "target_subdir"):
+                try:
+                    object.__setattr__(self.cli_options, "target_subdir", target_subdir)
+                except Exception:
+                    pass
             output_dir = (
                 getattr(self.cli_options, "output_dir", None)
                 if self.cli_options
@@ -903,6 +923,8 @@ class MVPOrchestrator:
                         )
                     )
                 ]
+                if scanner_status is not None:
+                    scanner_status["rule_based_source_code"] = False
 
             scan_success = not (
                 all_rules_failed or has_global_limit or has_skipped_files
@@ -956,6 +978,18 @@ class MVPOrchestrator:
                 val = getattr(res, attr, None)
                 if isinstance(val, str) and len(val) > max_len:
                     setattr(res, attr, val[:max_len] + "...")
+            if getattr(res, "categories", None):
+                for cat_res in res.categories.values():
+                    if (
+                        getattr(cat_res, "category_name", None)
+                        and len(cat_res.category_name) > max_len
+                    ):
+                        cat_res.category_name = cat_res.category_name[:max_len] + "..."
+                    if (
+                        getattr(cat_res, "summary", None)
+                        and len(cat_res.summary) > max_len
+                    ):
+                        cat_res.summary = cat_res.summary[:max_len] + "..."
 
         def _sync_findings_counts(res: OverallResult) -> None:
             for cat_res in res.categories.values():
@@ -1017,8 +1051,17 @@ class MVPOrchestrator:
             for cat_res in result_to_save.categories.values():
                 cat_res.findings = []
             _sync_findings_counts(result_to_save)
+            _truncate_top_level_strings(result_to_save, 50)
             json_str = result_to_save.model_dump_json(indent=2)
             encoded_bytes = json_str.encode("utf-8")
+
+        if len(encoded_bytes) > MAX_FILE_BYTES:
+            logger.error(
+                f"Scan result JSON size ({len(encoded_bytes)} bytes) exceeds 10MB limit even after clearing findings. Refusing to save invalid JSON."
+            )
+            raise ValueError(
+                f"Scan result JSON size ({len(encoded_bytes)} bytes) exceeds maximum 10MB limit."
+            )
 
         with open(target_path, "wb") as f:
             f.write(encoded_bytes)
