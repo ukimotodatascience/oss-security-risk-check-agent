@@ -23,8 +23,8 @@ def _normalize_subdir(subdir: Optional[str]) -> Optional[str]:
     if not raw_clean or raw_clean == ".":
         return None
 
-    is_absolute = raw_clean.startswith("/") or (
-        len(raw_clean) > 1 and raw_clean[1] == ":"
+    is_absolute = raw_clean.startswith("/") or bool(
+        re.match(r"^[a-zA-Z]:(?:[/\\]|$)", raw_clean)
     )
 
     parts = [pt for pt in raw_clean.split("/") if pt and pt != "."]
@@ -892,10 +892,10 @@ class MVPOrchestrator:
                     )
                 ]
 
-            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when a non-root target_subdir is specified
+            # Remove repo-root level rules (K-1, J-2, J-3, J-7, H-6) missing-file findings when a non-root target_subdir is specified
             norm_sub = _normalize_subdir(target_subdir)
             if norm_sub:
-                repo_root_rules = {"K-1", "J-2", "J-3", "J-7"}
+                repo_root_rules = {"K-1", "J-2", "J-3", "J-7", "H-6"}
                 findings = [
                     f
                     for f in findings
@@ -907,19 +907,12 @@ class MVPOrchestrator:
                                 str(f.rule_id).startswith(r) for r in repo_root_rules
                             )
                         )
-                    )
-                ]
-                # Remove H-6 root-level missing documentation findings, but retain actual expired certificate findings in subdirectory files
-                findings = [
-                    f
-                    for f in findings
-                    if not (
-                        f.source == "rule_based"
-                        and (f.rule_id == "H-6" or str(f.rule_id).startswith("H-6"))
                         and (
                             not f.target
+                            or f.target == "."
                             or "見つかりませんでした" in (f.description or "")
                             or "不足している" in (f.description or "")
+                            or "存在しません" in (f.description or "")
                         )
                     )
                 ]

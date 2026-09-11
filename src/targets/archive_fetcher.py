@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.parse
+from urllib.parse import quote
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -70,9 +72,8 @@ class ArchiveSnapshotFetcher:
 
         repo = parse_github_repo_url(spec.repo_url)
         ref = spec.ref or "HEAD"
-        archive_url = (
-            f"https://api.github.com/repos/{repo.owner}/{repo.repo}/zipball/{ref}"
-        )
+        quoted_ref = quote(ref, safe="")
+        archive_url = f"https://api.github.com/repos/{repo.owner}/{repo.repo}/zipball/{quoted_ref}"
 
         work_dir.mkdir(parents=True, exist_ok=True)
         archive_path = work_dir / "source.zip"
@@ -89,8 +90,8 @@ class ArchiveSnapshotFetcher:
 
         if spec.subdir:
             clean_sub = spec.subdir.replace("\\", "/").strip()
-            is_abs_or_drive = clean_sub.startswith("/") or (
-                len(clean_sub) > 1 and clean_sub[1] == ":"
+            is_abs_or_drive = clean_sub.startswith("/") or bool(
+                re.match(r"^[a-zA-Z]:(?:[/\\]|$)", clean_sub)
             )
             if is_abs_or_drive:
                 raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")

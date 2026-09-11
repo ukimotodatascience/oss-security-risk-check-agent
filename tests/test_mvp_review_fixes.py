@@ -2971,3 +2971,152 @@ def test_archive_fetcher_refuses_drive_letter_subdir(tmp_path):
     ):
         with pytest.raises(ValueError, match="展開ルート外"):
             fetcher.fetch(spec, tmp_path)
+
+
+def test_round44_repo_root_rules_retain_subdirectory_findings(tmp_path):
+    from src.models import RiskRecord, Severity
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    orchestrator.cli_options = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "sub", "output_dir": None},
+    )()
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "package.json").write_text('{"license": "UNLICENSED"}')
+
+    # Root missing findings
+    k1_missing = RiskRecord(
+        rule_id="K-1",
+        category="license",
+        title="Missing License",
+        severity=Severity.MEDIUM,
+        file_path=None,
+        message="LICENSE ファイルまたは manifest 上のライセンス表記（SPDX）が見つかりませんでした",
+    )
+    j7_missing = RiskRecord(
+        rule_id="J-7",
+        category="maintenance",
+        title="Missing SBOM",
+        severity=Severity.MEDIUM,
+        file_path=None,
+        message="SBOM（CycloneDX/SPDX）ファイルが見つかりませんでした",
+    )
+    # Subdirectory actual findings with target set
+    k1_sub = RiskRecord(
+        rule_id="K-1",
+        category="license",
+        title="Missing License",
+        severity=Severity.LOW,
+        file_path="sub/package.json",
+        message="ライセンス表記が不明瞭です（'UNLICENSED'）",
+    )
+    j7_sub = RiskRecord(
+        rule_id="J-7",
+        category="maintenance",
+        title="Missing SBOM",
+        severity=Severity.LOW,
+        file_path="sub/sbom.txt",
+        message="SBOM らしきファイルですが形式が想定外です",
+    )
+
+    with (
+        patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]),
+        patch(
+            "src.rule_engine.run_all",
+            return_value=([k1_missing, j7_missing, k1_sub, j7_sub], [], 4),
+        ),
+    ):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            target_dir=tmp_path,
+        )
+        targets = [f.target for f in findings]
+        # Missing root findings excluded, subdirectory findings retained!
+        assert len(findings) == 2
+        assert k1_sub.file_path in targets
+        assert j7_sub.file_path in targets
+
+
+def test_round44_archive_fetcher_permits_colon_in_git_dir_name(tmp_path):
+    import pytest
+    from unittest.mock import patch
+    from src.targets.archive_fetcher import ArchiveSnapshotFetcher
+    from src.targets.models import ScanTargetSpec
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=100000,
+        max_extracted_bytes=100000,
+        max_files=100,
+        max_single_file_bytes=100000,
+        timeout_sec=10,
+    )
+
+    spec_valid_colon = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="HEAD",
+        subdir="a:b",
+    )
+    spec_drive = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="HEAD",
+        subdir="C:/foo",
+    )
+
+    fake_subdir = tmp_path / "fake_ab"
+    fake_subdir.mkdir()
+
+    with (
+        patch.object(fetcher, "_download_limited"),
+        patch(
+            "src.targets.archive_fetcher.safe_extract_zip",
+            return_value=(tmp_path, ()),
+        ),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("pathlib.Path.resolve", return_value=fake_subdir),
+    ):
+        # Colon in git directory name "a:b" should be permitted without raising "展開ルート外"
+        res = fetcher.fetch(spec_valid_colon, tmp_path)
+        assert res == fake_subdir
+
+        # True Windows drive letter "C:/foo" should raise ValueError
+        with pytest.raises(ValueError, match="展開ルート外"):
+            fetcher.fetch(spec_drive, tmp_path)
+
+
+def test_round44_archive_fetcher_quotes_ref_in_url(tmp_path):
+    from unittest.mock import patch
+    from src.targets.archive_fetcher import ArchiveSnapshotFetcher
+    from src.targets.models import ScanTargetSpec
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=100000,
+        max_extracted_bytes=100000,
+        max_files=100,
+        max_single_file_bytes=100000,
+        timeout_sec=10,
+    )
+    spec = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="release#1",
+    )
+
+    download_urls = []
+
+    def mock_download(url, path):
+        download_urls.append(url)
+
+    with (
+        patch.object(fetcher, "_download_limited", side_effect=mock_download),
+        patch(
+            "src.targets.archive_fetcher.safe_extract_zip",
+            return_value=(tmp_path, ()),
+        ),
+    ):
+        fetcher.fetch(spec, tmp_path)
+        assert len(download_urls) == 1
+        assert "release%231" in download_urls[0]
