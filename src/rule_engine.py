@@ -528,7 +528,7 @@ def _evaluate_rule_in_process(
 
 
 class RuleError(tuple):
-    """Tuple (rule_id, err_detail, exc_type) compatible with 2-element tuple unpacking."""
+    """2-element tuple (rule_id, err_detail) compatible type with optional exc_type attribute."""
 
     def __new__(
         cls,
@@ -536,7 +536,9 @@ class RuleError(tuple):
         err_detail: str,
         exc_type: str = "Rule execution error",
     ):
-        return super().__new__(cls, (rule_id, err_detail, exc_type))
+        inst = super().__new__(cls, (rule_id, err_detail))
+        inst._exc_type = exc_type
+        return inst
 
     @property
     def rule_id(self) -> str:
@@ -548,11 +550,10 @@ class RuleError(tuple):
 
     @property
     def exc_type(self) -> str:
-        return self[2]
+        return getattr(self, "_exc_type", "Rule execution error")
 
-    def __iter__(self):
-        yield self[0]
-        yield self[1]
+    def __getnewargs__(self):
+        return (self[0], self[1], getattr(self, "_exc_type", "Rule execution error"))
 
 
 _run_all_lock = threading.Lock()

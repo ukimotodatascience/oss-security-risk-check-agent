@@ -81,8 +81,11 @@ class MVPOrchestrator:
 
         # 2. Trivy Scan (既知脆弱性, Secret, 設定)
         # ArchiveSnapshotFetcher を使用して安全上限 (ダウンロード・解凍サイズ、ファイル数) を適用
-        target_ref = (
+        raw_ref = (
             getattr(self.cli_options, "target_ref", None) if self.cli_options else None
+        )
+        target_ref = (
+            raw_ref.strip() if isinstance(raw_ref, str) and raw_ref.strip() else None
         )
         target_subdir = (
             getattr(self.cli_options, "target_subdir", None)
@@ -240,7 +243,7 @@ class MVPOrchestrator:
             )
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
-        is_default_branch_ref = not target_ref or target_ref.strip() == "HEAD"
+        is_default_branch_ref = not target_ref or target_ref == "HEAD"
         norm_subdir = _normalize_subdir(target_subdir)
         if is_default_branch_ref and not norm_subdir:
             try:
@@ -854,10 +857,10 @@ class MVPOrchestrator:
                     )
                 ]
 
-            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when a non-root target_subdir is specified
+            # Remove repo-root level rules (K-1, J-2, J-3, J-7, H-6) when a non-root target_subdir is specified
             norm_sub = _normalize_subdir(target_subdir)
             if norm_sub:
-                repo_root_rules = {"K-1", "J-2", "J-3", "J-7"}
+                repo_root_rules = {"K-1", "J-2", "J-3", "J-7", "H-6"}
                 findings = [
                     f
                     for f in findings
@@ -919,6 +922,7 @@ class MVPOrchestrator:
                 "scanned_ref",
                 "scanned_subdir",
                 "status_reason",
+                "scanned_at",
             ):
                 val = getattr(res, attr, None)
                 if isinstance(val, str) and len(val) > max_len:
@@ -926,7 +930,14 @@ class MVPOrchestrator:
 
         def _sync_findings_counts(res: OverallResult) -> None:
             for cat_res in res.categories.values():
-                cat_res.findings_count = len(cat_res.findings)
+                cat_res.findings_count = len(
+                    [
+                        f
+                        for f in cat_res.findings
+                        if getattr(f, "severity", None)
+                        and str(f.severity).upper() != "INFO"
+                    ]
+                )
 
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(

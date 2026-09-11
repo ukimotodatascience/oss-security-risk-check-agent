@@ -2468,3 +2468,199 @@ def test_repo_root_rules_retained_when_subdir_is_dot(tmp_path):
 
     rule_ids = {f.rule_id for f in findings}
     assert "K-1" in rule_ids
+
+
+def test_early_target_ref_normalization(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": " HEAD ",
+            "target_subdir": None,
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    captured_spec = []
+
+    def mock_fetch(spec, tmpdir):
+        captured_spec.append(spec)
+        return tmp_path
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            side_effect=mock_fetch,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(
+            orchestrator.scorecard_adapter, "run_scan", return_value=[]
+        ) as mock_scorecard,
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        assert len(captured_spec) == 1
+        # Spec ref MUST be stripped to "HEAD"
+        assert captured_spec[0].ref == "HEAD"
+        # Scorecard MUST be called because " HEAD " normalized to "HEAD" (default branch ref)
+        mock_scorecard.assert_called_once()
+
+
+def test_save_result_json_truncates_scanned_at(tmp_path):
+    from src.mvp_models import Category, CategoryResult, OverallResult, OverallStatus
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="Known Vulnerabilities",
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=[],
+    )
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-11T" + "9" * (10 * 1024 * 1024 + 100) + "Z",
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=[],
+        status=OverallStatus.SAFE,
+    )
+
+    out_file = orchestrator.save_result_json(
+        result, filename="test_scanned_at_trunc.json", output_dir=tmp_path
+    )
+    import json
+
+    with open(out_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    assert len(data["scanned_at"]) <= 203
+    assert data["scanned_at"].endswith("...")
+
+
+def test_h6_excluded_on_target_subdir_scan(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    (tmp_path / "sub").mkdir()
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "sub", "output_dir": None},
+    )()
+    orchestrator.cli_options = mock_opts
+
+    rec_h6 = MagicMock(
+        category="source_code",
+        rule_id="H-6",
+        severity=MagicMock(value="MEDIUM"),
+        title="No TLS doc",
+        file_path=".",
+        line=1,
+        message="msg",
+    )
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        with patch("src.rule_engine.run_all", return_value=([rec_h6], [], 1)):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status={"rule_based": True},
+                target_dir=tmp_path / "sub",
+            )
+
+    rule_ids = {f.rule_id for f in findings}
+    assert "H-6" not in rule_ids
+
+
+def test_rule_error_true_2_tuple_compatibility():
+    import pickle
+    from src.rule_engine import RuleError
+
+    err = RuleError("A-1", "tb detail", "TimeoutError")
+    assert len(err) == 2
+    rule_id, detail = err
+    assert rule_id == "A-1"
+    assert detail == "tb detail"
+    assert err == ("A-1", "tb detail")
+    assert err.rule_id == "A-1"
+    assert err.err_detail == "tb detail"
+    assert err.exc_type == "TimeoutError"
+
+    pickled = pickle.dumps(err)
+    restored = pickle.loads(pickled)
+    assert len(restored) == 2
+    assert restored == ("A-1", "tb detail")
+    assert restored.exc_type == "TimeoutError"
+
+
+def test_sync_findings_counts_counts_only_risk_findings(tmp_path):
+    from src.mvp_models import (
+        Category,
+        CategoryResult,
+        Finding,
+        OverallResult,
+        OverallStatus,
+    )
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+
+    f_risk = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="rule_based",
+        rule_id="B-1",
+        severity="HIGH",
+        title="CVE Vuln",
+        description="High risk vulnerability",
+    )
+    f_info = Finding(
+        category=Category.KNOWN_VULNERABILITIES,
+        source="snapshot_fetcher",
+        rule_id="GIT-HISTORY-UNEVALUATED",
+        severity="INFO",
+        title="Git History Skipped",
+        description="Notice only",
+    )
+
+    cat_res = CategoryResult(
+        category=Category.KNOWN_VULNERABILITIES,
+        category_name="Known Vulnerabilities",
+        evaluated=True,
+        score=5.0,
+        summary="Summary test",
+        findings=[f_risk, f_info],
+        findings_count=1,
+    )
+    result = OverallResult(
+        repository_url="https://github.com/owner/repo",
+        scanned_at="2026-09-11T00:00:00Z",
+        overall_score=5.0,
+        categories={Category.KNOWN_VULNERABILITIES: cat_res},
+        all_findings=[f_risk, f_info],
+        status=OverallStatus.SAFE,
+    )
+
+    out_file = orchestrator.save_result_json(
+        result, filename="test_sync_counts.json", output_dir=tmp_path
+    )
+    import json
+
+    with open(out_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    # findings_count MUST be 1 (only f_risk counted, f_info excluded)
+    assert data["categories"]["known_vulnerabilities"]["findings_count"] == 1
