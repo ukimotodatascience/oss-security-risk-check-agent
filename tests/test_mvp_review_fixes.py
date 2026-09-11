@@ -2940,3 +2940,34 @@ def test_early_target_subdir_backslash_normalization(tmp_path):
         assert orchestrator.cli_options.target_subdir == "services/.."
         # Scorecard MUST be called because "services/.." normalizes to None (repo root)
         mock_scorecard.assert_called_once()
+
+
+def test_archive_fetcher_refuses_drive_letter_subdir(tmp_path):
+    import pytest
+    from unittest.mock import patch
+    from src.targets.archive_fetcher import ArchiveSnapshotFetcher
+    from src.targets.models import ScanTargetSpec
+
+    fetcher = ArchiveSnapshotFetcher(
+        max_download_bytes=100000,
+        max_extracted_bytes=100000,
+        max_files=100,
+        max_single_file_bytes=100000,
+        timeout_sec=10,
+    )
+    spec = ScanTargetSpec(
+        source_type="remote_archive",
+        repo_url="https://github.com/owner/repo",
+        ref="HEAD",
+        subdir=r"C:\..",
+    )
+
+    with (
+        patch.object(fetcher, "_download_limited"),
+        patch(
+            "src.targets.archive_fetcher.safe_extract_zip",
+            return_value=(tmp_path, ()),
+        ),
+    ):
+        with pytest.raises(ValueError, match="展開ルート外"):
+            fetcher.fetch(spec, tmp_path)

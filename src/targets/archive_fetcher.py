@@ -88,7 +88,14 @@ class ArchiveSnapshotFetcher:
         self.skipped_files = skipped_files
 
         if spec.subdir:
-            subdir = (extracted_root / spec.subdir).resolve()
+            clean_sub = spec.subdir.replace("\\", "/").strip()
+            is_abs_or_drive = clean_sub.startswith("/") or (
+                len(clean_sub) > 1 and clean_sub[1] == ":"
+            )
+            if is_abs_or_drive:
+                raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")
+
+            subdir = (extracted_root / clean_sub).resolve()
             root = extracted_root.resolve()
             if root != subdir and root not in subdir.parents:
                 raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")
