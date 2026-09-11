@@ -2569,9 +2569,9 @@ def test_h6_excluded_on_target_subdir_scan(tmp_path):
         rule_id="H-6",
         severity=MagicMock(value="MEDIUM"),
         title="No TLS doc",
-        file_path=".",
-        line=1,
-        message="msg",
+        file_path=None,
+        line=None,
+        message="TLS/証明書運用に関するドキュメントが見つかりませんでした",
     )
 
     with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
@@ -2664,3 +2664,98 @@ def test_sync_findings_counts_counts_only_risk_findings(tmp_path):
 
     # findings_count MUST be 1 (only f_risk counted, f_info excluded)
     assert data["categories"]["known_vulnerabilities"]["findings_count"] == 1
+
+
+def test_fallback_scan_uses_normalized_target_ref(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": " HEAD ",
+            "target_subdir": None,
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    captured_effective_opts = []
+
+    def mock_security_scan_init(project_root, cli_options=None, persist_report=False):
+        captured_effective_opts.append(cli_options)
+        mock_instance = MagicMock()
+        mock_res = MagicMock()
+        mock_res.records = []
+        mock_res.errors = []
+        mock_instance.run.return_value = mock_res
+        return mock_instance
+
+    with patch("src.scan.SecurityScan", side_effect=mock_security_scan_init):
+        findings, success = orchestrator._run_rule_based_scan(
+            "https://github.com/owner/repo",
+            scanner_status={"rule_based": True},
+            target_dir=None,  # triggers fallback SecurityScan
+        )
+
+    # self.cli_options.target_ref MUST be normalized to "HEAD"
+    assert orchestrator.cli_options.target_ref == "HEAD"
+    assert len(captured_effective_opts) == 1
+    # SecurityScan effective_opts.target_ref MUST be "HEAD"
+    assert captured_effective_opts[0].target_ref == "HEAD"
+
+
+def test_h6_expired_cert_finding_retained_on_target_subdir_scan(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from src.orchestrator import MVPOrchestrator
+
+    orchestrator = MVPOrchestrator(tmp_path)
+    (tmp_path / "sub").mkdir()
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {"target_ref": None, "target_subdir": "sub", "output_dir": None},
+    )()
+    orchestrator.cli_options = mock_opts
+
+    # Missing doc H-6 finding (target=None)
+    rec_h6_missing = MagicMock(
+        category="source_code",
+        rule_id="H-6",
+        severity=MagicMock(value="MEDIUM"),
+        title="No TLS doc",
+        file_path=None,
+        line=None,
+        message="TLS/証明書運用に関するドキュメントが見つかりませんでした",
+    )
+
+    # Actual expired cert H-6 finding in subdirectory file
+    rec_h6_expired = MagicMock(
+        category="source_code",
+        rule_id="H-6",
+        severity=MagicMock(value="HIGH"),
+        title="Expired TLS Cert",
+        file_path="sub/README.md",
+        line=5,
+        message="TLS 証明書の期限切れを示唆する記述が検出されました",
+    )
+
+    with patch("src.rule_engine.load_all_rules", return_value=[MagicMock()]):
+        with patch(
+            "src.rule_engine.run_all",
+            return_value=([rec_h6_missing, rec_h6_expired], [], 2),
+        ):
+            findings, success = orchestrator._run_rule_based_scan(
+                "https://github.com/owner/repo",
+                scanner_status={"rule_based": True},
+                target_dir=tmp_path / "sub",
+            )
+
+    h6_findings = [f for f in findings if f.rule_id == "H-6"]
+    # Missing doc finding MUST be excluded, but expired cert finding MUST be retained!
+    assert len(h6_findings) == 1
+    assert h6_findings[0].target == "sub/README.md"
+    assert h6_findings[0].severity == "HIGH"

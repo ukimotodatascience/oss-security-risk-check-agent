@@ -87,6 +87,11 @@ class MVPOrchestrator:
         target_ref = (
             raw_ref.strip() if isinstance(raw_ref, str) and raw_ref.strip() else None
         )
+        if self.cli_options and hasattr(self.cli_options, "target_ref"):
+            try:
+                object.__setattr__(self.cli_options, "target_ref", target_ref)
+            except Exception:
+                pass
         target_subdir = (
             getattr(self.cli_options, "target_subdir", None)
             if self.cli_options
@@ -399,11 +404,21 @@ class MVPOrchestrator:
             from src.rule_engine import load_all_rules, run_all
             from src.scan import SecurityScan
 
-            target_ref = (
+            raw_ref = (
                 getattr(self.cli_options, "target_ref", None)
                 if self.cli_options
                 else None
             )
+            target_ref = (
+                raw_ref.strip()
+                if isinstance(raw_ref, str) and raw_ref.strip()
+                else None
+            )
+            if self.cli_options and hasattr(self.cli_options, "target_ref"):
+                try:
+                    object.__setattr__(self.cli_options, "target_ref", target_ref)
+                except Exception:
+                    pass
             target_subdir = (
                 getattr(self.cli_options, "target_subdir", None)
                 if self.cli_options
@@ -857,10 +872,10 @@ class MVPOrchestrator:
                     )
                 ]
 
-            # Remove repo-root level rules (K-1, J-2, J-3, J-7, H-6) when a non-root target_subdir is specified
+            # Remove repo-root level rules (K-1, J-2, J-3, J-7) when a non-root target_subdir is specified
             norm_sub = _normalize_subdir(target_subdir)
             if norm_sub:
-                repo_root_rules = {"K-1", "J-2", "J-3", "J-7", "H-6"}
+                repo_root_rules = {"K-1", "J-2", "J-3", "J-7"}
                 findings = [
                     f
                     for f in findings
@@ -871,6 +886,20 @@ class MVPOrchestrator:
                             or any(
                                 str(f.rule_id).startswith(r) for r in repo_root_rules
                             )
+                        )
+                    )
+                ]
+                # Remove H-6 root-level missing documentation findings, but retain actual expired certificate findings in subdirectory files
+                findings = [
+                    f
+                    for f in findings
+                    if not (
+                        f.source == "rule_based"
+                        and (f.rule_id == "H-6" or str(f.rule_id).startswith("H-6"))
+                        and (
+                            not f.target
+                            or "見つかりませんでした" in (f.description or "")
+                            or "不足している" in (f.description or "")
                         )
                     )
                 ]
