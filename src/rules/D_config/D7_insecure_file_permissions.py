@@ -37,10 +37,12 @@ class D7InsecureFilePermissionsRule:
             return True
         return any(hint in name for hint in self._SENSITIVE_NAME_HINTS)
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):
+            if len(records) >= max_records:
+                break
             if not p.is_file() or not self._is_sensitive_file(p):
                 continue
 

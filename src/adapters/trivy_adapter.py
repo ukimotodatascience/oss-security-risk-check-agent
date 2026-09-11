@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+from typing import Any, Dict, List
+from src.mvp_models import Category, Finding
+
+logger = logging.getLogger(__name__)
+
+
+class TrivyAdapter:
+    def __init__(self, cli_path: str = "trivy") -> None:
+        self.cli_path = cli_path
+
+    def run_scan_with_status(
+        self,
+        repo_url_or_path: str,
+        max_output_bytes: int = 50 * 1024 * 1024,
+        target_ref: str | None = None,
+        target_subdir: str | None = None,
+    ) -> tuple[List[Finding], bool]:
+        """Trivy CLI を実行し (findings, success_flag) を返す。"""
+        import tempfile
+
+        try:
+            is_url = repo_url_or_path.startswith(
+                "http://"
+            ) or repo_url_or_path.startswith("https://")
+            scan_mode = "repo" if is_url else "fs"
+            cmd = [
+                self.cli_path,
+                scan_mode,
+                "--format",
+                "json",
+                "--scanners",
+                "vuln,secret,misconfig",
+            ]
+
+            if is_url and target_ref:
+                cmd.extend(["--branch", target_ref])
+            cmd.append(repo_url_or_path)
+
+            with (
+                tempfile.TemporaryFile() as tmp_out,
+                tempfile.TemporaryFile() as tmp_err,
+            ):
+                proc = subprocess.Popen(cmd, stdout=tmp_out, stderr=tmp_err, text=False)
+
+                import time
+
+                start_time = time.time()
+                timed_out = False
+                exceeded_size = False
+
+                while proc.poll() is None:
+                    if time.time() - start_time > 120:
+                        timed_out = True
+                        proc.kill()
+                        break
+                    total_size = tmp_out.tell() + tmp_err.tell()
+                    if total_size > max_output_bytes:
+                        exceeded_size = True
+                        proc.kill()
+                        break
+                    time.sleep(0.1)
+
+                proc.wait()
+                actual_out_size = tmp_out.tell()
+                actual_err_size = tmp_err.tell()
+
+                tmp_err.seek(0)
+                stderr_bytes = tmp_err.read(64 * 1024)
+
+                if timed_out:
+                    logger.warning("Trivy CLI timed out after 120s.")
+                    return [], False
+
+                total_size = actual_out_size + actual_err_size
+                if exceeded_size or total_size > max_output_bytes:
+                    logger.warning(
+                        f"Trivy CLI output size ({total_size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                    )
+                    return [], False
+
+                if proc.returncode == 0 and actual_out_size > 0:
+                    tmp_out.seek(0)
+                    data = json.load(tmp_out)
+                    findings, is_full_success = self.parse_json_with_status(data)
+                    return findings, is_full_success
+
+                stderr_text = (
+                    stderr_bytes.decode("utf-8", errors="replace")
+                    if stderr_bytes
+                    else ""
+                )
+                logger.warning(
+                    f"Trivy CLI exited with code {proc.returncode}: {stderr_text}"
+                )
+                return [], False
+        except FileNotFoundError:
+            logger.info("Trivy CLI not found in PATH.")
+            return [], False
+        except Exception as e:
+            logger.error(f"Failed to run Trivy scan: {e}")
+            return [], False
+
+    def run_scan(
+        self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
+    ) -> List[Finding]:
+        """Trivy CLI を実行して Findings のリストを取得。"""
+        findings, _ = self.run_scan_with_status(repo_url_or_path, max_output_bytes)
+        return findings
+
+    def parse_json(
+        self, data: Dict[str, Any], max_findings: int = 500
+    ) -> List[Finding]:
+        findings, _ = self.parse_json_with_status(data, max_findings=max_findings)
+        return findings
+
+    def parse_json_with_status(
+        self, data: Dict[str, Any], max_findings: int = 500
+    ) -> tuple[List[Finding], bool]:
+        findings: List[Finding] = []
+        results = data.get("Results", [])
+        truncated = False
+
+        for result in results:
+            target = result.get("Target", "")
+
+            # 1. 既知脆弱性 (Vulnerabilities)
+            for vuln in result.get("Vulnerabilities", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
+                pkg_name = vuln.get("PkgName", "")
+                installed_ver = vuln.get("InstalledVersion", "")
+                if pkg_name and installed_ver:
+                    loc = f"{pkg_name}@{installed_ver}"
+                elif pkg_name:
+                    loc = pkg_name
+                else:
+                    loc = installed_ver
+
+                raw_desc = vuln.get("Description", "")[:2000]
+                if pkg_name and pkg_name.lower() not in raw_desc.lower():
+                    desc = f"Package: {pkg_name}\n{raw_desc}".strip()
+                else:
+                    desc = raw_desc
+
+                fixed_ver = vuln.get("FixedVersion")
+                if pkg_name and fixed_ver:
+                    remediation = f"Upgrade {pkg_name} to {fixed_ver}"
+                elif fixed_ver:
+                    remediation = f"Fixed in {fixed_ver}"
+                elif pkg_name:
+                    remediation = f"Upgrade {pkg_name}"
+                else:
+                    remediation = "Fixed version N/A"
+
+                findings.append(
+                    Finding(
+                        category=Category.KNOWN_VULNERABILITIES,
+                        source="trivy",
+                        rule_id=vuln.get("VulnerabilityID", "CVE-UNKNOWN"),
+                        severity=vuln.get("Severity", "MEDIUM").upper(),
+                        title=vuln.get("Title")
+                        or vuln.get("VulnerabilityID", "Vulnerability"),
+                        target=target,
+                        location=loc,
+                        description=desc,
+                        remediation=remediation,
+                    )
+                )
+            if truncated:
+                break
+
+            # 2. Secret (Secrets)
+            for secret in result.get("Secrets", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
+                rule_id = secret.get("RuleID", "SECRET-DETECTED")
+                title = secret.get("Title", "Secret Detected")
+                findings.append(
+                    Finding(
+                        category=Category.SECRETS,
+                        source="trivy",
+                        rule_id=rule_id,
+                        severity=secret.get("Severity", "HIGH").upper(),
+                        title=title,
+                        target=target,
+                        location=f"Line {secret.get('StartLine', 0)}",
+                        description=f"Potential secret detected ({rule_id}: {title}). Match content redacted for security."[
+                            :2000
+                        ],
+                        remediation="Hardcoded secret should be removed and moved to environment variables or vault.",
+                    )
+                )
+            if truncated:
+                break
+
+            # 3. Misconfiguration (設定セキュリティ)
+            for misconf in result.get("Misconfigurations", []):
+                if len(findings) >= max_findings:
+                    truncated = True
+                    break
+                findings.append(
+                    Finding(
+                        category=Category.MISCONFIGURATION,
+                        source="trivy",
+                        rule_id=misconf.get("ID", "MISCONF-DETECTED"),
+                        severity=misconf.get("Severity", "MEDIUM").upper(),
+                        title=misconf.get("Title", "Configuration Issue"),
+                        target=target,
+                        description=misconf.get("Description", "")[:2000],
+                        remediation=misconf.get("Resolution", ""),
+                    )
+                )
+            if truncated:
+                break
+
+        if truncated:
+            for cat in (
+                Category.KNOWN_VULNERABILITIES,
+                Category.SECRETS,
+                Category.MISCONFIGURATION,
+            ):
+                findings.append(
+                    Finding(
+                        category=cat,
+                        source="trivy",
+                        rule_id="TRIVY-FINDINGS-LIMIT-EXCEEDED",
+                        severity="INFO",
+                        title="Trivy Findings Limit Exceeded",
+                        description=f"Trivy scan generated over {max_findings} findings. Truncated excess findings.",
+                        remediation="Review target or narrow scan scope.",
+                    )
+                )
+
+        return findings, not truncated
+
+    def _get_mock_findings(self, repo_target: str) -> List[Finding]:
+        """Trivy CLI が存在しない場合に安全なモック結果を返す"""
+        return [
+            Finding(
+                category=Category.KNOWN_VULNERABILITIES,
+                source="trivy",
+                rule_id="CVE-2023-9999",
+                severity="MEDIUM",
+                title="Example Dependency Vulnerability (Mock)",
+                target="package-lock.json",
+                location="example-pkg@1.0.0",
+                description="Mock vulnerability finding for demonstration.",
+                remediation="Upgrade example-pkg to 1.0.1",
+            )
+        ]

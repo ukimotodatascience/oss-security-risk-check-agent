@@ -48,7 +48,7 @@ class J5NoRecentReleaseRule:
                 return int(s)
         return 0
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         latest_release_ts = self._last_release_timestamp(target)

@@ -30,10 +30,12 @@ class G1RunsAsRootRule:
             if p.is_file() and p.suffix.lower() in self._TEXT_EXTS:
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for dockerfile in self._iter_dockerfiles(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = dockerfile.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -43,6 +45,8 @@ class G1RunsAsRootRule:
             user_line = None
             root_line = None
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
@@ -77,6 +81,8 @@ class G1RunsAsRootRule:
                 )
 
         for file_path in self._iter_runtime_text_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -84,6 +90,8 @@ class G1RunsAsRootRule:
 
             rel_path = str(file_path.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue

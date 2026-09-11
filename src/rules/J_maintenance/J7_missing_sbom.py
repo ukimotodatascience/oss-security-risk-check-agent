@@ -62,7 +62,7 @@ class J7MissingSbomRule:
             unique.append(p)
         return unique
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         sbom_files = self._find_sbom_files(target)
 
@@ -83,6 +83,8 @@ class J7MissingSbomRule:
         # 拡張子が想定外の SBOM 名ファイルを注意喚起
         allowed_exts = {".json", ".xml", ".yml", ".yaml", ".spdx"}
         for p in sbom_files:
+            if len(records) >= max_records:
+                break
             ext = p.suffix.lower()
             if ext and ext not in allowed_exts:
                 records.append(

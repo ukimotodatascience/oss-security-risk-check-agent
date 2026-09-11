@@ -31,7 +31,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 yield p
 
     def _evaluate_js_ts_file_with_tree_sitter(
-        self, file_path: Path, target: Path, src: str
+        self, file_path: Path, target: Path, src: str, max_records: int = 500
     ) -> Optional[List[RiskRecord]]:
         """tree-sitter が利用可能な場合、JS/TS を構文木ベースで評価する。"""
         parser = get_tree_sitter_parser(file_path.suffix.lower())
@@ -52,7 +52,18 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         rel_path = str(file_path.relative_to(target))
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
+        seen_ts_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
+
+        def _add_ts_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message or "", rec.severity)
+            if key not in seen_ts_keys:
+                seen_ts_keys.add(key)
+                records.append(rec)
+            return len(records) >= max_records
+
         for node in iter_ts_nodes(root):
+            if len(records) >= max_records:
+                break
             node_type = getattr(node, "type", "")
             text = ts_node_text(src_bytes, node)
             if node_type in {
@@ -105,7 +116,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not is_known_sink:
                 continue
             if callee_tail in {"exec", "execSync"}:
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -115,10 +126,11 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=line,
                         message="External input reaches child_process command execution",
                     )
-                )
+                ):
+                    break
                 continue
             if callee_tail in {"execFile", "execFileSync", "fork"}:
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -128,11 +140,12 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         line=line,
                         message="External input reaches child_process file execution",
                     )
-                )
+                ):
+                    break
                 continue
             if callee_tail in {"spawn", "spawnSync"}:
                 has_shell_true = "shell: true" in call_text or "shell:true" in call_text
-                records.append(
+                if _add_ts_record(
                     RiskRecord(
                         rule_id=self.rule_id,
                         category=self.category,
@@ -144,21 +157,37 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                         if has_shell_true
                         else "External input reaches child_process spawn",
                     )
-                )
+                ):
+                    break
         return records
 
-    def _evaluate_js_ts_file(self, file_path: Path, target: Path) -> List[RiskRecord]:
+    def _evaluate_js_ts_file(
+        self, file_path: Path, target: Path, max_records: int = 500
+    ) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         rel_path = str(file_path.relative_to(target))
         try:
             src = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return records
+
+        seen_keys: Set[Tuple[Optional[str], Optional[int], str, Severity]] = set()
+
+        def _add_record(rec: RiskRecord) -> bool:
+            key = (rec.file_path, rec.line, rec.message or "", rec.severity)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                records.append(rec)
+            return len(records) >= max_records
+
         tree_sitter_records = self._evaluate_js_ts_file_with_tree_sitter(
-            file_path, target, src
+            file_path, target, src, max_records=max_records
         )
         if tree_sitter_records is not None:
-            records.extend(tree_sitter_records)
+            for rec in tree_sitter_records:
+                if _add_record(rec):
+                    return records
+
         tainted_names: Set[str] = set()
         child_process_sinks: Set[str] = set()
         shell_true_option_names: Set[str] = set()
@@ -179,6 +208,8 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         if buffer:
             statements.append((start_line, buffer))
         for i, stripped in statements:
+            if len(records) >= max_records:
+                break
             self._register_child_process_imports(stripped, child_process_sinks)
             m = re.search(
                 "\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(.+)$", stripped
@@ -196,31 +227,31 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                     tainted_names.add(var_name)
             if re.search("\\b(?:execFile|execFileSync|fork)\\s*\\(", stripped):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.MEDIUM,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process file execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.MEDIUM,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process file execution",
                     )
+                    if _add_record(rec):
+                        break
                 continue
             if self._is_known_third_party_shell_sink(stripped):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches shell command execution helper",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches shell command execution helper",
                     )
+                    if _add_record(rec):
+                        break
                 continue
             exec_names = child_process_sinks or {"exec", "execSync"}
             if any(
@@ -233,17 +264,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 )
             ):
                 if self._js_has_external_input(stripped, tainted_names):
-                    records.append(
-                        RiskRecord(
-                            rule_id=self.rule_id,
-                            category=self.category,
-                            title=self.title,
-                            severity=Severity.HIGH,
-                            file_path=rel_path,
-                            line=i,
-                            message="External input reaches child_process command execution",
-                        )
+                    rec = RiskRecord(
+                        rule_id=self.rule_id,
+                        category=self.category,
+                        title=self.title,
+                        severity=Severity.HIGH,
+                        file_path=rel_path,
+                        line=i,
+                        message="External input reaches child_process command execution",
                     )
+                    if _add_record(rec):
+                        break
                 continue
             spawn_names = child_process_sinks or {"spawn", "spawnSync"}
             if any(
@@ -260,20 +291,20 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                 has_shell_true = self._js_call_enables_shell(
                     stripped, shell_true_option_names
                 )
-                records.append(
-                    RiskRecord(
-                        rule_id=self.rule_id,
-                        category=self.category,
-                        title=self.title,
-                        severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
-                        file_path=rel_path,
-                        line=i,
-                        message="External input reaches child_process spawn with shell=true"
-                        if has_shell_true
-                        else "External input reaches child_process spawn",
-                    )
+                rec = RiskRecord(
+                    rule_id=self.rule_id,
+                    category=self.category,
+                    title=self.title,
+                    severity=Severity.HIGH if has_shell_true else Severity.MEDIUM,
+                    file_path=rel_path,
+                    line=i,
+                    message="External input reaches child_process spawn with shell=true"
+                    if has_shell_true
+                    else "External input reaches child_process spawn",
                 )
-        return dedupe_records(records)
+                if _add_record(rec):
+                    break
+        return dedupe_records(records[:max_records])
 
     @staticmethod
     def _js_options_enable_shell(text: str) -> bool:
@@ -296,8 +327,17 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             or re.search(r"\bexeca\.command(?:Sync)?\s*\(", text)
         )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for js_file in self._iter_js_ts_files(target):
-            records.extend(self._evaluate_js_ts_file(js_file, target))
-        return dedupe_records(records)
+            if len(records) >= max_records:
+                break
+            records.extend(
+                self._evaluate_js_ts_file(
+                    js_file, target, max_records=max_records - len(records)
+                )
+            )
+            if len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return dedupe_records(records)[:max_records]

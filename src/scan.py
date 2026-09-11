@@ -82,6 +82,7 @@ class ScanResult:
     records: Sequence[RiskRecord]
     errors: Sequence[Tuple[str, str]]
     skipped_files: Sequence[SkippedFile]
+    scanned_file_count: int | None = None
 
 
 class SecurityScan:
@@ -141,6 +142,11 @@ class SecurityScan:
 
         generated_at = datetime.now(timezone.utc)
         with resolver.resolve(target_spec) as resolved:
+            scanned_file_count = (
+                sum(1 for p in resolved.scan_path.rglob("*") if p.is_file())
+                if resolved.scan_path.exists()
+                else 0
+            )
             self._notify_step_progress(4, 5, "ルールを実行しています")
             logger.info(f"ルールを実行しています... (対象パス: {resolved.scan_path})")
             from src.rules.B_dependencies.vuln_sources import VulnLookupService
@@ -189,6 +195,7 @@ class SecurityScan:
                 records=records,
                 errors=errors,
                 skipped_files=resolved.skipped_files,
+                scanned_file_count=scanned_file_count,
             )
 
             self._print_result(result)

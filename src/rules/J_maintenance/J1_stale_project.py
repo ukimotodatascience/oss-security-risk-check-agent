@@ -17,7 +17,7 @@ class J1StaleProjectRule:
     _STALE_DAYS_THRESHOLD = 180
     _VERY_STALE_DAYS_THRESHOLD = 365
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         try:

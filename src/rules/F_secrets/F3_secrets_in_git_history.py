@@ -23,7 +23,7 @@ class F3SecretsInGitHistoryRule:
 
     _MAX_OUTPUT_CHARS = 1_000_000
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         try:
@@ -46,6 +46,8 @@ class F3SecretsInGitHistoryRule:
             output = output[: self._MAX_OUTPUT_CHARS]
 
         for pat in self._SECRET_PATTERNS:
+            if len(records) >= max_records:
+                break
             if pat.search(output):
                 records.append(
                     RiskRecord(

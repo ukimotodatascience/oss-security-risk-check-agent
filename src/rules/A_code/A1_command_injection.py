@@ -31,8 +31,15 @@ class A1CommandInjectionRule:
             ShellCommandInjectionDetector(),
         )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for detector in self._detectors:
-            records.extend(detector.evaluate(target))
-        return dedupe_records(records)
+            if len(records) >= max_records:
+                break
+            records.extend(
+                detector.evaluate(target, max_records=max_records - len(records))
+            )
+            if len(records) >= max_records:
+                records = records[:max_records]
+                break
+        return dedupe_records(records)[:max_records]

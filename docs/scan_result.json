@@ -1,0 +1,84 @@
+{
+  "repository_url": "https://github.com/ukimotodatascience/oss-security-risk-check-agent",
+  "scanned_at": "2026-09-05 15:10:57 UTC",
+  "scanned_ref": null,
+  "scanned_subdir": null,
+  "overall_score": 0.0,
+  "status": "評価不能",
+  "status_reason": "すべてのスキャナーが未評価・未実行のため、総合セキュリティスコアを正常算出できませんでした (評価不能)。",
+  "categories": {
+    "known_vulnerabilities": {
+      "category": "known_vulnerabilities",
+      "category_name": "既知脆弱性",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "Trivy スキャン未実行"
+    },
+    "secrets": {
+      "category": "secrets",
+      "category_name": "機密情報・Secret管理",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "Trivy スキャン未実行"
+    },
+    "misconfiguration": {
+      "category": "misconfiguration",
+      "category_name": "設定セキュリティ",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "Trivy スキャン未実行"
+    },
+    "dependencies": {
+      "category": "dependencies",
+      "category_name": "依存関係・Supply Chain",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "OpenSSF Scorecard スキャン未実行"
+    },
+    "development": {
+      "category": "development",
+      "category_name": "開発・変更管理",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "OpenSSF Scorecard スキャン未実行"
+    },
+    "cicd": {
+      "category": "cicd",
+      "category_name": "CI/CD・リリースセキュリティ",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "OpenSSF Scorecard スキャン未実行"
+    },
+    "maintenance": {
+      "category": "maintenance",
+      "category_name": "プロジェクト保守・セキュリティ体制",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "OpenSSF Scorecard スキャン未実行"
+    },
+    "source_code": {
+      "category": "source_code",
+      "category_name": "ソースコードセキュリティ",
+      "score": 0.0,
+      "evaluated": false,
+      "findings_count": 0,
+      "findings": [],
+      "summary": "ルールベーススキャン未実行"
+    }
+  },
+  "all_findings": []
+}

@@ -74,7 +74,7 @@ class J6ArchivedRepositoryRule:
         archived = data.get("archived")
         return bool(archived) if isinstance(archived, bool) else None
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         repo = self._extract_github_repo(target)

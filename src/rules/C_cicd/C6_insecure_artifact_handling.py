@@ -26,13 +26,15 @@ class C6InsecureArtifactHandlingRule:
         r"^\s*retention-days\s*:\s*(\d+)\s*$", re.IGNORECASE
     )
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         workflows = target / ".github" / "workflows"
         if not workflows.exists():
             return records
 
         for wf in workflows.rglob("*.y*ml"):
+            if len(records) >= max_records:
+                break
             try:
                 src = wf.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -44,6 +46,8 @@ class C6InsecureArtifactHandlingRule:
             first_artifact_line = None
             retention_days = []
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 if self._UPLOAD_PATTERN.search(line):
                     has_upload = True
                     if first_artifact_line is None:

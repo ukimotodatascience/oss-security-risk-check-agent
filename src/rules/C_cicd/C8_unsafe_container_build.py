@@ -27,10 +27,12 @@ class C8UnsafeContainerBuildRule:
             return True
         return True
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for p in target.rglob("*"):
+            if len(records) >= max_records:
+                break
             if not p.is_file():
                 continue
 
@@ -50,6 +52,8 @@ class C8UnsafeContainerBuildRule:
             rel_path = str(p.relative_to(target))
 
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue

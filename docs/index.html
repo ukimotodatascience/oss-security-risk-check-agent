@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OSS セキュリティチェッカー | サクラチェッカー風 総合評価</title>
+  <meta name="description" content="Trivy, OpenSSF Scorecard, ルールベース診断を統合したOSSリポジトリ向け総合セキュリティリスク診断ツール">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ナビゲーションバー -->
+  <nav class="navbar">
+    <div class="nav-container">
+      <div class="logo">
+        <span class="logo-icon">🛡️</span>
+        <span class="logo-text">OSS Security Checker</span>
+        <span class="badge-mvp">MVP v1.0</span>
+      </div>
+      <div class="nav-links">
+        <button id="btn-load-sample" class="btn btn-secondary">サンプルの結果を読み込み</button>
+        <label for="file-input" class="btn btn-outline">
+          📁 JSONファイルを読込
+          <input type="file" id="file-input" accept=".json" style="display: none;">
+        </label>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ヒーロー＆総合評価カード (サクラチェッカー風) -->
+    <section class="hero-card" id="hero-section">
+      <div class="repo-info-header">
+        <span class="label-muted">Target Repository</span>
+        <h1 id="repo-url" class="repo-title">https://github.com/example/repository</h1>
+        <p id="scanned-at" class="scanned-time">最終診察日時: -----</p>
+      </div>
+
+      <div class="overall-grid">
+        <!-- 総合スコアメーター -->
+        <div class="score-box">
+          <div class="score-circle-wrapper">
+            <svg class="score-circle-svg" viewBox="0 0 160 160">
+              <circle class="circle-bg" cx="80" cy="80" r="70"></circle>
+              <circle class="circle-progress" id="circle-progress" cx="80" cy="80" r="70" stroke-dasharray="440" stroke-dashoffset="440"></circle>
+            </svg>
+            <div class="score-circle-text">
+              <span id="overall-score-num" class="score-val">--</span>
+              <span class="score-max">/ 10.0</span>
+            </div>
+          </div>
+          <div class="score-label">総合セキュリティスコア</div>
+        </div>
+
+        <!-- 総合ステータスバッジ & 判定理由 -->
+        <div class="status-box">
+          <div class="status-badge-container">
+            <span id="overall-status-badge" class="status-badge status-unknown">判定中...</span>
+          </div>
+          <p id="overall-status-reason" class="status-reason-text">
+            JSONデータを選択するか、スキャン結果をロードして総合リスク評価を確認してください。
+          </p>
+
+          <div class="risk-legend">
+            <span class="legend-item"><span class="dot safe"></span> 良好 (7.5 - 10.0)</span>
+            <span class="legend-item"><span class="dot moderate"></span> 注意・普通 (5.0 - 7.4)</span>
+            <span class="legend-item"><span class="dot dangerous"></span> 危険 (0.0 - 4.9)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8カテゴリ一覧セクション -->
+    <section class="categories-section">
+      <div class="section-header">
+        <h2>📊 評価カテゴリ別スコア (8観点)</h2>
+        <p class="section-desc">Trivy、OpenSSF Scorecard、コード固有ルールの診断結果を10点満点で可視化</p>
+      </div>
+
+      <div class="categories-grid" id="categories-grid">
+        <!-- JSで8カテゴリカードを動的生成 -->
+      </div>
+    </section>
+
+    <!-- Findings (指摘事項) 一覧セクション -->
+    <section class="findings-section" id="findings-section">
+      <div class="findings-header-bar">
+        <div>
+          <h2>🔍 発見されたリスク・指摘事項 (Findings)</h2>
+          <p class="section-desc">カテゴリごとの詳細な指摘内容、影響度、推奨される修正アクション</p>
+        </div>
+
+        <!-- フィルターコントロール -->
+        <div class="filter-controls">
+          <select id="category-filter" class="select-input">
+            <option value="ALL">全カテゴリを表示</option>
+            <option value="known_vulnerabilities">既知脆弱性</option>
+            <option value="secrets">機密情報・Secret管理</option>
+            <option value="misconfiguration">設定セキュリティ</option>
+            <option value="dependencies">依存関係・Supply Chain</option>
+            <option value="development">開発・変更管理</option>
+            <option value="cicd">CI/CD・リリースセキュリティ</option>
+            <option value="maintenance">プロジェクト保守体制</option>
+            <option value="source_code">ソースコードセキュリティ</option>
+          </select>
+
+          <select id="severity-filter" class="select-input">
+            <option value="ALL">全重要度を表示</option>
+            <option value="CRITICAL">CRITICAL</option>
+            <option value="HIGH">HIGH</option>
+            <option value="MEDIUM">MEDIUM</option>
+            <option value="LOW">LOW</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Finding カード一覧 -->
+      <div class="findings-list" id="findings-list">
+        <!-- JSでFindingカードを挿入 -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- フッター -->
+  <footer class="footer">
+    <div class="container">
+      <p>OSS Security Risk Check Agent - MVP Architecture (Trivy + OpenSSF + Rule-Based)</p>
+      <p class="footer-sub">© 2026 OSS Security Checker Project</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

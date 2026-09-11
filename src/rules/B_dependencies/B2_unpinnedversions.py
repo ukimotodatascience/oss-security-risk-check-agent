@@ -16,9 +16,11 @@ class B2UnpinnedVersionsRule:
     title = "Unpinned Versions"
     severity = Severity.MEDIUM
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         for dep in collect_dependency_declarations(target):
+            if len(records) >= max_records:
+                break
             if not is_loose_spec(dep):
                 continue
             records.append(

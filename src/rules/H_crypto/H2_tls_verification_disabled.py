@@ -50,10 +50,12 @@ class H2TLSVerificationDisabledRule:
             if p.is_file() and p.suffix.lower() in self._TEXT_EXTS:
                 yield p
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
 
         for file_path in self._iter_candidate_files(target):
+            if len(records) >= max_records:
+                break
             try:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
@@ -61,6 +63,8 @@ class H2TLSVerificationDisabledRule:
 
             rel_path = str(file_path.relative_to(target))
             for idx, line in enumerate(lines, start=1):
+                if len(records) >= max_records:
+                    break
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue

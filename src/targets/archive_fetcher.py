@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import urllib.error
 import urllib.parse
+from urllib.parse import quote
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -70,9 +72,8 @@ class ArchiveSnapshotFetcher:
 
         repo = parse_github_repo_url(spec.repo_url)
         ref = spec.ref or "HEAD"
-        archive_url = (
-            f"https://api.github.com/repos/{repo.owner}/{repo.repo}/zipball/{ref}"
-        )
+        quoted_ref = quote(ref, safe="")
+        archive_url = f"https://api.github.com/repos/{repo.owner}/{repo.repo}/zipball/{quoted_ref}"
 
         work_dir.mkdir(parents=True, exist_ok=True)
         archive_path = work_dir / "source.zip"
@@ -88,15 +89,68 @@ class ArchiveSnapshotFetcher:
         self.skipped_files = skipped_files
 
         if spec.subdir:
-            subdir = (extracted_root / spec.subdir).resolve()
+            clean_sub = spec.subdir.replace("\\", "/").strip()
+            is_abs_or_drive = clean_sub.startswith("/") or bool(
+                re.match(r"^[a-zA-Z]:(?:[/\\]|$)", clean_sub)
+            )
+            if is_abs_or_drive:
+                raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")
+
+            subdir = (extracted_root / clean_sub).resolve()
             root = extracted_root.resolve()
             if root != subdir and root not in subdir.parents:
                 raise ValueError("TARGET_SUBDIR が展開ルート外を指しています。")
             if not subdir.is_dir():
+                # もし全ファイルがサイズ上限等で省略されていた場合、空ディレクトリを作成して正常返却
+                if self.skipped_files and any(
+                    self._is_in_subdir(sf, spec.subdir) for sf in self.skipped_files
+                ):
+                    subdir.mkdir(parents=True, exist_ok=True)
+                    return subdir
                 raise ValueError(f"TARGET_SUBDIR が存在しません: {spec.subdir}")
             return subdir
 
         return extracted_root
+
+    @staticmethod
+    def _is_in_subdir(item: Any, subdir: str) -> bool:
+        raw_path = item.path if hasattr(item, "path") else str(item)
+        parts = [p for p in raw_path.replace("\\", "/").split("/") if p and p != "."]
+        norm_parts: list[str] = []
+        for pt in parts:
+            if pt == "..":
+                if norm_parts:
+                    norm_parts.pop()
+            else:
+                norm_parts.append(pt)
+        norm_item = "/".join(norm_parts)
+
+        sub_parts = [p for p in subdir.replace("\\", "/").split("/") if p and p != "."]
+        norm_sub_parts: list[str] = []
+        for pt in sub_parts:
+            if pt == "..":
+                if norm_sub_parts:
+                    norm_sub_parts.pop()
+            else:
+                norm_sub_parts.append(pt)
+        norm_sub = "/".join(norm_sub_parts)
+        if not norm_sub:
+            return True
+
+        item_parts = [p for p in norm_item.split("/") if p]
+        if not item_parts:
+            return False
+
+        rel_path = "/".join(item_parts[1:]) if len(item_parts) > 1 else ""
+        if rel_path:
+            if rel_path == norm_sub or rel_path.startswith(norm_sub + "/"):
+                return True
+
+        raw_path_str = "/".join(item_parts)
+        if raw_path_str == norm_sub or raw_path_str.startswith(norm_sub + "/"):
+            return True
+
+        return False
 
     def _download_limited(self, url: str, dest: Path) -> None:
         headers = {"User-Agent": self.USER_AGENT}

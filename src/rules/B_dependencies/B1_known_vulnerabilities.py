@@ -39,13 +39,21 @@ class B1KnownVulnerabilitiesRule:
             return Severity.MEDIUM
         return Severity.LOW
 
-    def evaluate(self, target: Path) -> List[RiskRecord]:
+    def evaluate(self, target: Path, max_records: int = 500) -> List[RiskRecord]:
         records: List[RiskRecord] = []
         deps = collect_dependency_declarations(target)
+
+        deps_truncated = False
+        if len(deps) > max_records:
+            deps = deps[:max_records]
+            deps_truncated = True
 
         pinned_deps_by_eco: dict[str, list[tuple[str, str]]] = {}
 
         for dep in deps:
+            if len(records) >= max_records:
+                deps_truncated = True
+                break
             if not is_pinned(dep):
                 # カタログ条件: バージョン未固定で照合不能 → 注意
                 records.append(
@@ -65,6 +73,9 @@ class B1KnownVulnerabilitiesRule:
             pinned_deps_by_eco.setdefault(dep.ecosystem, []).append((dep, version))
 
         for ecosystem, dep_list in pinned_deps_by_eco.items():
+            if len(records) >= max_records:
+                deps_truncated = True
+                break
             if hasattr(self._lookup, "bulk_lookup"):
                 query_list = [(dep.name, version) for dep, version in dep_list]
                 bulk_results = self._lookup.bulk_lookup(ecosystem, query_list)
@@ -77,8 +88,14 @@ class B1KnownVulnerabilitiesRule:
                 }
 
             for dep, version in dep_list:
+                if len(records) >= max_records:
+                    deps_truncated = True
+                    break
                 hits = bulk_results.get((dep.name, version), [])
                 for hit in hits:
+                    if len(records) >= max_records:
+                        deps_truncated = True
+                        break
                     refs = (
                         f" refs: {', '.join(hit.references[:2])}"
                         if hit.references
@@ -98,5 +115,19 @@ class B1KnownVulnerabilitiesRule:
                             ),
                         )
                     )
+
+        if deps_truncated or len(records) >= max_records:
+            if len(records) >= max_records:
+                records = records[: max_records - 1]
+            trunc_rec = RiskRecord(
+                rule_id=self.rule_id,
+                category=self.category,
+                title=self.title,
+                severity=Severity.INFO,
+                file_path="dependencies",
+                line=1,
+                message=f"B-1: 依存関係の照会件数が上限 ({max_records}件) に達したため、残りの依存関係照会を打ち切りました。",
+            )
+            records.append(trunc_rec)
 
         return records
