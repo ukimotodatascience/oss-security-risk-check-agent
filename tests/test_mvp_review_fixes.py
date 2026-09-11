@@ -2892,3 +2892,51 @@ def test_h6_omitted_on_subdir_scan_marks_source_code_scanner_status_false(tmp_pa
 
     # rule_based_source_code MUST be set to False because H-6 root doc check was omitted
     assert scanner_status["rule_based_source_code"] is False
+
+
+def test_early_target_subdir_backslash_normalization(tmp_path):
+    from unittest.mock import patch
+    from src.orchestrator import MVPOrchestrator
+
+    mock_opts = type(
+        "Opt",
+        (),
+        {
+            "target_url": "https://github.com/owner/repo",
+            "target_ref": None,
+            "target_subdir": r" services\.. ",
+            "output_dir": None,
+        },
+    )()
+    orchestrator = MVPOrchestrator(tmp_path, cli_options=mock_opts)
+
+    captured_spec = []
+
+    def mock_fetch(spec, tmpdir):
+        captured_spec.append(spec)
+        return tmp_path
+
+    with (
+        patch(
+            "src.targets.archive_fetcher.ArchiveSnapshotFetcher.fetch",
+            side_effect=mock_fetch,
+        ),
+        patch.object(
+            orchestrator.trivy_adapter, "run_scan_with_status", return_value=([], True)
+        ),
+        patch.object(orchestrator, "_run_rule_based_scan", return_value=([], True)),
+        patch.object(
+            orchestrator.scorecard_adapter, "run_scan", return_value=[]
+        ) as mock_scorecard,
+    ):
+        res = orchestrator.run_full_scan(
+            "https://github.com/owner/repo", save_to_docs=False
+        )
+        assert res is not None
+        assert len(captured_spec) == 1
+        # Spec subdir MUST have backslashes converted to forward slashes: "services/.."
+        assert captured_spec[0].subdir == "services/.."
+        # self.cli_options.target_subdir MUST be "services/.."
+        assert orchestrator.cli_options.target_subdir == "services/.."
+        # Scorecard MUST be called because "services/.." normalizes to None (repo root)
+        mock_scorecard.assert_called_once()

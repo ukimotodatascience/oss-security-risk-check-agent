@@ -98,8 +98,8 @@ class MVPOrchestrator:
             else None
         )
         target_subdir = (
-            raw_subdir.strip()
-            if isinstance(raw_subdir, str) and raw_subdir.strip()
+            raw_subdir.replace("\\", "/").strip()
+            if isinstance(raw_subdir, str) and raw_subdir.replace("\\", "/").strip()
             else None
         )
         if self.cli_options and hasattr(self.cli_options, "target_subdir"):
@@ -435,8 +435,8 @@ class MVPOrchestrator:
                 else None
             )
             target_subdir = (
-                raw_subdir.strip()
-                if isinstance(raw_subdir, str) and raw_subdir.strip()
+                raw_subdir.replace("\\", "/").strip()
+                if isinstance(raw_subdir, str) and raw_subdir.replace("\\", "/").strip()
                 else None
             )
             if self.cli_options and hasattr(self.cli_options, "target_subdir"):
