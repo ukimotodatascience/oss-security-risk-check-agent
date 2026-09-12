@@ -10,6 +10,7 @@ from src.mvp_models import (
     Finding,
     OverallResult,
     OverallStatus,
+    SkippedFileInfo,
 )
 
 
@@ -24,6 +25,7 @@ class ScoringEngine:
         scanner_status: Optional[Dict[str, bool]] = None,
         scanned_ref: Optional[str] = None,
         scanned_subdir: Optional[str] = None,
+        skipped_files: Optional[List[SkippedFileInfo]] = None,
     ) -> OverallResult:
         repository_url = repo_url
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -93,6 +95,9 @@ class ScoringEngine:
             status_reason=status_reason,
             categories=category_results,
             all_findings=findings,
+            skipped_files=skipped_files or [],
+            total_skipped_files_count=len(skipped_files) if skipped_files else 0,
+            scanner_status=scanner_status or {},
         )
 
     def _calculate_category_score(

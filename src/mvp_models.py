@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -48,6 +48,13 @@ class Finding(BaseModel):
     raw_score: Optional[float] = None
 
 
+class SkippedFileInfo(BaseModel):
+    path: str
+    reason: str
+    size_bytes: Optional[int] = None
+    limit_bytes: Optional[int] = None
+
+
 class CategoryResult(BaseModel):
     category: Category
     category_name: str
@@ -68,3 +75,6 @@ class OverallResult(BaseModel):
     status_reason: str = ""
     categories: Dict[str, CategoryResult] = Field(default_factory=dict)
     all_findings: List[Finding] = Field(default_factory=list)
+    skipped_files: List[SkippedFileInfo] = Field(default_factory=list)
+    total_skipped_files_count: Optional[int] = None
+    scanner_status: Dict[str, Any] = Field(default_factory=dict)

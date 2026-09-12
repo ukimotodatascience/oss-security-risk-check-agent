@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from src.adapters.scorecard_adapter import ScorecardAdapter
 from src.adapters.trivy_adapter import TrivyAdapter
-from src.mvp_models import Category, Finding, OverallResult
+from src.mvp_models import Category, Finding, OverallResult, SkippedFileInfo
 from src.scoring.engine import ScoringEngine
 from src.targets.archive_fetcher import ArchiveSnapshotFetcher
 from src.targets.url_validator import parse_github_repo_url
@@ -73,6 +73,7 @@ class MVPOrchestrator:
 
         logger.info(f"Starting MVP full scan for repository: {normalized_url}")
         all_findings: List[Finding] = []
+        captured_skipped_files: List[SkippedFileInfo] = []
         scanner_status: Dict[str, bool] = {
             "trivy": False,
             "scorecard": False,
@@ -194,6 +195,19 @@ class MVPOrchestrator:
                     logger.warning(
                         f"Snapshot fetcher skipped {len(relevant_skipped_files)} files in target scope."
                     )
+                    for sk in relevant_skipped_files:
+                        sk_path = getattr(sk, "path", str(sk))
+                        sk_reason = getattr(sk, "reason", "Skipped due to size limits")
+                        sk_size = getattr(sk, "size_bytes", None)
+                        sk_limit = getattr(sk, "limit_bytes", None)
+                        captured_skipped_files.append(
+                            SkippedFileInfo(
+                                path=sk_path,
+                                reason=sk_reason,
+                                size_bytes=sk_size,
+                                limit_bytes=sk_limit,
+                            )
+                        )
                     scanner_status["has_skipped_files"] = True
                     for cat in (
                         Category.MISCONFIGURATION,
@@ -229,14 +243,36 @@ class MVPOrchestrator:
                         )
                     scanner_status["git_history"] = False
 
-                trivy_findings, success = self.trivy_adapter.run_scan_with_status(
+                trivy_res = self.trivy_adapter.run_scan_with_status(
                     str(extracted_dir),
                     target_ref=target_ref,
                     target_subdir=target_subdir,
                 )
+                if len(trivy_res) == 3:
+                    trivy_findings, success, trivy_err = trivy_res
+                else:
+                    trivy_findings, success = trivy_res[0], trivy_res[1]
+                    trivy_err = "Trivy scan execution failed" if not success else None
+
                 all_findings.extend(trivy_findings)
-                if success and not relevant_skipped_files:
-                    scanner_status["trivy"] = True
+                if success:
+                    if not relevant_skipped_files:
+                        scanner_status["trivy"] = True
+                else:
+                    scanner_status["trivy"] = False
+                    if trivy_err:
+                        scanner_status["trivy_failure_reason"] = trivy_err
+                        all_findings.append(
+                            Finding(
+                                category=Category.KNOWN_VULNERABILITIES,
+                                source="trivy",
+                                rule_id="TRIVY-SCAN-FAILED",
+                                severity="INFO",
+                                title="Trivy Scan Failed or Unevaluated",
+                                description=f"Trivy scan could not be completed: {trivy_err}",
+                                remediation="Ensure Trivy CLI is available and operational.",
+                            )
+                        )
 
                 # 4. 既存 Rule-based Scan (スナップショット生存中に判定)
                 try:
@@ -245,6 +281,7 @@ class MVPOrchestrator:
                         normalized_url,
                         scanner_status=scanner_status,
                         target_dir=extracted_dir,
+                        captured_skipped_files=captured_skipped_files,
                     )
                     all_findings.extend(rule_findings)
                     if success and not relevant_skipped_files:
@@ -256,18 +293,57 @@ class MVPOrchestrator:
             logger.warning(
                 f"Safe snapshot fetch failed or refused for Trivy scan ({e}). Skipping Trivy scan to prevent resource exhaustion."
             )
+            scanner_status["snapshot_failed"] = True
+            scanner_status["snapshot_failed_reason"] = str(e)
+            scanner_status["trivy"] = False
+            scanner_status["trivy_failure_reason"] = f"Snapshot fetch failed: {e}"
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
         is_default_branch_ref = not target_ref or target_ref == "HEAD"
         norm_subdir = _normalize_subdir(target_subdir)
         if is_default_branch_ref and not norm_subdir:
             try:
-                scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
+                import os
+
+                token = config.resolve_github_token()
+                if token:
+                    os.environ["GITHUB_TOKEN"] = token
+                    os.environ["GITHUB_AUTH_TOKEN"] = token
+
+                sc_res = self.scorecard_adapter.run_scan_with_status(
+                    normalized_url, github_token=token
+                )
+                if len(sc_res) == 3:
+                    scorecard_findings, success, scorecard_err = sc_res
+                else:
+                    scorecard_findings = sc_res[0]
+                    success = bool(scorecard_findings)
+                    scorecard_err = (
+                        "Scorecard scan execution failed" if not success else None
+                    )
+
                 all_findings.extend(scorecard_findings)
-                if scorecard_findings:
+                if success and scorecard_findings:
                     scanner_status["scorecard"] = True
+                else:
+                    scanner_status["scorecard"] = False
+                    if scorecard_err:
+                        scanner_status["scorecard_failure_reason"] = scorecard_err
+                        all_findings.append(
+                            Finding(
+                                category=Category.DEPENDENCIES,
+                                source="scorecard",
+                                rule_id="SCORECARD-SCAN-FAILED",
+                                severity="INFO",
+                                title="Scorecard Scan Failed or Unevaluated",
+                                description=f"Scorecard scan could not be completed: {scorecard_err}",
+                                remediation="Ensure Scorecard CLI is available and GITHUB_TOKEN is configured.",
+                            )
+                        )
             except Exception as e:
                 logger.error(f"Error during Scorecard scan: {e}")
+                scanner_status["scorecard"] = False
+                scanner_status["scorecard_failure_reason"] = str(e)
         else:
             logger.info(
                 "Skipping Scorecard scan because target_ref or target_subdir is set (Scorecard evaluates default branch/entire repo only)."
@@ -280,6 +356,7 @@ class MVPOrchestrator:
                 rule_findings, success = self._run_rule_based_scan(
                     normalized_url,
                     scanner_status=scanner_status,
+                    captured_skipped_files=captured_skipped_files,
                 )
                 all_findings.extend(rule_findings)
                 if success:
@@ -392,6 +469,7 @@ class MVPOrchestrator:
             scanner_status=scanner_status,
             scanned_ref=target_ref,
             scanned_subdir=target_subdir,
+            skipped_files=captured_skipped_files,
         )
 
         # 6. JSON 保存
@@ -405,6 +483,7 @@ class MVPOrchestrator:
         repo_url: str,
         scanner_status: Optional[Dict[str, bool]] = None,
         target_dir: Optional[Path] = None,
+        captured_skipped_files: Optional[List[SkippedFileInfo]] = None,
     ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
@@ -632,6 +711,36 @@ class MVPOrchestrator:
                                     file_count = 0
 
                             has_skipped_files = True
+                            if captured_skipped_files is not None:
+                                for sk in relevant_skipped:
+                                    sk_p = getattr(sk, "path", None) or getattr(
+                                        sk, "relative_path", str(sk)
+                                    )
+                                    sk_r = getattr(
+                                        sk, "reason", "file size limit exceeded"
+                                    )
+                                    sk_sz = getattr(sk, "size_bytes", None) or getattr(
+                                        sk, "size", None
+                                    )
+                                    sk_lm = getattr(sk, "limit_bytes", None) or getattr(
+                                        sk, "limit", None
+                                    )
+                                    captured_skipped_files.append(
+                                        SkippedFileInfo(
+                                            path=str(sk_p),
+                                            reason=str(sk_r),
+                                            size_bytes=(
+                                                sk_sz
+                                                if isinstance(sk_sz, int)
+                                                else None
+                                            ),
+                                            limit_bytes=(
+                                                sk_lm
+                                                if isinstance(sk_lm, int)
+                                                else None
+                                            ),
+                                        )
+                                    )
                             if scanner_status is not None:
                                 scanner_status["rule_based"] = False
                                 for cat in (
@@ -984,6 +1093,25 @@ class MVPOrchestrator:
                     ):
                         cat_res.summary = cat_res.summary[:max_len] + "..."
 
+        def _truncate_skipped_files(
+            res: OverallResult, max_len: int = 200, max_count: int | None = None
+        ) -> None:
+            if not getattr(res, "skipped_files", None):
+                return
+            if max_count is not None and len(res.skipped_files) > max_count:
+                res.skipped_files = res.skipped_files[:max_count]
+            for sk in res.skipped_files:
+                if (
+                    isinstance(getattr(sk, "path", None), str)
+                    and len(sk.path) > max_len
+                ):
+                    sk.path = sk.path[:max_len] + "..."
+                if (
+                    isinstance(getattr(sk, "reason", None), str)
+                    and len(sk.reason) > max_len
+                ):
+                    sk.reason = sk.reason[:max_len] + "..."
+
         def _sync_findings_counts(res: OverallResult) -> None:
             for cat_res in res.categories.values():
                 cat_res.findings_count = len(
@@ -995,11 +1123,15 @@ class MVPOrchestrator:
                     ]
                 )
 
+        if getattr(result_to_save, "total_skipped_files_count", None) is None:
+            result_to_save.total_skipped_files_count = len(result_to_save.skipped_files)
+
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(
                 "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
             _truncate_top_level_strings(result_to_save, 200)
+            _truncate_skipped_files(result_to_save, 200)
             # Pass 1: truncate long text fields (including location, rule_id, source) to 200 chars
             for f in result_to_save.all_findings:
                 _truncate_finding(f, 200)
@@ -1008,7 +1140,7 @@ class MVPOrchestrator:
                     _truncate_finding(f, 200)
             json_str = result_to_save.model_dump_json(indent=2)
 
-        # Pass 2: slice findings list until <= 10MB or 0 findings left
+        # Pass 2: slice findings first until <= 10MB or 0 findings left
         while (
             len(json_str.encode("utf-8")) > MAX_FILE_BYTES
             and len(result_to_save.all_findings) > 0
@@ -1022,9 +1154,19 @@ class MVPOrchestrator:
             _sync_findings_counts(result_to_save)
             json_str = result_to_save.model_dump_json(indent=2)
 
+        # Pass 2.5: only if JSON is still > 10MB after 0 findings left, slice skipped_files
+        while (
+            len(json_str.encode("utf-8")) > MAX_FILE_BYTES
+            and len(result_to_save.skipped_files) > 0
+        ):
+            new_sk_len = len(result_to_save.skipped_files) // 2
+            result_to_save.skipped_files = result_to_save.skipped_files[:new_sk_len]
+            json_str = result_to_save.model_dump_json(indent=2)
+
         # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             _truncate_top_level_strings(result_to_save, 50)
+            _truncate_skipped_files(result_to_save, 50, max_count=50)
             for f in result_to_save.all_findings:
                 _truncate_finding(f, 50)
             for cat_res in result_to_save.categories.values():
@@ -1038,13 +1180,15 @@ class MVPOrchestrator:
         encoded_bytes = json_str.encode("utf-8")
         if len(encoded_bytes) > MAX_FILE_BYTES:
             logger.warning(
-                "Scan result JSON exceeds 10MB after Pass 3. Clearing findings to guarantee limit."
+                "Scan result JSON exceeds 10MB after Pass 3. Clearing findings and truncating skipped files to guarantee limit."
             )
             result_to_save.all_findings = []
+            result_to_save.skipped_files = result_to_save.skipped_files[:10]
             for cat_res in result_to_save.categories.values():
                 cat_res.findings = []
             _sync_findings_counts(result_to_save)
             _truncate_top_level_strings(result_to_save, 50)
+            _truncate_skipped_files(result_to_save, 50, max_count=10)
             json_str = result_to_save.model_dump_json(indent=2)
             encoded_bytes = json_str.encode("utf-8")
 
