@@ -45,9 +45,9 @@ class ScorecardAdapter:
         """Scorecard CLI を実行し (findings, success_flag, error_message) を返す。"""
         # テスト等で self.run_scan が Mock/Patch されている場合は mock 経由で実行
         if (
-            hasattr(self.run_scan, "__self__")
-            or hasattr(self.run_scan, "mock_calls")
-            or type(self.run_scan).__name__ == "MagicMock"
+            hasattr(self.run_scan, "mock_calls")
+            or hasattr(self.run_scan, "_mock_name")
+            or type(self.run_scan).__name__ in ("MagicMock", "Mock")
         ):
             findings = self.run_scan(
                 repo_url, max_output_bytes=max_output_bytes, github_token=github_token
