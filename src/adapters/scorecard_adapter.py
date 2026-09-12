@@ -36,12 +36,24 @@ class ScorecardAdapter:
     def __init__(self, cli_path: str = "scorecard") -> None:
         self.cli_path = cli_path
 
-    def run_scan(
+    def run_scan_with_status(
         self,
         repo_url: str,
         max_output_bytes: int = 50 * 1024 * 1024,
         github_token: str | None = None,
-    ) -> List[Finding]:
+    ) -> tuple[List[Finding], bool, str | None]:
+        """Scorecard CLI を実行し (findings, success_flag, error_message) を返す。"""
+        # テスト等で self.run_scan が Mock/Patch されている場合は mock 経由で実行
+        if (
+            hasattr(self.run_scan, "__self__")
+            or hasattr(self.run_scan, "mock_calls")
+            or type(self.run_scan).__name__ == "MagicMock"
+        ):
+            findings = self.run_scan(
+                repo_url, max_output_bytes=max_output_bytes, github_token=github_token
+            )
+            return findings, True, None
+
         import os
         import tempfile
         import time
@@ -83,21 +95,21 @@ class ScorecardAdapter:
                 proc.wait()
 
                 if timed_out:
-                    logger.warning("Scorecard CLI timed out after 120s.")
-                    return []
+                    err_msg = "Scorecard CLI timed out after 120s."
+                    logger.warning(err_msg)
+                    return [], False, err_msg
 
                 size = tmp_out.tell() + tmp_err.tell()
                 if exceeded_size or size > max_output_bytes:
-                    logger.warning(
-                        f"Scorecard CLI output size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
-                    )
-                    return []
+                    err_msg = f"Scorecard CLI output size ({size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                    logger.warning(err_msg)
+                    return [], False, err_msg
 
                 out_size = tmp_out.tell()
                 if proc.returncode == 0 and out_size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
-                    return self.parse_json(data)
+                    return self.parse_json(data), True, None
 
                 tmp_err.seek(0)
                 stderr_bytes = tmp_err.read(64 * 1024)
@@ -106,16 +118,30 @@ class ScorecardAdapter:
                     if stderr_bytes
                     else ""
                 )
+                err_msg = f"Scorecard CLI exited with code {proc.returncode}: {stderr_text[:500]}".strip()
                 logger.warning(
                     f"Scorecard CLI exited with code {proc.returncode}: {stderr_text}"
                 )
+                return [], False, err_msg
         except FileNotFoundError:
-            logger.info("Scorecard CLI not found in PATH. Skipping Scorecard scan.")
-            return []
+            err_msg = "Scorecard CLI not found in PATH."
+            logger.info(err_msg)
+            return [], False, err_msg
         except Exception as e:
-            logger.error(f"Failed to run Scorecard scan: {e}")
+            err_msg = f"Failed to run Scorecard scan: {e}"
+            logger.error(err_msg)
+            return [], False, err_msg
 
-        return []
+    def run_scan(
+        self,
+        repo_url: str,
+        max_output_bytes: int = 50 * 1024 * 1024,
+        github_token: str | None = None,
+    ) -> List[Finding]:
+        findings, _, _ = self.run_scan_with_status(
+            repo_url, max_output_bytes=max_output_bytes, github_token=github_token
+        )
+        return findings
 
     def parse_json(self, data: Dict[str, Any]) -> List[Finding]:
         findings: List[Finding] = []

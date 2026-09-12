@@ -81,9 +81,18 @@ def _download_binary_safely(
                 and hasattr(resp.fp.raw, "_sock")
                 and resp.fp.raw._sock
             ):
-                resp.fp.raw._sock.settimeout(remaining)
+                # ソケットタイムアウトを最小 1 秒 (または remaining) に制限し、ブロッキング read 中も単調時計の期限を動的再確認
+                resp.fp.raw._sock.settimeout(max(0.001, min(remaining, 1.0)))
 
-            chunk = resp.read(128 * 1024)
+            try:
+                chunk = resp.read(8 * 1024)
+            except (TimeoutError, OSError, urllib.error.URLError) as err:
+                if time.monotonic() - start_time >= timeout:
+                    raise TimeoutError(
+                        f"Downloaded binary streaming exceeded overall time limit ({timeout} seconds)"
+                    ) from err
+                continue
+
             if not chunk:
                 break
             buffer.extend(chunk)
@@ -109,32 +118,43 @@ def _get_scanner_binary_state() -> ScannerBinaryState:
 
 
 def _is_secure_directory(dir_path: Path) -> bool:
-    """ディレクトリおよび各親階層の所有者 (getuid)、パーミッション (0o700)、非シンボリックリンク性を検証する (P2 レビュー対応)。"""
+    """ディレクトリおよび各親階層の所有者 (getuid)、パーミッション (0o700/非 group-world-writable)、非シンボリックリンク性を検証する (P2 レビュー対応)。"""
     try:
         if not hasattr(os, "getuid"):
             return True
         uid = os.getuid()
-        curr = dir_path.resolve()
+
+        # 未 resolve のパスに対してシンボリックリンク性を事前検証
+        if dir_path.is_symlink() or os.path.islink(dir_path):
+            return False
 
         try:
-            curr.chmod(0o700)
+            dir_path.chmod(0o700)
         except Exception:
             pass
 
-        st_info = curr.stat()
-        if st_info.st_uid != uid or (st_info.st_mode & 0o077 != 0) or curr.is_symlink():
+        st_info = dir_path.stat()
+        if st_info.st_uid != uid or (st_info.st_mode & 0o077 != 0):
             return False
 
-        home = Path.home().resolve()
-        parent = curr.parent
-        while parent != parent.parent:
-            if parent.exists():
-                p_st = parent.stat()
-                if p_st.st_uid != uid or parent.is_symlink():
-                    return False
-            if parent == home:
+        # ホームディレクトリまたはルートに至る祖先階層を未 resolve パスで走査し検証
+        home = Path.home()
+        home_resolved = home.resolve()
+        curr = dir_path
+        while True:
+            parent = curr.parent
+            if parent == curr:
                 break
-            parent = parent.parent
+            if parent.exists():
+                if parent.is_symlink() or os.path.islink(parent):
+                    return False
+                p_st = parent.lstat()
+                # 所有者が一致し、かつ group/world writable (0o022) でないことを確認
+                if p_st.st_uid != uid or (p_st.st_mode & 0o022 != 0):
+                    return False
+            if parent == home or parent == home_resolved:
+                break
+            curr = parent
 
         return True
     except Exception:
@@ -1095,6 +1115,29 @@ def render_skipped_files_alert(result: OverallResult) -> None:
         st.dataframe(table_data, use_container_width=True)
 
 
+def render_scanner_status_alert(result: OverallResult) -> None:
+    """外部スキャナー (Trivy / Scorecard) の実行エラー理由・スキップ詳細を表示する (P2 レビュー対応)。"""
+    scanner_st = getattr(result, "scanner_status", {}) or {}
+    trivy_err = scanner_st.get("trivy_failure_reason")
+    scorecard_err = scanner_st.get("scorecard_failure_reason")
+    snapshot_err = scanner_st.get("snapshot_failed_reason")
+
+    if not (trivy_err or scorecard_err or snapshot_err):
+        return
+
+    with st.expander("⚠️ 外部スキャナー実行エラー・制限詳細"):
+        if snapshot_err:
+            st.error(f"**Snapshot Fetcher エラー**: {escape_html(str(snapshot_err))}")
+        if trivy_err:
+            st.warning(
+                f"**Trivy スキャナーエラー/スキップ**: {escape_html(str(trivy_err))}"
+            )
+        if scorecard_err:
+            st.warning(
+                f"**Scorecard スキャナーエラー/スキップ**: {escape_html(str(scorecard_err))}"
+            )
+
+
 def render_category_cards(result: OverallResult) -> None:
     """8カテゴリ別スコアカードを動的グリッド描画する。"""
     category_order = [
@@ -1407,6 +1450,7 @@ def main() -> None:
                 )
             render_hero_score(cached_result)
             render_skipped_files_alert(cached_result)
+            render_scanner_status_alert(cached_result)
             render_category_cards(cached_result)
 
             counts = render_findings_summary(cached_result)
@@ -1487,6 +1531,7 @@ def main() -> None:
 
         render_hero_score(result)
         render_skipped_files_alert(result)
+        render_scanner_status_alert(result)
         render_category_cards(result)
 
         counts = render_findings_summary(result)

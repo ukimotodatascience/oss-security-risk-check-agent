@@ -243,14 +243,36 @@ class MVPOrchestrator:
                         )
                     scanner_status["git_history"] = False
 
-                trivy_findings, success = self.trivy_adapter.run_scan_with_status(
+                trivy_res = self.trivy_adapter.run_scan_with_status(
                     str(extracted_dir),
                     target_ref=target_ref,
                     target_subdir=target_subdir,
                 )
+                if len(trivy_res) == 3:
+                    trivy_findings, success, trivy_err = trivy_res
+                else:
+                    trivy_findings, success = trivy_res[0], trivy_res[1]
+                    trivy_err = "Trivy scan execution failed" if not success else None
+
                 all_findings.extend(trivy_findings)
-                if success and not relevant_skipped_files:
-                    scanner_status["trivy"] = True
+                if success:
+                    if not relevant_skipped_files:
+                        scanner_status["trivy"] = True
+                else:
+                    scanner_status["trivy"] = False
+                    if trivy_err:
+                        scanner_status["trivy_failure_reason"] = trivy_err
+                        all_findings.append(
+                            Finding(
+                                category=Category.KNOWN_VULNERABILITIES,
+                                source="trivy",
+                                rule_id="TRIVY-SCAN-FAILED",
+                                severity="INFO",
+                                title="Trivy Scan Failed or Unevaluated",
+                                description=f"Trivy scan could not be completed: {trivy_err}",
+                                remediation="Ensure Trivy CLI is available and operational.",
+                            )
+                        )
 
                 # 4. 既存 Rule-based Scan (スナップショット生存中に判定)
                 try:
@@ -273,6 +295,8 @@ class MVPOrchestrator:
             )
             scanner_status["snapshot_failed"] = True
             scanner_status["snapshot_failed_reason"] = str(e)
+            scanner_status["trivy"] = False
+            scanner_status["trivy_failure_reason"] = f"Snapshot fetch failed: {e}"
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
         is_default_branch_ref = not target_ref or target_ref == "HEAD"
@@ -286,14 +310,40 @@ class MVPOrchestrator:
                     os.environ["GITHUB_TOKEN"] = token
                     os.environ["GITHUB_AUTH_TOKEN"] = token
 
-                scorecard_findings = self.scorecard_adapter.run_scan(
+                sc_res = self.scorecard_adapter.run_scan_with_status(
                     normalized_url, github_token=token
                 )
+                if len(sc_res) == 3:
+                    scorecard_findings, success, scorecard_err = sc_res
+                else:
+                    scorecard_findings = sc_res[0]
+                    success = bool(scorecard_findings)
+                    scorecard_err = (
+                        "Scorecard scan execution failed" if not success else None
+                    )
+
                 all_findings.extend(scorecard_findings)
-                if scorecard_findings:
+                if success and scorecard_findings:
                     scanner_status["scorecard"] = True
+                else:
+                    scanner_status["scorecard"] = False
+                    if scorecard_err:
+                        scanner_status["scorecard_failure_reason"] = scorecard_err
+                        all_findings.append(
+                            Finding(
+                                category=Category.DEPENDENCIES,
+                                source="scorecard",
+                                rule_id="SCORECARD-SCAN-FAILED",
+                                severity="INFO",
+                                title="Scorecard Scan Failed or Unevaluated",
+                                description=f"Scorecard scan could not be completed: {scorecard_err}",
+                                remediation="Ensure Scorecard CLI is available and GITHUB_TOKEN is configured.",
+                            )
+                        )
             except Exception as e:
                 logger.error(f"Error during Scorecard scan: {e}")
+                scanner_status["scorecard"] = False
+                scanner_status["scorecard_failure_reason"] = str(e)
         else:
             logger.info(
                 "Skipping Scorecard scan because target_ref or target_subdir is set (Scorecard evaluates default branch/entire repo only)."

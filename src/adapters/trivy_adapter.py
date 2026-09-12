@@ -73,44 +73,52 @@ class TrivyAdapter:
                 stderr_bytes = tmp_err.read(64 * 1024)
 
                 if timed_out:
-                    logger.warning("Trivy CLI timed out after 120s.")
-                    return [], False
+                    err_msg = "Trivy CLI timed out after 120s."
+                    logger.warning(err_msg)
+                    return [], False, err_msg
 
                 total_size = actual_out_size + actual_err_size
                 if exceeded_size or total_size > max_output_bytes:
-                    logger.warning(
-                        f"Trivy CLI output size ({total_size} bytes) exceeded limit ({max_output_bytes} bytes)."
-                    )
-                    return [], False
+                    err_msg = f"Trivy CLI output size ({total_size} bytes) exceeded limit ({max_output_bytes} bytes)."
+                    logger.warning(err_msg)
+                    return [], False, err_msg
 
                 if proc.returncode == 0 and actual_out_size > 0:
                     tmp_out.seek(0)
                     data = json.load(tmp_out)
                     findings, is_full_success = self.parse_json_with_status(data)
-                    return findings, is_full_success
+                    err_msg = (
+                        None
+                        if is_full_success
+                        else "Trivy findings exceeded maximum limit (500)."
+                    )
+                    return findings, is_full_success, err_msg
 
                 stderr_text = (
                     stderr_bytes.decode("utf-8", errors="replace")
                     if stderr_bytes
                     else ""
                 )
+                err_msg = f"Trivy CLI exited with code {proc.returncode}: {stderr_text[:500]}".strip()
                 logger.warning(
                     f"Trivy CLI exited with code {proc.returncode}: {stderr_text}"
                 )
-                return [], False
+                return [], False, err_msg
         except FileNotFoundError:
-            logger.info("Trivy CLI not found in PATH.")
-            return [], False
+            err_msg = "Trivy CLI not found in PATH."
+            logger.info(err_msg)
+            return [], False, err_msg
         except Exception as e:
-            logger.error(f"Failed to run Trivy scan: {e}")
-            return [], False
+            err_msg = f"Failed to run Trivy scan: {e}"
+            logger.error(err_msg)
+            return [], False, err_msg
 
     def run_scan(
         self, repo_url_or_path: str, max_output_bytes: int = 50 * 1024 * 1024
     ) -> List[Finding]:
         """Trivy CLI を実行して Findings のリストを取得。"""
-        findings, _ = self.run_scan_with_status(repo_url_or_path, max_output_bytes)
-        return findings
+        res = self.run_scan_with_status(repo_url_or_path, max_output_bytes)
+        return res[0]
 
     def parse_json(
         self, data: Dict[str, Any], max_findings: int = 500
