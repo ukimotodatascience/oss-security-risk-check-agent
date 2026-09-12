@@ -1,15 +1,126 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 import streamlit as st
 
-from src.mvp_models import Category, OverallResult
+from src.mvp_models import Category, OverallResult, OverallStatus
 from src.orchestrator import MVPOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def check_scanner_binaries() -> dict[str, bool]:
+    """trivy および scorecard バイナリの存在を確認する。"""
+    return {
+        "trivy": shutil.which("trivy") is not None,
+        "scorecard": shutil.which("scorecard") is not None,
+    }
+
+
+def generate_markdown_report(result: OverallResult) -> str:
+    """OverallResult からダウンロード用 Markdown レポート文字列を生成する。"""
+    lines = [
+        "# 🛡️ OSS セキュリティリスク診断レポート",
+        "",
+        "## 1. 診断概要",
+        "",
+        f"- **対象リポジトリ:** {result.repository_url}",
+        f"- **最終診断日時:** {result.scanned_at}",
+    ]
+
+    if result.scanned_ref:
+        lines.append(f"- **対象ブランチ/タグ:** {result.scanned_ref}")
+    if result.scanned_subdir:
+        lines.append(f"- **対象サブディレクトリ:** {result.scanned_subdir}")
+
+    status_text = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
+    )
+    lines.extend(
+        [
+            f"- **総合セキュリティスコア:** {result.overall_score:.1f} / 10.0",
+            f"- **総合判定:** {status_text}",
+            f"- **判定理由:** {result.status_reason or 'なし'}",
+            "",
+            "---",
+            "",
+            "## 2. 評価カテゴリ別スコア (8観点)",
+            "",
+            "| カテゴリ | スコア | 評価状態 | 指摘数 | 概要 |",
+            "| :--- | :---: | :---: | :---: | :--- |",
+        ]
+    )
+
+    category_order = [
+        Category.KNOWN_VULNERABILITIES.value,
+        Category.SECRETS.value,
+        Category.MISCONFIGURATION.value,
+        Category.DEPENDENCIES.value,
+        Category.DEVELOPMENT.value,
+        Category.CICD.value,
+        Category.MAINTENANCE.value,
+        Category.SOURCE_CODE.value,
+    ]
+
+    for key in category_order:
+        cat_data = result.categories.get(key)
+        if cat_data:
+            c_name = cat_data.category_name
+            c_score = f"{cat_data.score:.1f}" if cat_data.evaluated else "N/A"
+            c_eval = "評価済み" if cat_data.evaluated else "未評価"
+            c_count = cat_data.findings_count
+            c_summary = cat_data.summary
+        else:
+            c_name = key
+            c_score = "N/A"
+            c_eval = "未評価"
+            c_count = 0
+            c_summary = "未評価"
+        lines.append(f"| {c_name} | {c_score} | {c_eval} | {c_count} | {c_summary} |")
+
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            f"## 3. 指摘事項一覧 (Findings: 全 {len(result.all_findings)} 件)",
+            "",
+        ]
+    )
+
+    if not result.all_findings:
+        lines.append("指摘事項はありません。")
+    else:
+        SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+        sorted_findings = sorted(
+            result.all_findings,
+            key=lambda f: SEVERITY_ORDER.get((f.severity or "INFO").upper(), 5),
+        )
+
+        for idx, f in enumerate(sorted_findings, 1):
+            sev = (f.severity or "INFO").upper()
+            cat_name = (
+                f.category.value if hasattr(f.category, "value") else str(f.category)
+            )
+            lines.append(f"### {idx}. [{sev}] {f.title}")
+            lines.append(f"- **カテゴリ:** {cat_name}")
+            lines.append(f"- **ルールID:** `{f.rule_id}` (Source: {f.source})")
+            if f.target:
+                target_loc = f.target
+                if f.location:
+                    target_loc += f" ({f.location})"
+                lines.append(f"- **対象:** `{target_loc}`")
+            if f.description:
+                lines.append(f"- **説明:** {f.description}")
+            if f.remediation:
+                lines.append(f"- **対策案内:** {f.remediation}")
+            lines.append("")
+
+    return "\n".join(lines)
 
 
 def inject_custom_theme() -> None:
@@ -456,9 +567,7 @@ def render_hero_score(result: OverallResult) -> None:
     target_disp = escape_html(result.repository_url)
     extra_meta = []
     if result.scanned_ref:
-        extra_meta.push if hasattr(extra_meta, "push") else extra_meta.append(
-            f"ref: {escape_html(result.scanned_ref)}"
-        )
+        extra_meta.append(f"ref: {escape_html(result.scanned_ref)}")
     if result.scanned_subdir:
         extra_meta.append(f"subdir: {escape_html(result.scanned_subdir)}")
     if extra_meta:
@@ -505,6 +614,34 @@ def render_hero_score(result: OverallResult) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    # Markdown レポートのダウンロードボタンを再追加 (P2 レビュー対応)
+    md_content = generate_markdown_report(result)
+    file_timestamp = (
+        result.scanned_at.replace(":", "-").replace(" ", "_").replace("/", "-")
+    )
+    st.download_button(
+        label="📥 Markdown レポートをダウンロード",
+        data=md_content,
+        file_name=f"security_report_{file_timestamp}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
+
+def render_skipped_files_alert(result: OverallResult) -> None:
+    """スキップされたファイルに関する注記・警告を描画する。"""
+    skipped_findings = [
+        f
+        for f in result.all_findings
+        if f.rule_id == "SKIPPED-FILES-LIMIT" or f.source == "snapshot_fetcher"
+    ]
+    if skipped_findings:
+        with st.expander("⚠️ ファイルサイズ制限によりスキップされたファイル・注意事項"):
+            for f in skipped_findings:
+                st.warning(f"**{f.title}**: {f.description}")
+                if f.remediation:
+                    st.caption(f"対策: {f.remediation}")
 
 
 def render_category_cards(result: OverallResult) -> None:
@@ -583,7 +720,7 @@ def render_category_cards(result: OverallResult) -> None:
 def render_findings_list(
     result: OverallResult, selected_category: str, selected_severity: str
 ) -> None:
-    """Finding (指摘事項) カード一覧をフィルタリング描画する。"""
+    """Finding (指摘事項) カード一覧をフィルタリング & 重要度順ソートの上描画する。"""
     st.markdown("### 🔍 発見されたリスク・指摘事項 (Findings)")
 
     findings = result.all_findings or []
@@ -602,9 +739,13 @@ def render_findings_list(
         st.info("該当する指摘事項 (Findings) はありません。")
         return
 
+    # 表示上限の前に重要度順で Findings をソート (CRITICAL > HIGH > MEDIUM > LOW > INFO) (P2 レビュー対応)
+    SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    filtered.sort(key=lambda f: SEVERITY_ORDER.get((f.severity or "INFO").upper(), 5))
+
     allowed_sevs = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
     cards_html = []
-    for f in filtered[:500]:  # 最大500件まで描画
+    for f in filtered[:500]:  # 重要度上位最大500件まで描画
         raw_sev = (f.severity or "INFO").upper()
         sev_class = raw_sev if raw_sev in allowed_sevs else "INFO"
 
@@ -670,6 +811,15 @@ def main() -> None:
         "GitHub リポジトリ URL を入力して診断を実行すると、裏側で Python スキャンが自動実行され、リアルタイムにスコアと詳細結果が表示されます。"
     )
 
+    # 外部スキャンツールの状態チェックと警告表示 (P1 レビュー対応)
+    binaries = check_scanner_binaries()
+    missing_tools = [t for t, exists in binaries.items() if not exists]
+    if missing_tools:
+        st.warning(
+            f"⚠️ **外部スキャンツールの案内**: システムに `{'`, `'.join(missing_tools)}` バイナリが検出されませんでした。"
+            "ツール未同梱環境（Streamlit Cloud 等）では、ルールベース診断を中心に自動実行されます。"
+        )
+
     # 入力フォームエリア
     with st.container(border=True):
         col_url, col_ref, col_sub = st.columns([3, 1, 1])
@@ -698,6 +848,7 @@ def main() -> None:
         cached_result = st.session_state.get("mvp_result")
         if cached_result:
             render_hero_score(cached_result)
+            render_skipped_files_alert(cached_result)
             render_category_cards(cached_result)
 
             filter_col1, filter_col2 = st.columns(2)
@@ -738,10 +889,23 @@ def main() -> None:
             orchestrator = MVPOrchestrator(project_root(), cli_options=options)
             result = orchestrator.run_full_scan(options.target_url, save_to_docs=False)
 
+        # 取得失敗・評価不能エラーの検知 (P2 レビュー対応)
+        is_fetch_failed = (
+            result.status == OverallStatus.UNKNOWN
+            or "fetch failed" in (result.status_reason or "").lower()
+            or "invalid" in (result.status_reason or "").lower()
+        )
+        if is_fetch_failed:
+            st.error(
+                f"❌ リポジトリの取得またはスキャンに失敗しました: {escape_html(result.status_reason)}"
+            )
+            return
+
         st.toast("スキャンが完了しました！", icon="✅")
         st.session_state["mvp_result"] = result
 
         render_hero_score(result)
+        render_skipped_files_alert(result)
         render_category_cards(result)
 
         filter_col1, filter_col2 = st.columns(2)
@@ -762,9 +926,12 @@ def main() -> None:
 
     except ValueError as val_err:
         st.error(f"入力エラー: {val_err}")
-    except Exception as exc:
-        logger.exception("スキャン処理中にエラーが発生しました。")
-        st.error(f"スキャン処理中に予期しないエラーが発生しました: {exc}")
+    except Exception:
+        # 内部例外スタックトレース等のブラウザ露出を防止 (P2 レビュー対応)
+        logger.exception("スキャン処理中に予期しないエラーが発生しました。")
+        st.error(
+            "スキャン処理中に予期しないエラーが発生しました。詳細はサーバーログを確認してください。"
+        )
 
 
 if __name__ == "__main__":
