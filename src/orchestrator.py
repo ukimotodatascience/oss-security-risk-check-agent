@@ -1054,23 +1054,27 @@ class MVPOrchestrator:
                     _truncate_finding(f, 200)
             json_str = result_to_save.model_dump_json(indent=2)
 
-        # Pass 2: slice findings and skipped_files list until <= 10MB or 0 findings left
-        while len(json_str.encode("utf-8")) > MAX_FILE_BYTES and (
-            len(result_to_save.all_findings) > 0
-            or len(result_to_save.skipped_files) > 0
+        # Pass 2: slice findings first until <= 10MB or 0 findings left
+        while (
+            len(json_str.encode("utf-8")) > MAX_FILE_BYTES
+            and len(result_to_save.all_findings) > 0
         ):
-            if len(result_to_save.all_findings) > 0:
-                new_len = len(result_to_save.all_findings) // 2
-                result_to_save.all_findings = result_to_save.all_findings[:new_len]
-                for cat_enum, cat_res in result_to_save.categories.items():
-                    cat_res.findings = [
-                        f for f in result_to_save.all_findings if f.category == cat_enum
-                    ]
-                _sync_findings_counts(result_to_save)
-            if len(result_to_save.skipped_files) > 0:
-                new_sk_len = len(result_to_save.skipped_files) // 2
-                result_to_save.skipped_files = result_to_save.skipped_files[:new_sk_len]
+            new_len = len(result_to_save.all_findings) // 2
+            result_to_save.all_findings = result_to_save.all_findings[:new_len]
+            for cat_enum, cat_res in result_to_save.categories.items():
+                cat_res.findings = [
+                    f for f in result_to_save.all_findings if f.category == cat_enum
+                ]
+            _sync_findings_counts(result_to_save)
+            json_str = result_to_save.model_dump_json(indent=2)
 
+        # Pass 2.5: only if JSON is still > 10MB after 0 findings left, slice skipped_files
+        while (
+            len(json_str.encode("utf-8")) > MAX_FILE_BYTES
+            and len(result_to_save.skipped_files) > 0
+        ):
+            new_sk_len = len(result_to_save.skipped_files) // 2
+            result_to_save.skipped_files = result_to_save.skipped_files[:new_sk_len]
             json_str = result_to_save.model_dump_json(indent=2)
 
         # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
