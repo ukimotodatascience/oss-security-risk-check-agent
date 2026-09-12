@@ -84,45 +84,85 @@ def _download_binary_safely(
     return bytes(buffer)
 
 
+_SECURE_TMP_DIR: Path | None = None
+_INTEGRITY_CACHE: dict[str, tuple[float, int, bool]] = {}
+_FAILURE_CACHE: dict[str, float] = {}
+
+
 def _get_user_bin_dir() -> Path:
     """ユーザー固有の安全なバイナリ保存ディレクトリを取得・作成する (P2 レビュー対応)。"""
+    global _SECURE_TMP_DIR
     if os.name == "nt":
         bin_dir = project_root() / ".bin"
-    else:
-        uid = getattr(os, "getuid", lambda: "user")()
-        bin_dir = Path.home() / ".cache" / "oss_security_agent" / "bin"
-        try:
-            bin_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-        except Exception:
-            bin_dir = Path(tempfile.gettempdir()) / f"oss_agent_{uid}" / "bin"
-            bin_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-    return bin_dir
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        return bin_dir
+
+    base_dir = Path.home() / ".cache" / "oss_security_agent" / "bin"
+    try:
+        base_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if hasattr(os, "getuid"):
+            st_info = base_dir.stat()
+            if st_info.st_uid != os.getuid() or base_dir.is_symlink():
+                raise PermissionError(
+                    "Insecure ownership or symlink detected for home bin directory"
+                )
+        return base_dir
+    except Exception as e:
+        logger.warning(
+            f"Failed to use home bin directory ({e}). Falling back to secure random temp directory."
+        )
+        if _SECURE_TMP_DIR is None or not _SECURE_TMP_DIR.exists():
+            _SECURE_TMP_DIR = Path(tempfile.mkdtemp(prefix="oss_agent_bin_"))
+        return _SECURE_TMP_DIR
 
 
 def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
-    """bin_dir 内に存在する展開済みバイナリのチェックサム検証を行う。不一致の場合は削除する (P2 レビュー対応)。"""
+    """bin_dir 内に存在する展開済みバイナリのチェックサム検証を行う。mtime/size によるインメモリキャッシュと 1MB ストリーミング計算で高速化 (P2 レビュー対応)。"""
     bin_dir = _get_user_bin_dir()
     bin_file = bin_dir / tool_name
     if not bin_file.exists():
         return False
+    try:
+        st_info = bin_file.stat()
+        mtime, size = st_info.st_mtime, st_info.st_size
+    except Exception:
+        return False
+
+    cache_key = str(bin_file)
+    if cache_key in _INTEGRITY_CACHE:
+        cached_mtime, cached_size, cached_valid = _INTEGRITY_CACHE[cache_key]
+        if cached_mtime == mtime and cached_size == size:
+            return cached_valid
+
     if (
         not arch_key
         or tool_name not in BINARY_CHECKSUMS
         or arch_key not in BINARY_CHECKSUMS[tool_name]
     ):
-        return bin_file.is_file()
+        is_valid = bin_file.is_file()
+        _INTEGRITY_CACHE[cache_key] = (mtime, size, is_valid)
+        return is_valid
+
     expected_sha256 = BINARY_CHECKSUMS[tool_name][arch_key]
     try:
-        actual_sha256 = hashlib.sha256(bin_file.read_bytes()).hexdigest().lower()
+        h = hashlib.sha256()
+        with bin_file.open("rb") as f:
+            while chunk := f.read(1024 * 1024):
+                h.update(chunk)
+        actual_sha256 = h.hexdigest().lower()
         if actual_sha256 == expected_sha256.lower():
+            _INTEGRITY_CACHE[cache_key] = (mtime, size, True)
             return True
+
         logger.warning(
             f"Existing {tool_name} binary checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}. Removing unverified binary."
         )
+        _INTEGRITY_CACHE.pop(cache_key, None)
         bin_file.unlink(missing_ok=True)
         return False
     except Exception as e:
         logger.warning(f"Failed to verify integrity for {tool_name}: {e}")
+        _INTEGRITY_CACHE.pop(cache_key, None)
         bin_file.unlink(missing_ok=True)
         return False
 
@@ -253,13 +293,18 @@ def _ensure_scanner_binaries_cached() -> dict[str, bool]:
 
 
 def ensure_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリを安全取得する。キャッシュ命中時もバイナリ実体の存在を再確認する (P2 レビュー対応)。"""
+    """trivy および scorecard バイナリを安全取得する。失敗時も短い TTL キャッシュで連続通信ブロックを防止する (P2 レビュー対応)。"""
     res = _check_binaries_present()
     if res["trivy"] and res["scorecard"]:
         return res
+
+    now = time.monotonic()
+    last_fail = _FAILURE_CACHE.get("binary_setup_failed", 0.0)
+    if now - last_fail < 60.0:
+        return res
+
     try:
         _ensure_scanner_binaries_cached()
-        # キャッシュが命中した場合でも、長時間稼働中に実体バイナリが削除されていないか再確認
         current_res = _check_binaries_present()
         if not (current_res["trivy"] and current_res["scorecard"]):
             _ensure_scanner_binaries_cached.clear()
@@ -267,6 +312,7 @@ def ensure_scanner_binaries() -> dict[str, bool]:
         return current_res
     except Exception as e:
         logger.warning(f"Scanner binary preparation failed or skipped: {e}")
+        _FAILURE_CACHE["binary_setup_failed"] = time.monotonic()
         return _check_binaries_present()
 
 
@@ -1205,7 +1251,6 @@ def check_has_partial_failure(result: OverallResult) -> bool:
     scorecard_unevaluated_check = any(
         f.source == "scorecard" and f.raw_score is None for f in result.all_findings
     )
-    category_unevaluated = any(c.evaluated is False for c in result.categories.values())
 
     return (
         snapshot_failed
@@ -1214,7 +1259,6 @@ def check_has_partial_failure(result: OverallResult) -> bool:
         or scorecard_failed
         or rule_based_failed
         or scorecard_unevaluated_check
-        or category_unevaluated
         or any(
             (
                 f.rule_id.endswith("-UNEVALUATED")
@@ -1298,7 +1342,16 @@ def main() -> None:
     if not btn_scan:
         cached_result = st.session_state.get("mvp_result")
         if cached_result:
-            if check_has_partial_failure(cached_result):
+            is_cached_fetch_failed = (
+                cached_result.status == OverallStatus.UNKNOWN
+                or "fetch failed" in (cached_result.status_reason or "").lower()
+                or "invalid" in (cached_result.status_reason or "").lower()
+            )
+            if is_cached_fetch_failed:
+                st.error(
+                    f"❌ リポジトリの取得またはスキャンに失敗しました: {escape_html(cached_result.status_reason)}"
+                )
+            elif check_has_partial_failure(cached_result):
                 st.warning(
                     "⚠️ リポジトリ snapshot の取得制限や一部カテゴリ診断の制限・エラーが発生したため、一部の診断がスキップされました。詳細は下記レポートをご確認ください。"
                 )
