@@ -1,162 +1,391 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
-import logging
-import urllib.error
 import streamlit as st
 
-from src.models import RiskRecord, Severity
-from src.reporting import ReportWriter
-from src.scan import ScanResult, SecurityScan
+from src.mvp_models import Category, OverallResult
+from src.orchestrator import MVPOrchestrator
 
 logger = logging.getLogger(__name__)
 
 
-SEVERITY_COLORS = {
-    "Critical": "#dc2626",
-    "High": "#ea580c",
-    "Medium": "#d97706",
-    "Low": "#2563eb",
-    "Info": "#64748b",
-}
-
-
-def inject_theme() -> None:
-    """アプリ全体の余白・カード・アラート表現を整える。"""
-
+def inject_custom_theme() -> None:
+    """GitHub Pages 版のモダン・サクラチェッカー風 CSS スタイルをインジェクトする。"""
     st.markdown(
         """
         <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+
+            :root {
+                --font-main: 'Inter', 'Noto Sans JP', sans-serif;
+                --font-mono: 'JetBrains Mono', monospace;
+                --bg-primary: #0b0f19;
+                --bg-card: rgba(18, 24, 38, 0.85);
+                --bg-card-hover: rgba(26, 35, 54, 0.95);
+                --border-color: rgba(255, 255, 255, 0.1);
+                --text-main: #f3f4f6;
+                --text-muted: #9ca3af;
+                --text-dim: #6b7280;
+                --color-safe: #10b981;
+                --color-safe-bg: rgba(16, 185, 129, 0.15);
+                --color-safe-border: rgba(16, 185, 129, 0.4);
+                --color-moderate: #f59e0b;
+                --color-moderate-bg: rgba(245, 158, 11, 0.15);
+                --color-moderate-border: rgba(245, 158, 11, 0.4);
+                --color-danger: #ef4444;
+                --color-danger-bg: rgba(239, 68, 68, 0.15);
+                --color-danger-border: rgba(239, 68, 68, 0.4);
+                --sev-critical: #dc2626;
+                --sev-high: #ea580c;
+                --sev-medium: #d97706;
+                --sev-low: #2563eb;
+                --sev-info: #4b5563;
+            }
+
             .block-container {
-                padding-top: 2rem;
+                padding-top: 1.5rem;
                 padding-bottom: 3rem;
+                max-width: 1160px;
             }
 
-            [data-testid="stSidebar"] {
-                background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            /* ヒーローカード (サクラチェッカー風) */
+            .hero-card-custom {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                border-radius: 20px;
+                padding: 30px 36px;
+                box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5);
+                margin-bottom: 30px;
             }
 
-            [data-testid="stSidebar"] h1,
-            [data-testid="stSidebar"] h2,
-            [data-testid="stSidebar"] h3,
-            [data-testid="stSidebar"] p,
-            [data-testid="stSidebar"] label,
-            [data-testid="stSidebar"] .stMarkdown,
-            [data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
-                color: #f8fafc;
+            .repo-info-header {
+                border-bottom: 1px solid var(--border-color);
+                padding-bottom: 16px;
+                margin-bottom: 24px;
             }
 
-            [data-testid="stSidebar"] input,
-            [data-testid="stSidebar"] textarea,
-            [data-testid="stSidebar"] [data-baseweb="input"] input {
-                color: #0f172a !important;
-                background-color: #ffffff !important;
+            .label-muted {
+                font-size: 0.8rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: var(--text-dim);
             }
 
-            [data-testid="stSidebar"] input::placeholder {
-                color: #64748b !important;
-                opacity: 1;
+            .repo-title {
+                font-size: 1.65rem;
+                font-weight: 800;
+                color: #ffffff;
+                word-break: break-all;
+                margin: 4px 0 6px;
             }
 
-            [data-testid="stSidebar"] button p {
-                color: inherit;
+            .scanned-time {
+                font-size: 0.85rem;
+                color: var(--text-muted);
             }
 
-            .hero-card {
-                padding: 2rem;
-                border-radius: 1.4rem;
-                background:
-                    radial-gradient(circle at top right, rgba(59, 130, 246, 0.25), transparent 32%),
-                    linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
-                color: white;
-                box-shadow: 0 20px 45px rgba(15, 23, 42, 0.18);
-                margin-bottom: 1.5rem;
+            .overall-grid {
+                display: grid;
+                grid-template-columns: 220px 1fr;
+                gap: 36px;
+                align-items: center;
             }
 
-            .hero-card h1 {
-                margin: 0 0 .5rem 0;
-                font-size: 2.45rem;
-                line-height: 1.15;
-            }
-
-            .hero-card p {
-                margin: 0;
-                color: #dbeafe;
-                font-size: 1.05rem;
-            }
-
-            .hero-badges {
+            .score-box {
                 display: flex;
-                flex-wrap: wrap;
-                gap: .6rem;
-                margin-top: 1.25rem;
-            }
-
-            .hero-badge {
-                padding: .35rem .7rem;
-                border-radius: 999px;
-                background: rgba(255, 255, 255, .13);
-                border: 1px solid rgba(255, 255, 255, .18);
-                color: #eff6ff;
-                font-size: .86rem;
-            }
-
-            .section-card {
-                padding: 1.15rem 1.2rem;
-                border: 1px solid #e2e8f0;
-                border-radius: 1rem;
-                background: #ffffff;
-                box-shadow: 0 10px 28px rgba(15, 23, 42, .06);
-                margin: .7rem 0 1rem;
-            }
-
-            .subtle-note {
-                padding: 1rem 1.1rem;
-                border-radius: .95rem;
-                border: 1px solid #bfdbfe;
-                background: #eff6ff;
-                color: #1e3a8a;
-            }
-
-            .subtle-note strong {
-                color: #1e40af;
-            }
-
-            .empty-state {
-                padding: 2rem;
-                border: 1px dashed #cbd5e1;
-                border-radius: 1rem;
-                background: #f8fafc;
+                flex-direction: column;
+                align-items: center;
                 text-align: center;
-                color: #475569;
             }
 
-            .empty-state h3 {
-                color: #0f172a;
+            .score-circle-wrapper {
+                position: relative;
+                width: 150px;
+                height: 150px;
             }
 
-            .empty-state p {
-                color: #475569;
+            .score-circle-svg {
+                width: 150px;
+                height: 150px;
+                transform: rotate(-90deg);
             }
 
-            .severity-pill {
+            .circle-bg {
+                fill: none;
+                stroke: rgba(255, 255, 255, 0.08);
+                stroke-width: 12;
+            }
+
+            .circle-progress {
+                fill: none;
+                stroke-width: 12;
+                stroke-linecap: round;
+                transition: stroke-dashoffset 1s ease-out, stroke 0.4s ease;
+            }
+
+            .score-circle-text {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                line-height: 1;
+            }
+
+            .score-val {
+                font-size: 2.3rem;
+                font-weight: 800;
+                color: #ffffff;
+            }
+
+            .score-max {
+                font-size: 0.82rem;
+                color: var(--text-muted);
+                margin-top: 4px;
+            }
+
+            .score-label {
+                font-weight: 700;
+                font-size: 0.88rem;
+                color: var(--text-muted);
+                margin-top: 12px;
+            }
+
+            /* ステータスバッジ */
+            .status-box {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+            }
+
+            .status-badge {
                 display: inline-block;
-                padding: .18rem .55rem;
+                font-size: 1.3rem;
+                font-weight: 800;
+                padding: 6px 20px;
                 border-radius: 999px;
-                color: white;
-                font-weight: 700;
-                font-size: .78rem;
-                letter-spacing: .01em;
+                letter-spacing: 0.02em;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
             }
 
-            .stDownloadButton button {
-                border-radius: .8rem;
-                font-weight: 700;
+            .status-safe {
+                background: var(--color-safe-bg);
+                color: var(--color-safe);
+                border: 2px solid var(--color-safe-border);
             }
 
+            .status-moderate {
+                background: var(--color-moderate-bg);
+                color: var(--color-moderate);
+                border: 2px solid var(--color-moderate-border);
+            }
+
+            .status-dangerous {
+                background: var(--color-danger-bg);
+                color: var(--color-danger);
+                border: 2px solid var(--color-danger-border);
+            }
+
+            .status-unknown {
+                background: rgba(255, 255, 255, 0.05);
+                color: var(--text-muted);
+                border: 2px solid var(--border-color);
+            }
+
+            .status-reason-text {
+                font-size: 1rem;
+                color: #e5e7eb;
+                line-height: 1.6;
+                margin: 12px 0 16px;
+            }
+
+            .risk-legend {
+                display: flex;
+                gap: 16px;
+                font-size: 0.8rem;
+                color: var(--text-muted);
+                background: rgba(0, 0, 0, 0.2);
+                padding: 8px 14px;
+                border-radius: 8px;
+                border: 1px solid var(--border-color);
+                width: fit-content;
+            }
+
+            .legend-item {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+            }
+            .dot.safe { background: var(--color-safe); }
+            .dot.moderate { background: var(--color-moderate); }
+            .dot.dangerous { background: var(--color-danger); }
+
+            /* 8カテゴリカード */
+            .categories-grid-custom {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                gap: 16px;
+                margin-bottom: 30px;
+            }
+
+            .category-card-custom {
+                background: var(--bg-card);
+                border: 1px solid var(--border-color);
+                border-radius: 14px;
+                padding: 18px;
+            }
+
+            .cat-header-custom {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                margin-bottom: 10px;
+            }
+
+            .cat-title-custom {
+                font-weight: 700;
+                font-size: 0.95rem;
+                color: #f3f4f6;
+            }
+
+            .cat-score-badge-custom {
+                font-weight: 800;
+                font-size: 1.05rem;
+                padding: 2px 8px;
+                border-radius: 6px;
+                font-family: var(--font-mono);
+            }
+
+            .cat-progress-bg-custom {
+                width: 100%;
+                height: 7px;
+                background: rgba(255, 255, 255, 0.08);
+                border-radius: 999px;
+                overflow: hidden;
+                margin-bottom: 10px;
+            }
+
+            .cat-progress-bar-custom {
+                height: 100%;
+                border-radius: 999px;
+            }
+
+            .cat-footer-custom {
+                display: flex;
+                justify-content: space-between;
+                font-size: 0.78rem;
+                color: var(--text-muted);
+            }
+
+            .findings-count-tag-custom {
+                background: rgba(255, 255, 255, 0.06);
+                padding: 2px 6px;
+                border-radius: 4px;
+            }
+
+            /* Finding カード */
+            .finding-card-custom {
+                background: rgba(15, 23, 42, 0.7);
+                border: 1px solid var(--border-color);
+                border-left: 4px solid var(--sev-info);
+                border-radius: 8px;
+                padding: 16px 20px;
+                margin-bottom: 12px;
+            }
+            .finding-card-custom.CRITICAL { border-left-color: var(--sev-critical); }
+            .finding-card-custom.HIGH { border-left-color: var(--sev-high); }
+            .finding-card-custom.MEDIUM { border-left-color: var(--sev-medium); }
+            .finding-card-custom.LOW { border-left-color: var(--sev-low); }
+
+            .finding-meta-custom {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                margin-bottom: 6px;
+                flex-wrap: wrap;
+            }
+
+            .sev-tag-custom {
+                font-weight: 800;
+                font-size: 0.72rem;
+                padding: 2px 7px;
+                border-radius: 4px;
+                color: #ffffff;
+                font-family: var(--font-mono);
+            }
+            .sev-tag-custom.CRITICAL { background: var(--sev-critical); }
+            .sev-tag-custom.HIGH { background: var(--sev-high); }
+            .sev-tag-custom.MEDIUM { background: var(--sev-medium); }
+            .sev-tag-custom.LOW { background: var(--sev-low); }
+            .sev-tag-custom.INFO { background: var(--sev-info); }
+
+            .cat-pill-custom {
+                font-size: 0.72rem;
+                background: rgba(255, 255, 255, 0.08);
+                color: var(--text-muted);
+                padding: 2px 7px;
+                border-radius: 4px;
+            }
+
+            .rule-id-custom {
+                font-family: var(--font-mono);
+                font-size: 0.78rem;
+                color: #93c5fd;
+            }
+
+            .finding-title-custom {
+                font-size: 1rem;
+                font-weight: 700;
+                color: #ffffff;
+                margin-bottom: 4px;
+            }
+
+            .finding-desc-custom {
+                font-size: 0.88rem;
+                color: #d1d5db;
+                line-height: 1.5;
+                margin-bottom: 6px;
+            }
+
+            .finding-target-custom {
+                font-family: var(--font-mono);
+                font-size: 0.8rem;
+                color: #a7f3d0;
+                background: rgba(6, 78, 59, 0.3);
+                padding: 3px 8px;
+                border-radius: 4px;
+                display: inline-block;
+                margin-bottom: 6px;
+            }
+
+            .finding-remediation-custom {
+                font-size: 0.82rem;
+                color: #9cd37b;
+                background: rgba(20, 83, 45, 0.2);
+                border-left: 3px solid #22c55e;
+                padding: 6px 10px;
+                border-radius: 0 4px 4px 0;
+                margin-top: 6px;
+            }
+
+            @media (max-width: 768px) {
+                .overall-grid {
+                    grid-template-columns: 1fr;
+                    gap: 20px;
+                }
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -165,250 +394,262 @@ def inject_theme() -> None:
 
 @dataclass(frozen=True)
 class WebScanOptions:
-    """Streamlit フォームから受け取る URL スキャン指定。"""
+    """Streamlit フォームから受け取るスキャンオプション。"""
 
     target_url: str | None = None
     target_ref: str | None = None
     target_subdir: str | None = None
     output_dir: str | None = None
+    mvp: bool = True
 
 
 def project_root() -> Path:
-    """Streamlit 起動位置に依存せず、プロジェクトルートを返す。"""
-
     return Path(__file__).resolve().parent
 
 
-def normalize_optional(value: str) -> str | None:
-    """空文字を設定未指定として扱う。"""
-
+def normalize_optional(value: str | None) -> str | None:
+    if not value:
+        return None
     stripped = value.strip()
     return stripped or None
 
 
-def severity_counts(records: Sequence[RiskRecord]) -> dict[str, int]:
-    """Streamlit 表示用に深刻度別件数を集計する。"""
-
-    return {
-        severity.value: sum(1 for record in records if record.severity == severity)
-        for severity in Severity
-    }
-
-
-def render_hero() -> None:
-    """ファーストビューとしてアプリの価値と安全性を端的に伝える。"""
-
-    st.markdown(
-        """
-        <div class="hero-card">
-            <h1>🛡️ OSS Security Risk Check Agent</h1>
-            <p>
-                GitHub リポジトリの archive snapshot を安全に取得し、OSS 利用前のセキュリティリスクを素早く可視化します。
-            </p>
-            <div class="hero-badges">
-                <span class="hero-badge">No git clone</span>
-                <span class="hero-badge">Static analysis</span>
-                <span class="hero-badge">Markdown report</span>
-                <span class="hero-badge">Safe archive extraction</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def escape_html(text: str | None) -> str:
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#039;")
     )
 
 
-def render_empty_state() -> None:
-    """初回表示時の案内をカードとして描画する。"""
-
-    st.markdown(
-        """
-        <div class="empty-state">
-            <h3>🔍 まずはスキャン対象を指定してください</h3>
-            <p>
-                左側のフォームに GitHub リポジトリ URL を入力し、必要に応じてブランチ・タグ・サブディレクトリを指定できます。
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def render_hero_score(result: OverallResult) -> None:
+    """サクラチェッカー風の総合スコア＆ステータスカードを描画する。"""
+    score = float(result.overall_score)
+    status_text = (
+        result.status.value if hasattr(result.status, "value") else str(result.status)
     )
+    status_reason = escape_html(result.status_reason)
 
-
-def render_safety_note() -> None:
-    """解析時の安全な実行方針を表示する。"""
-
-    st.markdown(
-        """
-        <div class="subtle-note">
-            <strong>安全な解析方針:</strong>
-            対象リポジトリ内のスクリプトは実行せず、GitHub archive zipball を一時ディレクトリへ展開して静的解析します。
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def severity_label(severity: str) -> str:
-    """検知一覧で使う深刻度ラベルを返す。"""
-
-    icons = {
-        "Critical": "🔴",
-        "High": "🟠",
-        "Medium": "🟡",
-        "Low": "🔵",
-        "Info": "⚪",
-    }
-    return f"{icons.get(severity, '⚪')} {severity}"
-
-
-def render_overall_risk(records: Sequence[RiskRecord]) -> None:
-    """Markdown レポートと同じ基準で総合リスク評価を表示する。"""
-
-    risk_score = ReportWriter._risk_score(records)
-    risk_rating = ReportWriter._risk_rating(risk_score)
-    risk_recommendation = ReportWriter._risk_recommendation(risk_rating)
-    counts = severity_counts(records)
-    critical_high_count = counts.get(Severity.CRITICAL.value, 0) + counts.get(
-        Severity.HIGH.value, 0
-    )
-
-    with st.container(border=True):
-        st.subheader("🧭 総合リスク評価")
-        score_col, rating_col, priority_col, total_col = st.columns(4)
-        score_col.metric("Risk Score", f"{risk_score}/{ReportWriter.MAX_RISK_SCORE}")
-        rating_col.metric("Rating", risk_rating)
-        priority_col.metric("Critical / High", f"{critical_high_count:,}")
-        total_col.metric("Total Findings", f"{len(records):,}")
-
-        st.info(f"推奨対応: {risk_recommendation}")
-        st.caption(
-            "スコアは深刻度ごとのユニーク rule_id 数 × 重み（Critical=12, High=8, Medium=4, Low=1, Info=0）を基本に、"
-            "同一 rule_id の重複検知に対して対数加点（Severity 係数付き）を加え、1000点を上限にした指標です。"
-        )
-
-
-def render_result(result: ScanResult, report_text: str) -> None:
-    """保存済みのスキャン結果を画面に描画する。"""
-
-    st.toast("スキャンが完了しました。", icon="✅")
-    st.success("スキャンが完了しました。結果を確認できます。")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("検知件数", f"{len(result.records):,}")
-    col2.metric("ルール実行エラー", f"{len(result.errors):,}")
-    col3.metric("読み込みルール数", f"{result.loaded_rule_count:,}")
-    col4.metric("実行ルール数", f"{result.executed_rule_count:,}")
-    col5.metric("スキップ", f"{len(result.skipped_files):,}")
-
-    if result.skipped_files:
-        st.warning(
-            f"単一ファイルサイズ上限を超えた {len(result.skipped_files):,} 件のファイルをスキップしました。詳細は下の一覧とMarkdownレポートに含まれます。"
-        )
-
-    render_overall_risk(result.records)
-
-    with st.container(border=True):
-        st.subheader("📌 実行情報")
-        info_col1, info_col2, info_col3 = st.columns([2, 1, 1])
-        info_col1.write("**Target**")
-        info_col1.code(result.target.display_name, language=None)
-        info_col2.write("**Fetch mode**")
-        info_col2.code(result.target.fetch_mode, language=None)
-        info_col3.write("**Report**")
-        info_col3.code("画面表示・DLのみ", language=None)
-
-        ref_col, subdir_col = st.columns(2)
-        ref_col.write(f"**Ref:** `{result.target.ref or '-'}`")
-        subdir_col.write(f"**Subdir:** `{result.target.subdir or '-'}`")
-
-    counts = {
-        key: value for key, value in severity_counts(result.records).items() if value
-    }
-    chart_col, action_col = st.columns([2, 1])
-    with chart_col:
-        with st.container(border=True):
-            st.subheader("📊 深刻度別件数")
-            if counts:
-                st.bar_chart(counts)
-            else:
-                st.write("検知はありませんでした。")
-
-    with action_col:
-        with st.container(border=True):
-            st.subheader("📄 レポート")
-            st.write("Markdown形式のレポートをダウンロードできます。")
-            st.download_button(
-                "Markdown レポートをダウンロード",
-                data=report_text,
-                file_name=f"report_{result.generated_at.strftime('%Y%m%d_%H%M%S')}.md",
-                mime="text/markdown",
-                type="primary",
-                width="stretch",
-            )
-
-    st.subheader("🧾 検知一覧")
-    if result.records:
-        with st.container(border=True):
-            st.dataframe(
-                [
-                    {
-                        "Severity": severity_label(record.severity.value),
-                        "Rule": record.rule_id,
-                        "Title": record.title,
-                        "Category": record.category,
-                        "Location": ReportWriter._location(record),
-                        "Message": record.message or "-",
-                    }
-                    for record in result.records
-                ],
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Severity": st.column_config.TextColumn("Severity", width="small"),
-                    "Rule": st.column_config.TextColumn("Rule", width="medium"),
-                    "Title": st.column_config.TextColumn("Title", width="large"),
-                    "Category": st.column_config.TextColumn("Category", width="medium"),
-                    "Location": st.column_config.TextColumn("Location", width="large"),
-                    "Message": st.column_config.TextColumn("Message", width="large"),
-                },
-            )
+    # カラーとバッジクラスの設定
+    if status_text in ("安全", "SAFE"):
+        color = "var(--color-safe)"
+        badge_class = "status-safe"
+    elif status_text in ("普通", "MODERATE"):
+        color = "var(--color-moderate)"
+        badge_class = "status-moderate"
+    elif status_text in ("危険", "DANGEROUS"):
+        color = "var(--color-danger)"
+        badge_class = "status-dangerous"
     else:
-        st.markdown(
-            """
-            <div class="empty-state">
-                <h3>✅ 該当するリスクはありませんでした</h3>
-                <p>現時点のルールでは検知されていません。Markdown レポートとして結果を保存できます。</p>
+        color = "var(--text-dim)"
+        badge_class = "status-unknown"
+
+    # SVG Circumference = 2 * PI * 65 = 408.4 (approx 410)
+    circumference = 410
+    offset = circumference - (score / 10.0) * circumference
+
+    target_disp = escape_html(result.repository_url)
+    extra_meta = []
+    if result.scanned_ref:
+        extra_meta.push if hasattr(extra_meta, "push") else extra_meta.append(
+            f"ref: {escape_html(result.scanned_ref)}"
+        )
+    if result.scanned_subdir:
+        extra_meta.append(f"subdir: {escape_html(result.scanned_subdir)}")
+    if extra_meta:
+        target_disp += f" ({', '.join(extra_meta)})"
+
+    st.markdown(
+        f"""
+        <div class="hero-card-custom">
+            <div class="repo-info-header">
+                <span class="label-muted">Target Repository</span>
+                <div class="repo-title">{target_disp}</div>
+                <div class="scanned-time">最終診断日時: {escape_html(result.scanned_at)}</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            <div class="overall-grid">
+                <div class="score-box">
+                    <div class="score-circle-wrapper">
+                        <svg class="score-circle-svg" viewBox="0 0 150 150">
+                            <circle class="circle-bg" cx="75" cy="75" r="65"></circle>
+                            <circle class="circle-progress" cx="75" cy="75" r="65"
+                                    stroke="{color}"
+                                    stroke-dasharray="{circumference}"
+                                    stroke-dashoffset="{offset}"></circle>
+                        </svg>
+                        <div class="score-circle-text">
+                            <span class="score-val">{score:.1f}</span>
+                            <span class="score-max">/ 10.0</span>
+                        </div>
+                    </div>
+                    <div class="score-label">総合セキュリティスコア</div>
+                </div>
+                <div class="status-box">
+                    <div>
+                        <span class="status-badge {badge_class}">{escape_html(status_text)}</span>
+                    </div>
+                    <p class="status-reason-text">{status_reason}</p>
+                    <div class="risk-legend">
+                        <span class="legend-item"><span class="dot safe"></span> 良好 (7.5 - 10.0)</span>
+                        <span class="legend-item"><span class="dot moderate"></span> 注意・普通 (5.0 - 7.4)</span>
+                        <span class="legend-item"><span class="dot dangerous"></span> 危険 (0.0 - 4.9)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_category_cards(result: OverallResult) -> None:
+    """8カテゴリ別スコアカードを動的グリッド描画する。"""
+    category_order = [
+        Category.KNOWN_VULNERABILITIES.value,
+        Category.SECRETS.value,
+        Category.MISCONFIGURATION.value,
+        Category.DEPENDENCIES.value,
+        Category.DEVELOPMENT.value,
+        Category.CICD.value,
+        Category.MAINTENANCE.value,
+        Category.SOURCE_CODE.value,
+    ]
+
+    cards_html = []
+    for key in category_order:
+        cat_data = result.categories.get(key)
+        if cat_data:
+            cat_name = escape_html(cat_data.category_name)
+            score = float(cat_data.score)
+            evaluated = cat_data.evaluated
+            count = cat_data.findings_count
+            summary = escape_html(cat_data.summary)
+        else:
+            cat_name = key
+            score = 0.0
+            evaluated = False
+            count = 0
+            summary = "未評価"
+
+        score_text = f"{score:.1f}" if evaluated else "N/A"
+        bar_width = (score * 10.0) if evaluated else 0
+
+        if not evaluated:
+            color = "var(--text-dim)"
+            bg_score = "rgba(255, 255, 255, 0.05)"
+        elif score < 5.0:
+            color = "var(--color-danger)"
+            bg_score = "var(--color-danger-bg)"
+        elif score < 7.5:
+            color = "var(--color-moderate)"
+            bg_score = "var(--color-moderate-bg)"
+        else:
+            color = "var(--color-safe)"
+            bg_score = "var(--color-safe-bg)"
+
+        cards_html.append(
+            f"""
+            <div class="category-card-custom">
+                <div class="cat-header-custom">
+                    <div class="cat-title-custom">{cat_name}</div>
+                    <div class="cat-score-badge-custom" style="color: {color}; background: {bg_score};">
+                        {score_text}
+                    </div>
+                </div>
+                <div class="cat-progress-bg-custom">
+                    <div class="cat-progress-bar-custom" style="width: {bar_width}%; background: {color};"></div>
+                </div>
+                <div class="cat-footer-custom">
+                    <span>{summary}</span>
+                    <span class="findings-count-tag-custom">{count} 指摘</span>
+                </div>
+            </div>
+            """
         )
 
-    with st.expander("Markdown レポートプレビュー", expanded=False):
-        st.markdown(report_text)
+    st.markdown("### 📊 評価カテゴリ別スコア (8観点)")
+    st.caption("Trivy、OpenSSF Scorecard、コード固有ルールの診断結果を10点満点で可視化")
+    st.markdown(
+        f'<div class="categories-grid-custom">{"".join(cards_html)}</div>',
+        unsafe_allow_html=True,
+    )
 
-    if result.errors:
-        with st.expander("⚠️ ルール実行エラー"):
-            for rule_id, traceback_text in result.errors:
-                st.code(f"[{rule_id}]\n{traceback_text}")
 
-    if result.skipped_files:
-        with st.expander("⏭️ スキップしたファイル", expanded=True):
-            st.dataframe(
-                [
-                    {
-                        "Path": skipped.path,
-                        "Reason": skipped.reason,
-                        "Size bytes": skipped.size_bytes,
-                        "Limit bytes": skipped.limit_bytes,
-                    }
-                    for skipped in result.skipped_files
-                ],
-                width="stretch",
-                hide_index=True,
-            )
+def render_findings_list(
+    result: OverallResult, selected_category: str, selected_severity: str
+) -> None:
+    """Finding (指摘事項) カード一覧をフィルタリング描画する。"""
+    st.markdown("### 🔍 発見されたリスク・指摘事項 (Findings)")
+
+    findings = result.all_findings or []
+    filtered = []
+    for f in findings:
+        cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
+        sev_val = f.severity.upper() if f.severity else "INFO"
+
+        match_cat = selected_category == "ALL" or cat_val == selected_category
+        match_sev = selected_severity == "ALL" or sev_val == selected_severity
+
+        if match_cat and match_sev:
+            filtered.append(f)
+
+    if not filtered:
+        st.info("該当する指摘事項 (Findings) はありません。")
+        return
+
+    allowed_sevs = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
+    cards_html = []
+    for f in filtered[:500]:  # 最大500件まで描画
+        raw_sev = (f.severity or "INFO").upper()
+        sev_class = raw_sev if raw_sev in allowed_sevs else "INFO"
+
+        cat_name = f.category.value if hasattr(f.category, "value") else str(f.category)
+        rule_id = escape_html(f.rule_id)
+        title = escape_html(f.title)
+        desc = escape_html(f.description)
+        source = escape_html(f.source)
+
+        target_html = ""
+        if f.target:
+            target_str = escape_html(f.target)
+            if f.location:
+                target_str += f" ({escape_html(f.location)})"
+            target_html = f'<div class="finding-target-custom">📄 {target_str}</div>'
+
+        remed_html = ""
+        if f.remediation:
+            remed_html = f'<div class="finding-remediation-custom">💡 対策案内: {escape_html(f.remediation)}</div>'
+
+        cards_html.append(
+            f"""
+            <div class="finding-card-custom {sev_class}">
+                <div class="finding-meta-custom">
+                    <span class="sev-tag-custom {sev_class}">{sev_class}</span>
+                    <span class="cat-pill-custom">{escape_html(cat_name)}</span>
+                    <span class="rule-id-custom">{rule_id}</span>
+                    <span class="label-muted" style="margin-left: auto;">[{source}]</span>
+                </div>
+                <div class="finding-title-custom">{title}</div>
+                <div class="finding-desc-custom">{desc}</div>
+                {target_html}
+                {remed_html}
+            </div>
+            """
+        )
+
+    st.markdown("".join(cards_html), unsafe_allow_html=True)
+    if len(filtered) > 500:
+        st.caption(
+            f"表示上限 (500 件) を超えたため、一部の指摘事項の表示を省略しています (全 {len(filtered)} 件)。"
+        )
 
 
 def main() -> None:
-    # ロギングの初期化
     from src.config import ScanConfig
     from src.logger import setup_logging
 
@@ -420,49 +661,67 @@ def main() -> None:
         page_icon="🛡️",
         layout="wide",
     )
-    inject_theme()
 
-    render_hero()
+    inject_custom_theme()
 
-    with st.sidebar:
-        st.header("⚙️ スキャン設定")
-        st.caption("GitHub URL を入力して、対象 snapshot を静的解析します。")
-        repo_url = st.text_input(
-            "GitHub リポジトリ URL",
-            placeholder="https://github.com/owner/repo",
-            help="GitHub の公開リポジトリURLを指定してください。",
+    # ヘッダーエリア
+    st.title("🛡️ OSS Security Risk Check Agent")
+    st.caption(
+        "GitHub リポジトリ URL を入力して診断を実行すると、裏側で Python スキャンが自動実行され、リアルタイムにスコアと詳細結果が表示されます。"
+    )
+
+    # 入力フォームエリア
+    with st.container(border=True):
+        col_url, col_ref, col_sub = st.columns([3, 1, 1])
+        with col_url:
+            repo_url = st.text_input(
+                "GitHub リポジトリ URL",
+                placeholder="https://github.com/owner/repo",
+                help="GitHub の公開リポジトリ URL を指定してください。",
+            )
+        with col_ref:
+            ref = st.text_input(
+                "ブランチ / タグ（任意）",
+                placeholder="main",
+            )
+        with col_sub:
+            subdir = st.text_input(
+                "サブディレクトリ（任意）",
+                placeholder="backend",
+            )
+
+        btn_scan = st.button(
+            "🚀 診断・スキャンを実行", type="primary", use_container_width=True
         )
-        ref = st.text_input(
-            "ブランチ / タグ / コミット（任意）",
-            placeholder="main",
-            help="未指定の場合はリポジトリのデフォルトブランチを使用します。",
-        )
-        subdir = st.text_input(
-            "サブディレクトリ（任意）",
-            placeholder="backend",
-            help="モノレポ等で解析対象を絞りたい場合に指定します。",
-        )
-        submitted = st.button("🚀 スキャン実行", type="primary", width="stretch")
 
-        st.divider()
-        st.markdown("**解析ポリシー**")
-        st.markdown(
-            "- 対象コードは実行しません\n- archive snapshot を利用します\n- レポートは画面上で生成します"
-        )
+    if not btn_scan:
+        cached_result = st.session_state.get("mvp_result")
+        if cached_result:
+            render_hero_score(cached_result)
+            render_category_cards(cached_result)
 
-    render_safety_note()
+            filter_col1, filter_col2 = st.columns(2)
+            with filter_col1:
+                cat_filter = st.selectbox(
+                    "表示カテゴリ絞り込み",
+                    options=["ALL"] + [c.value for c in Category],
+                    index=0,
+                )
+            with filter_col2:
+                sev_filter = st.selectbox(
+                    "表示重要度絞り込み",
+                    options=["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                    index=0,
+                )
 
-    cached_result = st.session_state.get("scan_result")
-    cached_report_text = st.session_state.get("report_text")
-
-    if not submitted:
-        if cached_result and cached_report_text:
-            render_result(cached_result, cached_report_text)
-            return
-        render_empty_state()
+            render_findings_list(cached_result, cat_filter, sev_filter)
+        else:
+            st.info(
+                "👆 上のフォームに GitHub リポジトリ URL を入力し、「🚀 診断・スキャンを実行」ボタンを押してください。"
+            )
         return
 
-    if not repo_url.strip():
+    if not repo_url or not repo_url.strip():
         st.error("GitHub リポジトリ URL を入力してください。")
         return
 
@@ -473,45 +732,39 @@ def main() -> None:
     )
 
     try:
-        progress_box = st.container()
-        progress_label = progress_box.empty()
-        progress_bar = progress_box.progress(0)
+        with st.spinner(
+            "リポジトリ snapshot を安全取得し、8カテゴリのルール診断を実行中..."
+        ):
+            orchestrator = MVPOrchestrator(project_root(), cli_options=options)
+            result = orchestrator.run_full_scan(options.target_url, save_to_docs=False)
 
-        def on_step_progress(current: int, total: int, message: str) -> None:
-            total_steps = total if total > 0 else 1
-            ratio = max(0.0, min(1.0, current / total_steps))
-            progress_bar.progress(ratio)
-            progress_label.caption(f"進捗 [{current}/{total}] {message}")
+        st.toast("スキャンが完了しました！", icon="✅")
+        st.session_state["mvp_result"] = result
 
-        with st.spinner("リポジトリ snapshot を取得し、ルールを実行しています..."):
-            result = SecurityScan(
-                project_root(),
-                cli_options=options,
-                persist_report=False,
-                step_progress_callback=on_step_progress,
-            ).run()
-        progress_bar.progress(1.0)
-        progress_label.caption("進捗 [5/5] 完了")
-    except SystemExit as exc:
-        st.error(str(exc))
-        return
-    except (ValueError, urllib.error.URLError) as exc:
-        logger.exception("スキャン処理中に取得エラーが発生しました。")
-        st.error(
-            f"スキャン対象の取得に失敗しました。URLが正しいこと、およびネットワーク接続状態を確認してください。\n\n詳細: {exc}"
-        )
-        return
-    except Exception:
-        logger.exception("予期しないエラーが発生しました。")
-        st.error(
-            "スキャン処理中に予期しないエラーが発生しました。ログを確認するか、システム管理者にお問い合わせください。"
-        )
-        return
+        render_hero_score(result)
+        render_category_cards(result)
 
-    report_text = result.report_markdown
-    st.session_state["scan_result"] = result
-    st.session_state["report_text"] = report_text
-    render_result(result, report_text)
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            cat_filter = st.selectbox(
+                "表示カテゴリ絞り込み",
+                options=["ALL"] + [c.value for c in Category],
+                index=0,
+            )
+        with filter_col2:
+            sev_filter = st.selectbox(
+                "表示重要度絞り込み",
+                options=["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                index=0,
+            )
+
+        render_findings_list(result, cat_filter, sev_filter)
+
+    except ValueError as val_err:
+        st.error(f"入力エラー: {val_err}")
+    except Exception as exc:
+        logger.exception("スキャン処理中にエラーが発生しました。")
+        st.error(f"スキャン処理中に予期しないエラーが発生しました: {exc}")
 
 
 if __name__ == "__main__":
