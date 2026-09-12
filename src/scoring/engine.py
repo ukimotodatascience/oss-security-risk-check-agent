@@ -97,6 +97,7 @@ class ScoringEngine:
             all_findings=findings,
             skipped_files=skipped_files or [],
             total_skipped_files_count=len(skipped_files) if skipped_files else 0,
+            scanner_status=scanner_status or {},
         )
 
     def _calculate_category_score(

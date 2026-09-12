@@ -1237,19 +1237,34 @@ def main() -> None:
             return
 
         # 2. 一部スキャンや snapshot fetcher 制限・失敗の検出 (P2 レビュー対応)
-        has_partial_failure = bool(result.skipped_files) or any(
-            f.rule_id
-            in (
-                "SKIPPED-FILES-LIMIT",
-                "SNAPSHOT-FETCH-FAILED",
-                "FALLBACK-SCAN-FAILED-UNEVALUATED",
-                "RULE-EVALUATION-ERROR",
+        scanner_st = getattr(result, "scanner_status", {}) or {}
+        snapshot_failed = bool(scanner_st.get("snapshot_failed"))
+        has_skipped_files = bool(result.skipped_files) or bool(
+            scanner_st.get("has_skipped_files")
+        )
+
+        has_partial_failure = (
+            snapshot_failed
+            or has_skipped_files
+            or any(
+                (
+                    f.rule_id.endswith("-UNEVALUATED")
+                    and f.rule_id != "GIT-HISTORY-UNEVALUATED"
+                )
+                or f.rule_id.endswith("-EXCEEDED")
+                or f.rule_id.endswith("-FAILED")
+                or f.rule_id.endswith("-LIMIT")
+                or f.rule_id
+                in (
+                    "SKIPPED-FILES-LIMIT",
+                    "SNAPSHOT-FETCH-FAILED",
+                    "FALLBACK-SCAN-FAILED-UNEVALUATED",
+                    "GLOBAL-LIMIT-EXCEEDED",
+                    "FINDINGS-LIMIT-EXCEEDED",
+                    "TRIVY-FINDINGS-LIMIT-EXCEEDED",
+                )
+                for f in result.all_findings
             )
-            or (
-                f.source == "snapshot_fetcher"
-                and f.rule_id != "GIT-HISTORY-UNEVALUATED"
-            )
-            for f in result.all_findings
         )
 
         if has_partial_failure:
