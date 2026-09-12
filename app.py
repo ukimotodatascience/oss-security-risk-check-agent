@@ -85,7 +85,12 @@ def _download_binary_safely(
                 resp.fp.raw._sock.settimeout(max(0.001, min(remaining, 1.0)))
 
             try:
-                chunk = resp.read(8 * 1024)
+                if hasattr(resp, "read1"):
+                    chunk = resp.read1(8 * 1024)
+                elif hasattr(resp, "fp") and hasattr(resp.fp, "read1"):
+                    chunk = resp.fp.read1(8 * 1024)
+                else:
+                    chunk = resp.read(8 * 1024)
             except (TimeoutError, OSError, urllib.error.URLError) as err:
                 if time.monotonic() - start_time >= timeout:
                     raise TimeoutError(
@@ -488,6 +493,37 @@ def generate_markdown_report(result: OverallResult) -> str:
             sz_str = f"{sk.size_bytes:,} bytes" if sk.size_bytes is not None else "-"
             lm_str = f"{sk.limit_bytes:,} bytes" if sk.limit_bytes is not None else "-"
             lines.append(f"| {p_str} | {r_str} | {sz_str} | {lm_str} |")
+        lines.append("")
+
+    # 外部スキャナー実行エラー・制限詳細セクションをレポートに追加 (P2 レビュー対応)
+    scanner_st = getattr(result, "scanner_status", {}) or {}
+    trivy_err = scanner_st.get("trivy_failure_reason")
+    scorecard_err = scanner_st.get("scorecard_failure_reason")
+    snapshot_err = scanner_st.get("snapshot_failed_reason")
+
+    if trivy_err or scorecard_err or snapshot_err:
+        lines.extend(
+            [
+                "---",
+                "",
+                "## 外部スキャナー実行エラー・制限詳細",
+                "",
+                "一部のスキャナーまたは snapshot 取得処理で以下のエラー・制限が発生しました。",
+                "",
+            ]
+        )
+        if snapshot_err:
+            lines.append(
+                f"- **Snapshot Fetcher エラー**: {escape_markdown(str(snapshot_err))}"
+            )
+        if trivy_err:
+            lines.append(
+                f"- **Trivy スキャナーエラー/スキップ**: {escape_markdown(str(trivy_err))}"
+            )
+        if scorecard_err:
+            lines.append(
+                f"- **Scorecard スキャナーエラー/スキップ**: {escape_markdown(str(scorecard_err))}"
+            )
         lines.append("")
 
     lines.extend(
