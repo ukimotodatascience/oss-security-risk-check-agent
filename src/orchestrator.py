@@ -1010,6 +1010,25 @@ class MVPOrchestrator:
                     ):
                         cat_res.summary = cat_res.summary[:max_len] + "..."
 
+        def _truncate_skipped_files(
+            res: OverallResult, max_len: int = 200, max_count: int | None = None
+        ) -> None:
+            if not getattr(res, "skipped_files", None):
+                return
+            if max_count is not None and len(res.skipped_files) > max_count:
+                res.skipped_files = res.skipped_files[:max_count]
+            for sk in res.skipped_files:
+                if (
+                    isinstance(getattr(sk, "path", None), str)
+                    and len(sk.path) > max_len
+                ):
+                    sk.path = sk.path[:max_len] + "..."
+                if (
+                    isinstance(getattr(sk, "reason", None), str)
+                    and len(sk.reason) > max_len
+                ):
+                    sk.reason = sk.reason[:max_len] + "..."
+
         def _sync_findings_counts(res: OverallResult) -> None:
             for cat_res in res.categories.values():
                 cat_res.findings_count = len(
@@ -1026,6 +1045,7 @@ class MVPOrchestrator:
                 "Scan result JSON exceeded 10MB limit. Truncating text fields to fit."
             )
             _truncate_top_level_strings(result_to_save, 200)
+            _truncate_skipped_files(result_to_save, 200)
             # Pass 1: truncate long text fields (including location, rule_id, source) to 200 chars
             for f in result_to_save.all_findings:
                 _truncate_finding(f, 200)
@@ -1034,23 +1054,29 @@ class MVPOrchestrator:
                     _truncate_finding(f, 200)
             json_str = result_to_save.model_dump_json(indent=2)
 
-        # Pass 2: slice findings list until <= 10MB or 0 findings left
-        while (
-            len(json_str.encode("utf-8")) > MAX_FILE_BYTES
-            and len(result_to_save.all_findings) > 0
+        # Pass 2: slice findings and skipped_files list until <= 10MB or 0 findings left
+        while len(json_str.encode("utf-8")) > MAX_FILE_BYTES and (
+            len(result_to_save.all_findings) > 0
+            or len(result_to_save.skipped_files) > 0
         ):
-            new_len = len(result_to_save.all_findings) // 2
-            result_to_save.all_findings = result_to_save.all_findings[:new_len]
-            for cat_enum, cat_res in result_to_save.categories.items():
-                cat_res.findings = [
-                    f for f in result_to_save.all_findings if f.category == cat_enum
-                ]
-            _sync_findings_counts(result_to_save)
+            if len(result_to_save.all_findings) > 0:
+                new_len = len(result_to_save.all_findings) // 2
+                result_to_save.all_findings = result_to_save.all_findings[:new_len]
+                for cat_enum, cat_res in result_to_save.categories.items():
+                    cat_res.findings = [
+                        f for f in result_to_save.all_findings if f.category == cat_enum
+                    ]
+                _sync_findings_counts(result_to_save)
+            if len(result_to_save.skipped_files) > 0:
+                new_sk_len = len(result_to_save.skipped_files) // 2
+                result_to_save.skipped_files = result_to_save.skipped_files[:new_sk_len]
+
             json_str = result_to_save.model_dump_json(indent=2)
 
         # Pass 3: aggressive string truncation if still > 10MB (even with 0 findings)
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             _truncate_top_level_strings(result_to_save, 50)
+            _truncate_skipped_files(result_to_save, 50, max_count=50)
             for f in result_to_save.all_findings:
                 _truncate_finding(f, 50)
             for cat_res in result_to_save.categories.values():
@@ -1064,13 +1090,15 @@ class MVPOrchestrator:
         encoded_bytes = json_str.encode("utf-8")
         if len(encoded_bytes) > MAX_FILE_BYTES:
             logger.warning(
-                "Scan result JSON exceeds 10MB after Pass 3. Clearing findings to guarantee limit."
+                "Scan result JSON exceeds 10MB after Pass 3. Clearing findings and truncating skipped files to guarantee limit."
             )
             result_to_save.all_findings = []
+            result_to_save.skipped_files = result_to_save.skipped_files[:10]
             for cat_res in result_to_save.categories.values():
                 cat_res.findings = []
             _sync_findings_counts(result_to_save)
             _truncate_top_level_strings(result_to_save, 50)
+            _truncate_skipped_files(result_to_save, 50, max_count=10)
             json_str = result_to_save.model_dump_json(indent=2)
             encoded_bytes = json_str.encode("utf-8")
 

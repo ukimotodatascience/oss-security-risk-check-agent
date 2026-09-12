@@ -47,6 +47,25 @@ def project_root() -> Path:
 
 
 @st.cache_resource(show_spinner=False)
+def _download_binary_safely(
+    url: str, max_bytes: int = 100 * 1024 * 1024, timeout: float = 10.0
+) -> bytes:
+    """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・タイムアウト付)。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "OSS-Risk-Check-Agent"})
+    buffer = bytearray()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        while True:
+            chunk = resp.read(128 * 1024)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            if len(buffer) > max_bytes:
+                raise ValueError(
+                    f"Downloaded binary exceeds maximum allowed size ({max_bytes} bytes)"
+                )
+    return bytes(buffer)
+
+
 def ensure_scanner_binaries() -> dict[str, bool]:
     """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト・キャッシュ) する。"""
     bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
@@ -79,11 +98,7 @@ def ensure_scanner_binaries() -> dict[str, bool]:
                 logger.info(
                     f"Downloading Trivy binary ({arch_key}) with 10s timeout..."
                 )
-                req = urllib.request.Request(
-                    download_url, headers={"User-Agent": "OSS-Risk-Check-Agent"}
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = resp.read()
+                data = _download_binary_safely(download_url)
 
                 actual_sha256 = hashlib.sha256(data).hexdigest().lower()
                 if actual_sha256 != expected_sha256.lower():
@@ -109,11 +124,7 @@ def ensure_scanner_binaries() -> dict[str, bool]:
                 logger.info(
                     f"Downloading Scorecard binary ({arch_key}) with 10s timeout..."
                 )
-                req = urllib.request.Request(
-                    download_url, headers={"User-Agent": "OSS-Risk-Check-Agent"}
-                )
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    data = resp.read()
+                data = _download_binary_safely(download_url)
 
                 actual_sha256 = hashlib.sha256(data).hexdigest().lower()
                 if actual_sha256 != expected_sha256.lower():
@@ -1209,6 +1220,9 @@ def main() -> None:
 
     except ValueError as val_err:
         st.error(f"入力エラー: {val_err}")
+    except SystemExit as sys_exit:
+        logger.warning(f"スキャン処理がシステム終了を呼び出しました: {sys_exit}")
+        st.error(f"設定エラーが発生しました: {sys_exit}")
     except Exception:
         logger.exception("スキャン処理中に予期しないエラーが発生しました。")
         st.error(
