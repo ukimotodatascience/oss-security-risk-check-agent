@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import shutil
+import tarfile
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,29 +17,109 @@ from src.orchestrator import MVPOrchestrator
 logger = logging.getLogger(__name__)
 
 
-def check_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリの存在を確認する。"""
+def project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def ensure_scanner_binaries() -> dict[str, bool]:
+    """trivy および scorecard バイナリを自動セットアップ / 存在確認する。"""
+    bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
+
+    # PATH に追加
+    path_env = os.environ.get("PATH", "")
+    if str(bin_dir) not in path_env:
+        os.environ["PATH"] = f"{bin_dir}{os.path.pathsep}" + path_env
+
+    trivy_path = shutil.which("trivy")
+    scorecard_path = shutil.which("scorecard")
+
+    # Linux 環境 (Streamlit Cloud 等) かつ PATH にバイナリが無い場合、Releases から自動取得
+    if platform.system() == "Linux":
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        if not trivy_path:
+            try:
+                logger.info("Attempting auto-download of Trivy binary for Linux...")
+                trivy_url = "https://github.com/aquasecurity/trivy/releases/download/v0.50.1/trivy_0.50.1_Linux-64bit.tar.gz"
+                archive_file = bin_dir / "trivy.tar.gz"
+                urllib.request.urlretrieve(trivy_url, archive_file)
+                with tarfile.open(archive_file, "r:gz") as tar:
+                    tar.extract("trivy", path=bin_dir)
+                (bin_dir / "trivy").chmod(0o755)
+                archive_file.unlink(missing_ok=True)
+                trivy_path = str(bin_dir / "trivy")
+            except Exception as e:
+                logger.warning(f"Failed to auto-install trivy: {e}")
+
+        if not scorecard_path:
+            try:
+                logger.info("Attempting auto-download of Scorecard binary for Linux...")
+                scorecard_url = "https://github.com/ossf/scorecard/releases/download/v4.13.1/scorecard_4.13.1_linux_amd64.tar.gz"
+                archive_file = bin_dir / "scorecard.tar.gz"
+                urllib.request.urlretrieve(scorecard_url, archive_file)
+                with tarfile.open(archive_file, "r:gz") as tar:
+                    for member in tar.getmembers():
+                        if member.name.endswith("scorecard"):
+                            member.name = "scorecard"
+                            tar.extract(member, path=bin_dir)
+                            break
+                (bin_dir / "scorecard").chmod(0o755)
+                archive_file.unlink(missing_ok=True)
+                scorecard_path = str(bin_dir / "scorecard")
+            except Exception as e:
+                logger.warning(f"Failed to auto-install scorecard: {e}")
+
     return {
         "trivy": shutil.which("trivy") is not None,
         "scorecard": shutil.which("scorecard") is not None,
     }
 
 
+def escape_markdown(text: str | None) -> str:
+    """Markdown 構文・記号・改行を無害化エスケープする (P2 レビュー対応)。"""
+    if not text:
+        return ""
+    s = str(text)
+    replacements = [
+        ("\\", "\\\\"),
+        ("`", "\\`"),
+        ("*", "\\*"),
+        ("_", "\\_"),
+        ("{", "\\{"),
+        ("}", "\\}"),
+        ("[", "\\["),
+        ("]", "\\]"),
+        ("(", "\\("),
+        (")", "\\)"),
+        ("#", "\\#"),
+        ("+", "\\+"),
+        ("-", "\\-"),
+        (".", "\\."),
+        ("!", "\\!"),
+        ("|", "\\|"),
+        ("~", "\\~"),
+    ]
+    for orig, repl in replacements:
+        s = s.replace(orig, repl)
+    return s.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 def generate_markdown_report(result: OverallResult) -> str:
-    """OverallResult からダウンロード用 Markdown レポート文字列を生成する。"""
+    """OverallResult からダウンロード用 Markdown レポート文字列を安全生成する。"""
     lines = [
         "# 🛡️ OSS セキュリティリスク診断レポート",
         "",
         "## 1. 診断概要",
         "",
-        f"- **対象リポジトリ:** {result.repository_url}",
-        f"- **最終診断日時:** {result.scanned_at}",
+        f"- **対象リポジトリ:** {escape_markdown(result.repository_url)}",
+        f"- **最終診断日時:** {escape_markdown(result.scanned_at)}",
     ]
 
     if result.scanned_ref:
-        lines.append(f"- **対象ブランチ/タグ:** {result.scanned_ref}")
+        lines.append(f"- **対象ブランチ/タグ:** {escape_markdown(result.scanned_ref)}")
     if result.scanned_subdir:
-        lines.append(f"- **対象サブディレクトリ:** {result.scanned_subdir}")
+        lines.append(
+            f"- **対象サブディレクトリ:** {escape_markdown(result.scanned_subdir)}"
+        )
 
     status_text = (
         result.status.value if hasattr(result.status, "value") else str(result.status)
@@ -43,8 +127,8 @@ def generate_markdown_report(result: OverallResult) -> str:
     lines.extend(
         [
             f"- **総合セキュリティスコア:** {result.overall_score:.1f} / 10.0",
-            f"- **総合判定:** {status_text}",
-            f"- **判定理由:** {result.status_reason or 'なし'}",
+            f"- **総合判定:** {escape_markdown(status_text)}",
+            f"- **判定理由:** {escape_markdown(result.status_reason) or 'なし'}",
             "",
             "---",
             "",
@@ -69,13 +153,13 @@ def generate_markdown_report(result: OverallResult) -> str:
     for key in category_order:
         cat_data = result.categories.get(key)
         if cat_data:
-            c_name = cat_data.category_name
+            c_name = escape_markdown(cat_data.category_name)
             c_score = f"{cat_data.score:.1f}" if cat_data.evaluated else "N/A"
             c_eval = "評価済み" if cat_data.evaluated else "未評価"
             c_count = cat_data.findings_count
-            c_summary = cat_data.summary
+            c_summary = escape_markdown(cat_data.summary)
         else:
-            c_name = key
+            c_name = escape_markdown(key)
             c_score = "N/A"
             c_eval = "未評価"
             c_count = 0
@@ -102,22 +186,25 @@ def generate_markdown_report(result: OverallResult) -> str:
         )
 
         for idx, f in enumerate(sorted_findings, 1):
-            sev = (f.severity or "INFO").upper()
-            cat_name = (
+            sev = escape_markdown((f.severity or "INFO").upper())
+            cat_name = escape_markdown(
                 f.category.value if hasattr(f.category, "value") else str(f.category)
             )
-            lines.append(f"### {idx}. [{sev}] {f.title}")
+            title = escape_markdown(f.title)
+            rule_id = escape_markdown(f.rule_id)
+            source = escape_markdown(f.source)
+            lines.append(f"### {idx}. [{sev}] {title}")
             lines.append(f"- **カテゴリ:** {cat_name}")
-            lines.append(f"- **ルールID:** `{f.rule_id}` (Source: {f.source})")
+            lines.append(f"- **ルールID:** `{rule_id}` (Source: {source})")
             if f.target:
-                target_loc = f.target
+                target_loc = escape_markdown(f.target)
                 if f.location:
-                    target_loc += f" ({f.location})"
+                    target_loc += f" ({escape_markdown(f.location)})"
                 lines.append(f"- **対象:** `{target_loc}`")
             if f.description:
-                lines.append(f"- **説明:** {f.description}")
+                lines.append(f"- **説明:** {escape_markdown(f.description)}")
             if f.remediation:
-                lines.append(f"- **対策案内:** {f.remediation}")
+                lines.append(f"- **対策案内:** {escape_markdown(f.remediation)}")
             lines.append("")
 
     return "\n".join(lines)
@@ -514,10 +601,6 @@ class WebScanOptions:
     mvp: bool = True
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parent
-
-
 def normalize_optional(value: str | None) -> str | None:
     if not value:
         return None
@@ -546,7 +629,6 @@ def render_hero_score(result: OverallResult) -> None:
     )
     status_reason = escape_html(result.status_reason)
 
-    # カラーとバッジクラスの設定
     if status_text in ("安全", "SAFE"):
         color = "var(--color-safe)"
         badge_class = "status-safe"
@@ -560,7 +642,6 @@ def render_hero_score(result: OverallResult) -> None:
         color = "var(--text-dim)"
         badge_class = "status-unknown"
 
-    # SVG Circumference = 2 * PI * 65 = 408.4 (approx 410)
     circumference = 410
     offset = circumference - (score / 10.0) * circumference
 
@@ -615,7 +696,7 @@ def render_hero_score(result: OverallResult) -> None:
         unsafe_allow_html=True,
     )
 
-    # Markdown レポートのダウンロードボタンを再追加 (P2 レビュー対応)
+    # Markdown レポートのダウンロードボタン (P2 レビュー対応)
     md_content = generate_markdown_report(result)
     file_timestamp = (
         result.scanned_at.replace(":", "-").replace(" ", "_").replace("/", "-")
@@ -630,18 +711,35 @@ def render_hero_score(result: OverallResult) -> None:
 
 
 def render_skipped_files_alert(result: OverallResult) -> None:
-    """スキップされたファイルに関する注記・警告を描画する。"""
-    skipped_findings = [
-        f
-        for f in result.all_findings
-        if f.rule_id == "SKIPPED-FILES-LIMIT" or f.source == "snapshot_fetcher"
-    ]
-    if skipped_findings:
-        with st.expander("⚠️ ファイルサイズ制限によりスキップされたファイル・注意事項"):
-            for f in skipped_findings:
-                st.warning(f"**{f.title}**: {f.description}")
-                if f.remediation:
-                    st.caption(f"対策: {f.remediation}")
+    """サイズ上限等によりスキップされたファイルの詳細一覧を表示する (P2 レビュー対応)。"""
+    if not result.skipped_files:
+        return
+
+    with st.expander(
+        f"⚠️ 安全上限によりスキャン除外・スキップされたファイル ({len(result.skipped_files)} 件)"
+    ):
+        st.caption(
+            "以下のファイルは設定されたサイズ上限・安全上限を超えたためスキャン対象から除外されました。"
+        )
+        table_data = []
+        for sk in result.skipped_files:
+            table_data.append(
+                {
+                    "ファイルパス": sk.path,
+                    "除外理由": sk.reason,
+                    "ファイルサイズ": (
+                        f"{sk.size_bytes:,} bytes"
+                        if sk.size_bytes is not None
+                        else "不明"
+                    ),
+                    "上限値": (
+                        f"{sk.limit_bytes:,} bytes"
+                        if sk.limit_bytes is not None
+                        else "不明"
+                    ),
+                }
+            )
+        st.dataframe(table_data, use_container_width=True)
 
 
 def render_category_cards(result: OverallResult) -> None:
@@ -717,6 +815,50 @@ def render_category_cards(result: OverallResult) -> None:
     )
 
 
+def render_findings_summary(result: OverallResult) -> dict[str, int]:
+    """検知総数と深刻度別件数の集計メトリクス & バーチャートを描画する (P2 レビュー対応)。"""
+    findings = result.all_findings or []
+    counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+    for f in findings:
+        sev = (f.severity or "INFO").upper()
+        if sev in counts:
+            counts[sev] += 1
+        else:
+            counts["INFO"] += 1
+
+    st.markdown("### 📈 検知件数サマリ & 深刻度別分布")
+
+    col_tot, col_crit, col_high, col_med, col_low, col_info = st.columns(6)
+    with col_tot:
+        st.metric("総検知数", f"{len(findings)} 件")
+    with col_crit:
+        st.metric("🚨 Critical", f"{counts['CRITICAL']} 件")
+    with col_high:
+        st.metric("⚠️ High", f"{counts['HIGH']} 件")
+    with col_med:
+        st.metric("⚡ Medium", f"{counts['MEDIUM']} 件")
+    with col_low:
+        st.metric("ℹ️ Low", f"{counts['LOW']} 件")
+    with col_info:
+        st.metric("💡 Info", f"{counts['INFO']} 件")
+
+    if findings:
+        st.caption("深刻度別件数グラフ")
+        chart_data = {
+            "深刻度": ["Critical", "High", "Medium", "Low", "Info"],
+            "件数": [
+                counts["CRITICAL"],
+                counts["HIGH"],
+                counts["MEDIUM"],
+                counts["LOW"],
+                counts["INFO"],
+            ],
+        }
+        st.bar_chart(chart_data, x="深刻度", y="件数", color="#ea580c")
+
+    return counts
+
+
 def render_findings_list(
     result: OverallResult, selected_category: str, selected_severity: str
 ) -> None:
@@ -739,7 +881,7 @@ def render_findings_list(
         st.info("該当する指摘事項 (Findings) はありません。")
         return
 
-    # 表示上限の前に重要度順で Findings をソート (CRITICAL > HIGH > MEDIUM > LOW > INFO) (P2 レビュー対応)
+    # 表示上限の前に重要度順で Findings をソート (CRITICAL > HIGH > MEDIUM > LOW > INFO)
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
     filtered.sort(key=lambda f: SEVERITY_ORDER.get((f.severity or "INFO").upper(), 5))
 
@@ -811,13 +953,13 @@ def main() -> None:
         "GitHub リポジトリ URL を入力して診断を実行すると、裏側で Python スキャンが自動実行され、リアルタイムにスコアと詳細結果が表示されます。"
     )
 
-    # 外部スキャンツールの状態チェックと警告表示 (P1 レビュー対応)
-    binaries = check_scanner_binaries()
+    # 外部スキャンツールの自動取得・確認と警告表示 (P1 レビュー対応)
+    binaries = ensure_scanner_binaries()
     missing_tools = [t for t, exists in binaries.items() if not exists]
     if missing_tools:
         st.warning(
             f"⚠️ **外部スキャンツールの案内**: システムに `{'`, `'.join(missing_tools)}` バイナリが検出されませんでした。"
-            "ツール未同梱環境（Streamlit Cloud 等）では、ルールベース診断を中心に自動実行されます。"
+            "ツール未導入環境では、ルールベース診断を中心に自動実行されます。"
         )
 
     # 入力フォームエリア
@@ -851,6 +993,8 @@ def main() -> None:
             render_skipped_files_alert(cached_result)
             render_category_cards(cached_result)
 
+            counts = render_findings_summary(cached_result)
+
             filter_col1, filter_col2 = st.columns(2)
             with filter_col1:
                 cat_filter = st.selectbox(
@@ -859,11 +1003,22 @@ def main() -> None:
                     index=0,
                 )
             with filter_col2:
-                sev_filter = st.selectbox(
+                sev_options = [
+                    f"ALL (全 {len(cached_result.all_findings)} 件)",
+                    f"CRITICAL ({counts['CRITICAL']} 件)",
+                    f"HIGH ({counts['HIGH']} 件)",
+                    f"MEDIUM ({counts['MEDIUM']} 件)",
+                    f"LOW ({counts['LOW']} 件)",
+                    f"INFO ({counts['INFO']} 件)",
+                ]
+                selected_sev_idx = st.selectbox(
                     "表示重要度絞り込み",
-                    options=["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                    options=range(len(sev_options)),
+                    format_func=lambda i: sev_options[i],
                     index=0,
                 )
+                sev_map = ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+                sev_filter = sev_map[selected_sev_idx]
 
             render_findings_list(cached_result, cat_filter, sev_filter)
         else:
@@ -908,6 +1063,8 @@ def main() -> None:
         render_skipped_files_alert(result)
         render_category_cards(result)
 
+        counts = render_findings_summary(result)
+
         filter_col1, filter_col2 = st.columns(2)
         with filter_col1:
             cat_filter = st.selectbox(
@@ -916,11 +1073,22 @@ def main() -> None:
                 index=0,
             )
         with filter_col2:
-            sev_filter = st.selectbox(
+            sev_options = [
+                f"ALL (全 {len(result.all_findings)} 件)",
+                f"CRITICAL ({counts['CRITICAL']} 件)",
+                f"HIGH ({counts['HIGH']} 件)",
+                f"MEDIUM ({counts['MEDIUM']} 件)",
+                f"LOW ({counts['LOW']} 件)",
+                f"INFO ({counts['INFO']} 件)",
+            ]
+            selected_sev_idx = st.selectbox(
                 "表示重要度絞り込み",
-                options=["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                options=range(len(sev_options)),
+                format_func=lambda i: sev_options[i],
                 index=0,
             )
+            sev_map = ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+            sev_filter = sev_map[selected_sev_idx]
 
         render_findings_list(result, cat_filter, sev_filter)
 

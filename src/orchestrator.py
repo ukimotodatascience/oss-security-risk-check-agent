@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from src.adapters.scorecard_adapter import ScorecardAdapter
 from src.adapters.trivy_adapter import TrivyAdapter
-from src.mvp_models import Category, Finding, OverallResult
+from src.mvp_models import Category, Finding, OverallResult, SkippedFileInfo
 from src.scoring.engine import ScoringEngine
 from src.targets.archive_fetcher import ArchiveSnapshotFetcher
 from src.targets.url_validator import parse_github_repo_url
@@ -73,6 +73,7 @@ class MVPOrchestrator:
 
         logger.info(f"Starting MVP full scan for repository: {normalized_url}")
         all_findings: List[Finding] = []
+        captured_skipped_files: List[SkippedFileInfo] = []
         scanner_status: Dict[str, bool] = {
             "trivy": False,
             "scorecard": False,
@@ -194,6 +195,19 @@ class MVPOrchestrator:
                     logger.warning(
                         f"Snapshot fetcher skipped {len(relevant_skipped_files)} files in target scope."
                     )
+                    for sk in relevant_skipped_files:
+                        sk_path = getattr(sk, "path", str(sk))
+                        sk_reason = getattr(sk, "reason", "Skipped due to size limits")
+                        sk_size = getattr(sk, "size_bytes", None)
+                        sk_limit = getattr(sk, "limit_bytes", None)
+                        captured_skipped_files.append(
+                            SkippedFileInfo(
+                                path=sk_path,
+                                reason=sk_reason,
+                                size_bytes=sk_size,
+                                limit_bytes=sk_limit,
+                            )
+                        )
                     scanner_status["has_skipped_files"] = True
                     for cat in (
                         Category.MISCONFIGURATION,
@@ -392,6 +406,7 @@ class MVPOrchestrator:
             scanner_status=scanner_status,
             scanned_ref=target_ref,
             scanned_subdir=target_subdir,
+            skipped_files=captured_skipped_files,
         )
 
         # 6. JSON 保存
