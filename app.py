@@ -63,16 +63,26 @@ def project_root() -> Path:
 def _download_binary_safely(
     url: str, max_bytes: int = 100 * 1024 * 1024, timeout: float = 10.0
 ) -> bytes:
-    """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・全体タイムアウト付)。"""
+    """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・全体絶対タイムアウト付)。"""
     start_time = time.monotonic()
     req = urllib.request.Request(url, headers={"User-Agent": "OSS-Risk-Check-Agent"})
     buffer = bytearray()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         while True:
-            if time.monotonic() - start_time > timeout:
+            elapsed = time.monotonic() - start_time
+            remaining = timeout - elapsed
+            if remaining <= 0:
                 raise TimeoutError(
-                    f"Downloaded binary streaming exceeded time limit ({timeout} seconds)"
+                    f"Downloaded binary streaming exceeded overall time limit ({timeout} seconds)"
                 )
+            if (
+                hasattr(resp, "fp")
+                and hasattr(resp.fp, "raw")
+                and hasattr(resp.fp.raw, "_sock")
+                and resp.fp.raw._sock
+            ):
+                resp.fp.raw._sock.settimeout(remaining)
+
             chunk = resp.read(128 * 1024)
             if not chunk:
                 break
@@ -84,40 +94,79 @@ def _download_binary_safely(
     return bytes(buffer)
 
 
-_SECURE_TMP_DIR: Path | None = None
-_INTEGRITY_CACHE: dict[str, tuple[float, int, bool]] = {}
-_FAILURE_CACHE: dict[str, float] = {}
+class ScannerBinaryState:
+    """Streamlit rerun を超えてプロセス永続保持されるスキャナー状態コンテナ。"""
+
+    def __init__(self) -> None:
+        self.secure_tmp_dir: Path | None = None
+        self.integrity_cache: dict[str, tuple[float, int, bool]] = {}
+        self.failure_cache: dict[str, float] = {}
+
+
+@st.cache_resource(show_spinner=False)
+def _get_scanner_binary_state() -> ScannerBinaryState:
+    return ScannerBinaryState()
+
+
+def _is_secure_directory(dir_path: Path) -> bool:
+    """ディレクトリおよび各親階層の所有者 (getuid)、パーミッション (0o700)、非シンボリックリンク性を検証する (P2 レビュー対応)。"""
+    try:
+        if not hasattr(os, "getuid"):
+            return True
+        uid = os.getuid()
+        curr = dir_path.resolve()
+
+        try:
+            curr.chmod(0o700)
+        except Exception:
+            pass
+
+        st_info = curr.stat()
+        if st_info.st_uid != uid or (st_info.st_mode & 0o077 != 0) or curr.is_symlink():
+            return False
+
+        home = Path.home().resolve()
+        parent = curr.parent
+        while parent != parent.parent:
+            if parent.exists():
+                p_st = parent.stat()
+                if p_st.st_uid != uid or parent.is_symlink():
+                    return False
+            if parent == home:
+                break
+            parent = parent.parent
+
+        return True
+    except Exception:
+        return False
 
 
 def _get_user_bin_dir() -> Path:
     """ユーザー固有の安全なバイナリ保存ディレクトリを取得・作成する (P2 レビュー対応)。"""
-    global _SECURE_TMP_DIR
     if os.name == "nt":
         bin_dir = project_root() / ".bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         return bin_dir
 
+    state = _get_scanner_binary_state()
     base_dir = Path.home() / ".cache" / "oss_security_agent" / "bin"
     try:
         base_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-        if hasattr(os, "getuid"):
-            st_info = base_dir.stat()
-            if st_info.st_uid != os.getuid() or base_dir.is_symlink():
-                raise PermissionError(
-                    "Insecure ownership or symlink detected for home bin directory"
-                )
-        return base_dir
+        if _is_secure_directory(base_dir):
+            return base_dir
     except Exception as e:
         logger.warning(
             f"Failed to use home bin directory ({e}). Falling back to secure random temp directory."
         )
-        if _SECURE_TMP_DIR is None or not _SECURE_TMP_DIR.exists():
-            _SECURE_TMP_DIR = Path(tempfile.mkdtemp(prefix="oss_agent_bin_"))
-        return _SECURE_TMP_DIR
+
+    if state.secure_tmp_dir is None or not state.secure_tmp_dir.exists():
+        state.secure_tmp_dir = Path(tempfile.mkdtemp(prefix="oss_agent_bin_"))
+    return state.secure_tmp_dir
 
 
 def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
     """bin_dir 内に存在する展開済みバイナリのチェックサム検証を行う。mtime/size によるインメモリキャッシュと 1MB ストリーミング計算で高速化 (P2 レビュー対応)。"""
+    state = _get_scanner_binary_state()
     bin_dir = _get_user_bin_dir()
     bin_file = bin_dir / tool_name
     if not bin_file.exists():
@@ -129,8 +178,8 @@ def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
         return False
 
     cache_key = str(bin_file)
-    if cache_key in _INTEGRITY_CACHE:
-        cached_mtime, cached_size, cached_valid = _INTEGRITY_CACHE[cache_key]
+    if cache_key in state.integrity_cache:
+        cached_mtime, cached_size, cached_valid = state.integrity_cache[cache_key]
         if cached_mtime == mtime and cached_size == size:
             return cached_valid
 
@@ -140,7 +189,7 @@ def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
         or arch_key not in BINARY_CHECKSUMS[tool_name]
     ):
         is_valid = bin_file.is_file()
-        _INTEGRITY_CACHE[cache_key] = (mtime, size, is_valid)
+        state.integrity_cache[cache_key] = (mtime, size, is_valid)
         return is_valid
 
     expected_sha256 = BINARY_CHECKSUMS[tool_name][arch_key]
@@ -151,18 +200,18 @@ def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
                 h.update(chunk)
         actual_sha256 = h.hexdigest().lower()
         if actual_sha256 == expected_sha256.lower():
-            _INTEGRITY_CACHE[cache_key] = (mtime, size, True)
+            state.integrity_cache[cache_key] = (mtime, size, True)
             return True
 
         logger.warning(
             f"Existing {tool_name} binary checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}. Removing unverified binary."
         )
-        _INTEGRITY_CACHE.pop(cache_key, None)
+        state.integrity_cache.pop(cache_key, None)
         bin_file.unlink(missing_ok=True)
         return False
     except Exception as e:
         logger.warning(f"Failed to verify integrity for {tool_name}: {e}")
-        _INTEGRITY_CACHE.pop(cache_key, None)
+        state.integrity_cache.pop(cache_key, None)
         bin_file.unlink(missing_ok=True)
         return False
 
@@ -294,12 +343,13 @@ def _ensure_scanner_binaries_cached() -> dict[str, bool]:
 
 def ensure_scanner_binaries() -> dict[str, bool]:
     """trivy および scorecard バイナリを安全取得する。失敗時も短い TTL キャッシュで連続通信ブロックを防止する (P2 レビュー対応)。"""
+    state = _get_scanner_binary_state()
     res = _check_binaries_present()
     if res["trivy"] and res["scorecard"]:
         return res
 
     now = time.monotonic()
-    last_fail = _FAILURE_CACHE.get("binary_setup_failed", 0.0)
+    last_fail = state.failure_cache.get("binary_setup_failed", 0.0)
     if now - last_fail < 60.0:
         return res
 
@@ -312,7 +362,7 @@ def ensure_scanner_binaries() -> dict[str, bool]:
         return current_res
     except Exception as e:
         logger.warning(f"Scanner binary preparation failed or skipped: {e}")
-        _FAILURE_CACHE["binary_setup_failed"] = time.monotonic()
+        state.failure_cache["binary_setup_failed"] = time.monotonic()
         return _check_binaries_present()
 
 
