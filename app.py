@@ -1108,6 +1108,45 @@ def render_findings_list(
         )
 
 
+def check_has_partial_failure(result: OverallResult) -> bool:
+    """リポジトリスキャンにおける一部失敗・制限・非評価・スキャナー失敗を判定する。"""
+    scanner_st = getattr(result, "scanner_status", {}) or {}
+    snapshot_failed = bool(scanner_st.get("snapshot_failed"))
+    has_skipped_files = bool(result.skipped_files) or bool(
+        scanner_st.get("has_skipped_files")
+    )
+    trivy_failed = scanner_st.get("trivy") is False
+    scorecard_failed = scanner_st.get("scorecard") is False
+    rule_based_failed = scanner_st.get("rule_based") is False
+
+    return (
+        snapshot_failed
+        or has_skipped_files
+        or trivy_failed
+        or scorecard_failed
+        or rule_based_failed
+        or any(
+            (
+                f.rule_id.endswith("-UNEVALUATED")
+                and f.rule_id != "GIT-HISTORY-UNEVALUATED"
+            )
+            or f.rule_id.endswith("-EXCEEDED")
+            or f.rule_id.endswith("-FAILED")
+            or f.rule_id.endswith("-LIMIT")
+            or f.rule_id
+            in (
+                "SKIPPED-FILES-LIMIT",
+                "SNAPSHOT-FETCH-FAILED",
+                "FALLBACK-SCAN-FAILED-UNEVALUATED",
+                "GLOBAL-LIMIT-EXCEEDED",
+                "FINDINGS-LIMIT-EXCEEDED",
+                "TRIVY-FINDINGS-LIMIT-EXCEEDED",
+            )
+            for f in result.all_findings
+        )
+    )
+
+
 def main() -> None:
     from src.config import ScanConfig
     from src.logger import setup_logging
@@ -1169,6 +1208,10 @@ def main() -> None:
     if not btn_scan:
         cached_result = st.session_state.get("mvp_result")
         if cached_result:
+            if check_has_partial_failure(cached_result):
+                st.warning(
+                    "⚠️ リポジトリ snapshot の取得制限や一部カテゴリ診断の制限・エラーが発生したため、一部の診断がスキップされました。詳細は下記レポートをご確認ください。"
+                )
             render_hero_score(cached_result)
             render_skipped_files_alert(cached_result)
             render_category_cards(cached_result)
@@ -1237,35 +1280,7 @@ def main() -> None:
             return
 
         # 2. 一部スキャンや snapshot fetcher 制限・失敗の検出 (P2 レビュー対応)
-        scanner_st = getattr(result, "scanner_status", {}) or {}
-        snapshot_failed = bool(scanner_st.get("snapshot_failed"))
-        has_skipped_files = bool(result.skipped_files) or bool(
-            scanner_st.get("has_skipped_files")
-        )
-
-        has_partial_failure = (
-            snapshot_failed
-            or has_skipped_files
-            or any(
-                (
-                    f.rule_id.endswith("-UNEVALUATED")
-                    and f.rule_id != "GIT-HISTORY-UNEVALUATED"
-                )
-                or f.rule_id.endswith("-EXCEEDED")
-                or f.rule_id.endswith("-FAILED")
-                or f.rule_id.endswith("-LIMIT")
-                or f.rule_id
-                in (
-                    "SKIPPED-FILES-LIMIT",
-                    "SNAPSHOT-FETCH-FAILED",
-                    "FALLBACK-SCAN-FAILED-UNEVALUATED",
-                    "GLOBAL-LIMIT-EXCEEDED",
-                    "FINDINGS-LIMIT-EXCEEDED",
-                    "TRIVY-FINDINGS-LIMIT-EXCEEDED",
-                )
-                for f in result.all_findings
-            )
-        )
+        has_partial_failure = check_has_partial_failure(result)
 
         if has_partial_failure:
             st.warning(
