@@ -43,6 +43,18 @@ CHECKSUMS = {
     },
 }
 
+# 展開後実行バイナリ用の SHA-256 チェックサムテーブル (P2 レビュー対応)
+BINARY_CHECKSUMS = {
+    "trivy": {
+        "x86_64": "d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791",
+        "arm64": "fed2c9ca7d27191ada34524b5eaf5216a845c6d6f3246143c3b475552ffe5358",
+    },
+    "scorecard": {
+        "x86_64": "b890538c491ff9bf80707781589b6209792dcaf48a7162c77f32fe5914c2e4d4",
+        "arm64": "2042d85a26e1d0f868cb2578b48fccd8cd20c3630e6a7c5779d99bb3809f6867",
+    },
+}
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parent
@@ -88,18 +100,18 @@ def _get_user_bin_dir() -> Path:
 
 
 def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
-    """bin_dir 内に存在するバイナリのチェックサム検証を行う。不一致の場合は削除する (P2 レビュー対応)。"""
+    """bin_dir 内に存在する展開済みバイナリのチェックサム検証を行う。不一致の場合は削除する (P2 レビュー対応)。"""
     bin_dir = _get_user_bin_dir()
     bin_file = bin_dir / tool_name
     if not bin_file.exists():
         return False
     if (
         not arch_key
-        or tool_name not in CHECKSUMS
-        or arch_key not in CHECKSUMS[tool_name]
+        or tool_name not in BINARY_CHECKSUMS
+        or arch_key not in BINARY_CHECKSUMS[tool_name]
     ):
         return bin_file.is_file()
-    expected_sha256, _ = CHECKSUMS[tool_name][arch_key]
+    expected_sha256 = BINARY_CHECKSUMS[tool_name][arch_key]
     try:
         actual_sha256 = hashlib.sha256(bin_file.read_bytes()).hexdigest().lower()
         if actual_sha256 == expected_sha256.lower():
@@ -116,11 +128,23 @@ def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
 
 
 def _check_binaries_present() -> dict[str, bool]:
-    """現在 PATH に存在するバイナリ状態を確認する。"""
+    """現在 PATH に存在するバイナリ状態を確認し、専用ディレクトリ由来のファイルは完全性を検証する (P2 レビュー対応)。"""
     bin_dir = _get_user_bin_dir()
     path_env = os.environ.get("PATH", "")
     if str(bin_dir) not in path_env:
         os.environ["PATH"] = f"{bin_dir}{os.path.pathsep}" + path_env
+
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64", "x64"):
+        arch_key = "x86_64"
+    elif machine in ("aarch64", "arm64"):
+        arch_key = "arm64"
+    else:
+        arch_key = None
+
+    if arch_key:
+        _verify_binary_integrity("trivy", arch_key)
+        _verify_binary_integrity("scorecard", arch_key)
 
     return {
         "trivy": shutil.which("trivy") is not None,
@@ -1178,12 +1202,19 @@ def check_has_partial_failure(result: OverallResult) -> bool:
     scorecard_failed = scanner_st.get("scorecard") is False
     rule_based_failed = scanner_st.get("rule_based") is False
 
+    scorecard_unevaluated_check = any(
+        f.source == "scorecard" and f.raw_score is None for f in result.all_findings
+    )
+    category_unevaluated = any(c.evaluated is False for c in result.categories.values())
+
     return (
         snapshot_failed
         or has_skipped_files
         or trivy_failed
         or scorecard_failed
         or rule_based_failed
+        or scorecard_unevaluated_check
+        or category_unevaluated
         or any(
             (
                 f.rule_id.endswith("-UNEVALUATED")
@@ -1336,7 +1367,8 @@ def main() -> None:
             st.error(
                 f"❌ リポジトリの取得またはスキャンに失敗しました: {escape_html(result.status_reason)}"
             )
-            return
+            if not result.all_findings and not result.categories:
+                return
 
         # 2. 一部スキャンや snapshot fetcher 制限・失敗の検出 (P2 レビュー対応)
         has_partial_failure = check_has_partial_failure(result)
