@@ -91,6 +91,7 @@ class JsTsSinkMixin:
             r"(?:\b(?:const|let|var)\s+|^)\s*([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*"
             r"\(*\s*require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*"
+            r"(?!\s*\.\s*\w+)"
             r"(?:\s+(?:as|satisfies)\s+[^;]+)?",
             text,
         ):
@@ -98,18 +99,23 @@ class JsTsSinkMixin:
         wrapped_module_match = re.search(
             r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
             r"(?:\s*:\s*[^=;]+)?\s*=\s*\(\s*"
-            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)",
+            r"require\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)"
+            r"(?!\s*\.\s*\w+)",
             text,
         )
         if wrapped_module_match:
             sinks.add(f"{wrapped_module_match.group(1)}.exec")
 
-        require_destructure = re.search(
-            r"(?:\b(?:const|let|var)\s*\{|^\s*\{)([^}]+)\}\s*=\s*(?:require\s*\(\s*['\"]shelljs['\"]\s*\)|\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*)",
+        for destructure_match in re.finditer(
+            r"(?:\b(?:const|let|var)\s*\{|^\s*\{)([^}]+)\}\s*=\s*"
+            r"(?:require\s*\(\s*['\"]shelljs['\"]\s*\)|\(*\s*await\s+import\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)*|([A-Za-z_$][\w$]*))",
             text,
-        )
-        if require_destructure:
-            for entry in require_destructure.group(1).split(","):
+        ):
+            clause = destructure_match.group(1)
+            rhs_var = destructure_match.group(2)
+            if rhs_var and f"{rhs_var}.exec" not in sinks and rhs_var != "shelljs":
+                continue
+            for entry in clause.split(","):
                 entry = entry.split("=", 1)[0].strip()
                 source, _, alias = entry.partition(":")
                 source = source.strip()

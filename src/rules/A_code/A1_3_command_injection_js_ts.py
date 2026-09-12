@@ -98,14 +98,15 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
                             f"{left_text}.{direct_api_alias.group(1)}"
                         )
                     if re.fullmatch("[A-Za-z_$][\\w$]*", left_text):
-                        old_keys = [
-                            k
-                            for k in list(child_process_sinks)
-                            if k.startswith(f"{left_text}.") or k == left_text
-                        ]
-                        for k in old_keys:
-                            child_process_sinks.discard(k)
-                        shelljs_sinks.discard(left_text)
+                        if is_top_level:
+                            old_keys = [
+                                k
+                                for k in list(child_process_sinks)
+                                if k.startswith(f"{left_text}.") or k == left_text
+                            ]
+                            for k in old_keys:
+                                child_process_sinks.discard(k)
+                            shelljs_sinks.discard(left_text)
                         if self._is_child_process_alias_assignment(
                             right_clean, child_process_sinks
                         ):
@@ -157,7 +158,7 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             normalized_callee = re.sub(r"\s*\.\s*", ".", normalized_callee)
             direct_shelljs_call = bool(
                 re.fullmatch(
-                    r"(?:require|\(*\s*await\s+import|\(*\s*import)\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)?\.exec",
+                    r"(?:require|\(*\s*await\s+import|\(*\s*import)\s*\(\s*['\"]shelljs['\"]\s*\)\s*\)?(?:\.default)?\.exec",
                     normalized_callee,
                 )
             )
@@ -296,6 +297,9 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
         in_block_comment = False
         for i, line in enumerate(lines, start=1):
             stripped = line.strip()
+            in_template_literal, in_block_comment = self._scan_js_lexical_state(
+                line, in_template_literal, in_block_comment
+            )
             if not stripped or (
                 stripped.startswith("//")
                 and not in_template_literal
@@ -321,9 +325,6 @@ class JsTsCommandInjectionDetector(JsTsSinkMixin, JsTsSourceMixin):
             if not buffer:
                 start_line = i
             buffer = f"{buffer}\n{stripped}".strip()
-            in_template_literal, in_block_comment = self._scan_js_lexical_state(
-                line, in_template_literal, in_block_comment
-            )
             if (
                 not in_template_literal
                 and not in_block_comment
