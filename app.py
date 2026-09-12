@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import tarfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,15 +47,19 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
-@st.cache_resource(show_spinner=False)
 def _download_binary_safely(
     url: str, max_bytes: int = 100 * 1024 * 1024, timeout: float = 10.0
 ) -> bytes:
-    """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・タイムアウト付)。"""
+    """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・全体タイムアウト付)。"""
+    start_time = time.monotonic()
     req = urllib.request.Request(url, headers={"User-Agent": "OSS-Risk-Check-Agent"})
     buffer = bytearray()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         while True:
+            if time.monotonic() - start_time > timeout:
+                raise TimeoutError(
+                    f"Downloaded binary streaming exceeded time limit ({timeout} seconds)"
+                )
             chunk = resp.read(128 * 1024)
             if not chunk:
                 break
@@ -66,6 +71,7 @@ def _download_binary_safely(
     return bytes(buffer)
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_scanner_binaries() -> dict[str, bool]:
     """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト・キャッシュ) する。"""
     bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
