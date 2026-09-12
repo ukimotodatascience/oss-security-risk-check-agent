@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import tarfile
+import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -71,8 +72,56 @@ def _download_binary_safely(
     return bytes(buffer)
 
 
+def _get_user_bin_dir() -> Path:
+    """ユーザー固有の安全なバイナリ保存ディレクトリを取得・作成する (P2 レビュー対応)。"""
+    if os.name == "nt":
+        bin_dir = project_root() / ".bin"
+    else:
+        uid = getattr(os, "getuid", lambda: "user")()
+        bin_dir = Path.home() / ".cache" / "oss_security_agent" / "bin"
+        try:
+            bin_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        except Exception:
+            bin_dir = Path(tempfile.gettempdir()) / f"oss_agent_{uid}" / "bin"
+            bin_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    return bin_dir
+
+
+def _verify_binary_integrity(tool_name: str, arch_key: str | None) -> bool:
+    """bin_dir 内に存在するバイナリのチェックサム検証を行う。不一致の場合は削除する (P2 レビュー対応)。"""
+    bin_dir = _get_user_bin_dir()
+    bin_file = bin_dir / tool_name
+    if not bin_file.exists():
+        return False
+    if (
+        not arch_key
+        or tool_name not in CHECKSUMS
+        or arch_key not in CHECKSUMS[tool_name]
+    ):
+        return bin_file.is_file()
+    expected_sha256, _ = CHECKSUMS[tool_name][arch_key]
+    try:
+        actual_sha256 = hashlib.sha256(bin_file.read_bytes()).hexdigest().lower()
+        if actual_sha256 == expected_sha256.lower():
+            return True
+        logger.warning(
+            f"Existing {tool_name} binary checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}. Removing unverified binary."
+        )
+        bin_file.unlink(missing_ok=True)
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to verify integrity for {tool_name}: {e}")
+        bin_file.unlink(missing_ok=True)
+        return False
+
+
 def _check_binaries_present() -> dict[str, bool]:
     """現在 PATH に存在するバイナリ状態を確認する。"""
+    bin_dir = _get_user_bin_dir()
+    path_env = os.environ.get("PATH", "")
+    if str(bin_dir) not in path_env:
+        os.environ["PATH"] = f"{bin_dir}{os.path.pathsep}" + path_env
+
     return {
         "trivy": shutil.which("trivy") is not None,
         "scorecard": shutil.which("scorecard") is not None,
@@ -80,15 +129,12 @@ def _check_binaries_present() -> dict[str, bool]:
 
 
 def _install_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト) する。"""
-    bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
+    """trivy および scorecard バイナリを安全取得 (ユーザー専用パス・SHA-256検証・タイムアウト) する。"""
+    bin_dir = _get_user_bin_dir()
 
     path_env = os.environ.get("PATH", "")
     if str(bin_dir) not in path_env:
         os.environ["PATH"] = f"{bin_dir}{os.path.pathsep}" + path_env
-
-    trivy_path = shutil.which("trivy")
-    scorecard_path = shutil.which("scorecard")
 
     system_os = platform.system()
     machine = platform.machine().lower()
@@ -100,9 +146,16 @@ def _install_scanner_binaries() -> dict[str, bool]:
     else:
         arch_key = None
 
+    if arch_key:
+        _verify_binary_integrity("trivy", arch_key)
+        _verify_binary_integrity("scorecard", arch_key)
+
+    trivy_path = shutil.which("trivy")
+    scorecard_path = shutil.which("scorecard")
+
     if system_os == "Linux" and arch_key:
         try:
-            bin_dir.mkdir(parents=True, exist_ok=True)
+            bin_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         except Exception as e:
             logger.warning(f"Failed to create bin_dir {bin_dir}: {e}")
             return _check_binaries_present()
@@ -176,12 +229,18 @@ def _ensure_scanner_binaries_cached() -> dict[str, bool]:
 
 
 def ensure_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリを安全取得する。成功結果のみ永続キャッシュし、失敗時はキャッシュせず再試行を許可する (P2 レビュー対応)。"""
+    """trivy および scorecard バイナリを安全取得する。キャッシュ命中時もバイナリ実体の存在を再確認する (P2 レビュー対応)。"""
     res = _check_binaries_present()
     if res["trivy"] and res["scorecard"]:
         return res
     try:
-        return _ensure_scanner_binaries_cached()
+        _ensure_scanner_binaries_cached()
+        # キャッシュが命中した場合でも、長時間稼働中に実体バイナリが削除されていないか再確認
+        current_res = _check_binaries_present()
+        if not (current_res["trivy"] and current_res["scorecard"]):
+            _ensure_scanner_binaries_cached.clear()
+            current_res = _install_scanner_binaries()
+        return current_res
     except Exception as e:
         logger.warning(f"Scanner binary preparation failed or skipped: {e}")
         return _check_binaries_present()
