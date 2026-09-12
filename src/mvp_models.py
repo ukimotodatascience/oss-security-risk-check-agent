@@ -76,3 +76,4 @@ class OverallResult(BaseModel):
     categories: Dict[str, CategoryResult] = Field(default_factory=dict)
     all_findings: List[Finding] = Field(default_factory=list)
     skipped_files: List[SkippedFileInfo] = Field(default_factory=list)
+    total_skipped_files_count: Optional[int] = None

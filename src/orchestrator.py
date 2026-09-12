@@ -259,6 +259,7 @@ class MVPOrchestrator:
                         normalized_url,
                         scanner_status=scanner_status,
                         target_dir=extracted_dir,
+                        captured_skipped_files=captured_skipped_files,
                     )
                     all_findings.extend(rule_findings)
                     if success and not relevant_skipped_files:
@@ -305,6 +306,7 @@ class MVPOrchestrator:
                 rule_findings, success = self._run_rule_based_scan(
                     normalized_url,
                     scanner_status=scanner_status,
+                    captured_skipped_files=captured_skipped_files,
                 )
                 all_findings.extend(rule_findings)
                 if success:
@@ -431,6 +433,7 @@ class MVPOrchestrator:
         repo_url: str,
         scanner_status: Optional[Dict[str, bool]] = None,
         target_dir: Optional[Path] = None,
+        captured_skipped_files: Optional[List[SkippedFileInfo]] = None,
     ) -> tuple[List[Finding], bool]:
         """既存ルールベース評価を実行し (findings, success_flag) を返す"""
         findings: List[Finding] = []
@@ -658,6 +661,36 @@ class MVPOrchestrator:
                                     file_count = 0
 
                             has_skipped_files = True
+                            if captured_skipped_files is not None:
+                                for sk in relevant_skipped:
+                                    sk_p = getattr(sk, "path", None) or getattr(
+                                        sk, "relative_path", str(sk)
+                                    )
+                                    sk_r = getattr(
+                                        sk, "reason", "file size limit exceeded"
+                                    )
+                                    sk_sz = getattr(sk, "size_bytes", None) or getattr(
+                                        sk, "size", None
+                                    )
+                                    sk_lm = getattr(sk, "limit_bytes", None) or getattr(
+                                        sk, "limit", None
+                                    )
+                                    captured_skipped_files.append(
+                                        SkippedFileInfo(
+                                            path=str(sk_p),
+                                            reason=str(sk_r),
+                                            size_bytes=(
+                                                sk_sz
+                                                if isinstance(sk_sz, int)
+                                                else None
+                                            ),
+                                            limit_bytes=(
+                                                sk_lm
+                                                if isinstance(sk_lm, int)
+                                                else None
+                                            ),
+                                        )
+                                    )
                             if scanner_status is not None:
                                 scanner_status["rule_based"] = False
                                 for cat in (
@@ -1039,6 +1072,9 @@ class MVPOrchestrator:
                         and str(f.severity).upper() != "INFO"
                     ]
                 )
+
+        if getattr(result_to_save, "total_skipped_files_count", None) is None:
+            result_to_save.total_skipped_files_count = len(result_to_save.skipped_files)
 
         if len(json_str.encode("utf-8")) > MAX_FILE_BYTES:
             logger.warning(

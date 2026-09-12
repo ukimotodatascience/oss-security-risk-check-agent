@@ -101,7 +101,11 @@ def _install_scanner_binaries() -> dict[str, bool]:
         arch_key = None
 
     if system_os == "Linux" and arch_key:
-        bin_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            bin_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Failed to create bin_dir {bin_dir}: {e}")
+            return _check_binaries_present()
 
         # 1. Trivy 安全取得
         if not trivy_path and arch_key in CHECKSUMS["trivy"]:
@@ -178,7 +182,8 @@ def ensure_scanner_binaries() -> dict[str, bool]:
         return res
     try:
         return _ensure_scanner_binaries_cached()
-    except RuntimeError:
+    except Exception as e:
+        logger.warning(f"Scanner binary preparation failed or skipped: {e}")
         return _check_binaries_present()
 
 
@@ -256,11 +261,21 @@ def generate_markdown_report(result: OverallResult) -> str:
 
     # スキップされたファイルのセクションを追加 (P2 レビュー対応)
     if result.skipped_files:
+        tot_count = (
+            result.total_skipped_files_count
+            if getattr(result, "total_skipped_files_count", None)
+            else len(result.skipped_files)
+        )
+        count_label = (
+            f"全 {tot_count} 件中 {len(result.skipped_files)} 件表示"
+            if tot_count > len(result.skipped_files)
+            else f"{len(result.skipped_files)} 件"
+        )
         lines.extend(
             [
                 "---",
                 "",
-                f"## スキップされたファイル ({len(result.skipped_files)} 件)",
+                f"## スキップされたファイル ({count_label})",
                 "",
                 "安全上限（ファイルサイズ・ファイル数）を超えたため、以下のファイルがスキャン対象から除外されました。",
                 "",
@@ -863,8 +878,19 @@ def render_skipped_files_alert(result: OverallResult) -> None:
     if not result.skipped_files:
         return
 
+    tot_count = (
+        result.total_skipped_files_count
+        if getattr(result, "total_skipped_files_count", None)
+        else len(result.skipped_files)
+    )
+    count_label = (
+        f"全 {tot_count} 件中 {len(result.skipped_files)} 件を表示"
+        if tot_count > len(result.skipped_files)
+        else f"{len(result.skipped_files)} 件"
+    )
+
     with st.expander(
-        f"⚠️ 安全上限によりスキャン除外・スキップされたファイル ({len(result.skipped_files)} 件)"
+        f"⚠️ 安全上限によりスキャン除外・スキップされたファイル ({count_label})"
     ):
         st.caption(
             "以下のファイルは設定されたサイズ上限・安全上限を超えたためスキャン対象から除外されました。"
@@ -1104,7 +1130,11 @@ def main() -> None:
     )
 
     # 外部スキャンツールの安全自動取得・検証 (P1 & P2 レビュー対応)
-    binaries = ensure_scanner_binaries()
+    try:
+        binaries = ensure_scanner_binaries()
+    except Exception as e:
+        logger.warning(f"バイナリ検出処理で例外が発生しました: {e}")
+        binaries = {"trivy": False, "scorecard": False}
     missing_tools = [t for t, exists in binaries.items() if not exists]
     if missing_tools:
         st.warning(
@@ -1213,8 +1243,12 @@ def main() -> None:
                 "SKIPPED-FILES-LIMIT",
                 "SNAPSHOT-FETCH-FAILED",
                 "FALLBACK-SCAN-FAILED-UNEVALUATED",
+                "RULE-EVALUATION-ERROR",
             )
-            or f.source == "snapshot_fetcher"
+            or (
+                f.source == "snapshot_fetcher"
+                and f.rule_id != "GIT-HISTORY-UNEVALUATED"
+            )
             for f in result.all_findings
         )
 
