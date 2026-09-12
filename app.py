@@ -326,6 +326,23 @@ def _install_scanner_binaries() -> dict[str, bool]:
 
         # 2. Scorecard 安全取得
         if not scorecard_path and arch_key in CHECKSUMS["scorecard"]:
+            setup_script = project_root() / "setup.sh"
+            if setup_script.is_file():
+                try:
+                    logger.info("Executing setup.sh for Scorecard pre-installation...")
+                    import subprocess
+
+                    subprocess.run(
+                        ["bash", str(setup_script)],
+                        capture_output=True,
+                        text=True,
+                        timeout=65,
+                    )
+                    scorecard_path = shutil.which("scorecard")
+                except Exception as e:
+                    logger.warning(f"Execution of setup.sh skipped or failed: {e}")
+
+        if not scorecard_path and arch_key in CHECKSUMS["scorecard"]:
             expected_sha256, download_url = CHECKSUMS["scorecard"][arch_key]
             archive_file = bin_dir / "scorecard.tar.gz"
             try:

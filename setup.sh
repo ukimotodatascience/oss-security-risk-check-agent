@@ -25,12 +25,12 @@ mkdir -p "${LOCAL_BIN}"
 mkdir -p "${CACHE_BIN}"
 chmod 700 "$HOME/.cache/oss_security_agent" "${CACHE_BIN}" 2>/dev/null || true
 
-# OpenSSF Scorecard v4.13.1 の安全取得
+# OpenSSF Scorecard v4.13.1 の安全取得 (100MBサイズ制限付き: P2)
 echo "Installing OpenSSF Scorecard v4.13.1 (${ARCH_KEY}) for Streamlit environment..."
 SCORECARD_TAR="scorecard_4.13.1_linux_${ARCH_KEY}.tar.gz"
 SCORECARD_URL="https://github.com/ossf/scorecard/releases/download/v4.13.1/${SCORECARD_TAR}"
 
-curl -sSL --max-time 60 --retry 3 "${SCORECARD_URL}" -o "${SCORECARD_TAR}"
+curl -sSL --max-time 60 --retry 3 --max-filesize 104857600 "${SCORECARD_URL}" -o "${SCORECARD_TAR}"
 
 # SHA-256 チェックサムの照合・検証 (P1)
 if command -v sha256sum >/dev/null 2>&1; then
@@ -46,12 +46,13 @@ else
   fi
 fi
 
-# 解凍および各ディレクトリへの安全配置 (P2)
+# 解凍および各ディレクトリへの安全配置 (P2: 複製後に chmod 0755 を明示)
 tar -xzf "${SCORECARD_TAR}" scorecard
-chmod +x scorecard
+chmod 0755 scorecard
 
 cp scorecard "${LOCAL_BIN}/scorecard"
 cp scorecard "${CACHE_BIN}/scorecard"
+chmod 0755 "${LOCAL_BIN}/scorecard" "${CACHE_BIN}/scorecard"
 rm -f scorecard "${SCORECARD_TAR}"
 
 # PATH の反映
