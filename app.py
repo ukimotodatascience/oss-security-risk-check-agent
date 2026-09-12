@@ -71,9 +71,16 @@ def _download_binary_safely(
     return bytes(buffer)
 
 
-@st.cache_resource(show_spinner=False)
-def ensure_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト・キャッシュ) する。"""
+def _check_binaries_present() -> dict[str, bool]:
+    """現在 PATH に存在するバイナリ状態を確認する。"""
+    return {
+        "trivy": shutil.which("trivy") is not None,
+        "scorecard": shutil.which("scorecard") is not None,
+    }
+
+
+def _install_scanner_binaries() -> dict[str, bool]:
+    """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト) する。"""
     bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
 
     path_env = os.environ.get("PATH", "")
@@ -152,10 +159,37 @@ def ensure_scanner_binaries() -> dict[str, bool]:
             finally:
                 archive_file.unlink(missing_ok=True)
 
-    return {
-        "trivy": shutil.which("trivy") is not None,
-        "scorecard": shutil.which("scorecard") is not None,
-    }
+    return _check_binaries_present()
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_scanner_binaries_cached() -> dict[str, bool]:
+    """バイナリ取得を実行し、成功時のみ @st.cache_resource で永続キャッシュする。"""
+    res = _install_scanner_binaries()
+    if not res.get("trivy") or not res.get("scorecard"):
+        raise RuntimeError(f"Scanner binary setup incomplete: {res}")
+    return res
+
+
+def ensure_scanner_binaries() -> dict[str, bool]:
+    """trivy および scorecard バイナリを安全取得する。成功結果のみ永続キャッシュし、失敗時はキャッシュせず再試行を許可する (P2 レビュー対応)。"""
+    res = _check_binaries_present()
+    if res["trivy"] and res["scorecard"]:
+        return res
+    try:
+        return _ensure_scanner_binaries_cached()
+    except RuntimeError:
+        return _check_binaries_present()
+
+
+def sanitize_code_span(text: str | None) -> str:
+    """Markdown コード区間 (``) 内で安全に使用するため、バッククォートと改行・制御文字のみを無害化する (P2 レビュー対応)。"""
+    if not text:
+        return ""
+    s = str(text)
+    return (
+        s.replace("`", "'").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    )
 
 
 def escape_markdown(text: str | None) -> str:
@@ -305,15 +339,15 @@ def generate_markdown_report(result: OverallResult) -> str:
                 f.category.value if hasattr(f.category, "value") else str(f.category)
             )
             title = escape_markdown(f.title)
-            rule_id = escape_markdown(f.rule_id)
+            rule_id = sanitize_code_span(f.rule_id)
             source = escape_markdown(f.source)
             lines.append(f"### {idx}. [{sev}] {title}")
             lines.append(f"- **カテゴリ:** {cat_name}")
             lines.append(f"- **ルールID:** `{rule_id}` (Source: {source})")
             if f.target:
-                target_loc = escape_markdown(f.target)
+                target_loc = sanitize_code_span(f.target)
                 if f.location:
-                    target_loc += f" ({escape_markdown(f.location)})"
+                    target_loc += f" ({sanitize_code_span(f.location)})"
                 lines.append(f"- **対象:** `{target_loc}`")
             if f.description:
                 lines.append(f"- **説明:** {escape_markdown(f.description)}")
@@ -979,11 +1013,13 @@ def render_findings_list(
     """Finding (指摘事項) カード一覧をフィルタリング & 重要度順ソートの上描画する。"""
     st.markdown("### 🔍 発見されたリスク・指摘事項 (Findings)")
 
+    allowed_sevs = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}
     findings = result.all_findings or []
     filtered = []
     for f in findings:
         cat_val = f.category.value if hasattr(f.category, "value") else str(f.category)
-        sev_val = f.severity.upper() if f.severity else "INFO"
+        raw_sev = (f.severity or "INFO").upper()
+        sev_val = raw_sev if raw_sev in allowed_sevs else "INFO"
 
         match_cat = selected_category == "ALL" or cat_val == selected_category
         match_sev = selected_severity == "ALL" or sev_val == selected_severity
