@@ -270,13 +270,24 @@ class MVPOrchestrator:
             logger.warning(
                 f"Safe snapshot fetch failed or refused for Trivy scan ({e}). Skipping Trivy scan to prevent resource exhaustion."
             )
+            scanner_status["snapshot_failed"] = True
+            scanner_status["snapshot_failed_reason"] = str(e)
 
         # 3. OpenSSF Scorecard Scan (Supply Chain, Dev Process, CI/CD, Maintenance)
         is_default_branch_ref = not target_ref or target_ref == "HEAD"
         norm_subdir = _normalize_subdir(target_subdir)
         if is_default_branch_ref and not norm_subdir:
             try:
-                scorecard_findings = self.scorecard_adapter.run_scan(normalized_url)
+                import os
+
+                token = config.resolve_github_token()
+                if token:
+                    os.environ["GITHUB_TOKEN"] = token
+                    os.environ["GITHUB_AUTH_TOKEN"] = token
+
+                scorecard_findings = self.scorecard_adapter.run_scan(
+                    normalized_url, github_token=token
+                )
                 all_findings.extend(scorecard_findings)
                 if scorecard_findings:
                     scanner_status["scorecard"] = True

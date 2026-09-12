@@ -37,18 +37,32 @@ class ScorecardAdapter:
         self.cli_path = cli_path
 
     def run_scan(
-        self, repo_url: str, max_output_bytes: int = 50 * 1024 * 1024
+        self,
+        repo_url: str,
+        max_output_bytes: int = 50 * 1024 * 1024,
+        github_token: str | None = None,
     ) -> List[Finding]:
+        import os
         import tempfile
         import time
 
         try:
             cmd = [self.cli_path, f"--repo={repo_url}", "--format=json"]
+            env = os.environ.copy()
+            token = (
+                github_token or env.get("GITHUB_TOKEN") or env.get("GITHUB_AUTH_TOKEN")
+            )
+            if token:
+                env["GITHUB_TOKEN"] = token
+                env["GITHUB_AUTH_TOKEN"] = token
+
             with (
                 tempfile.TemporaryFile() as tmp_out,
                 tempfile.TemporaryFile() as tmp_err,
             ):
-                proc = subprocess.Popen(cmd, stdout=tmp_out, stderr=tmp_err, text=False)
+                proc = subprocess.Popen(
+                    cmd, stdout=tmp_out, stderr=tmp_err, text=False, env=env
+                )
 
                 start_time = time.time()
                 timed_out = False

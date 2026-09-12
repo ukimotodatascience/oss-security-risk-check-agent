@@ -1154,14 +1154,20 @@ def main() -> None:
             return
 
         # 2. 一部スキャンや snapshot fetcher 制限・失敗の検出 (P2 レビュー対応)
-        has_partial_failure = result.skipped_files or any(
-            f.rule_id == "SKIPPED-FILES-LIMIT" or f.source == "snapshot_fetcher"
+        has_partial_failure = bool(result.skipped_files) or any(
+            f.rule_id
+            in (
+                "SKIPPED-FILES-LIMIT",
+                "SNAPSHOT-FETCH-FAILED",
+                "FALLBACK-SCAN-FAILED-UNEVALUATED",
+            )
+            or f.source == "snapshot_fetcher"
             for f in result.all_findings
         )
 
         if has_partial_failure:
             st.warning(
-                "⚠️ 一部のファイルまたはカテゴリ診断で安全制限・未評価項目があります。詳細は下記レポートをご確認ください。"
+                "⚠️ リポジトリ snapshot の取得制限や一部カテゴリ診断の制限・エラーが発生したため、一部の診断がスキップされました。詳細は下記レポートをご確認ください。"
             )
         else:
             st.toast("スキャンが完了しました！", icon="✅")
