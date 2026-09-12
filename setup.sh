@@ -18,18 +18,30 @@ case "${ARCH}" in
     ;;
 esac
 
-# 配置先ディレクトリの作成（ユーザーローカルパスおよびアプリ専用キャッシュパス）
+# 配置先ディレクトリの作成（アプリ専用キャッシュパスを最優先）
 LOCAL_BIN="$HOME/.local/bin"
-CACHE_BIN="$HOME/.cache/oss_security_agent/bin"
+CACHE_DIR="$HOME/.cache/oss_security_agent"
+CACHE_BIN="${CACHE_DIR}/bin"
+
 mkdir -p "${LOCAL_BIN}"
 mkdir -p "${CACHE_BIN}"
-chmod 700 "$HOME/.cache/oss_security_agent" "${CACHE_BIN}" 2>/dev/null || true
 
-# OpenSSF Scorecard v4.13.1 の安全取得 (100MBサイズ制限付き: P2)
-echo "Installing OpenSSF Scorecard v4.13.1 (${ARCH_KEY}) for Streamlit environment..."
+# 安全な権限設定 (chmod 700) - 権限変更失敗時は警告を出力
+chmod 700 "${CACHE_DIR}" "${CACHE_BIN}" 2>/dev/null || {
+  echo "Warning: Could not set secure permissions (chmod 700) on ${CACHE_BIN}" >&2
+}
+
 SCORECARD_TAR="scorecard_4.13.1_linux_${ARCH_KEY}.tar.gz"
 SCORECARD_URL="https://github.com/ossf/scorecard/releases/download/v4.13.1/${SCORECARD_TAR}"
 
+# 終了時に一時ファイルを確実に削除するクリーンアップ trap を登録 (P2)
+cleanup() {
+  rm -f "${SCORECARD_TAR}" scorecard 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# OpenSSF Scorecard v4.13.1 の安全取得 (100MBサイズ制限)
+echo "Installing OpenSSF Scorecard v4.13.1 (${ARCH_KEY}) for Streamlit environment..."
 curl -sSL --max-time 60 --retry 3 --max-filesize 104857600 "${SCORECARD_URL}" -o "${SCORECARD_TAR}"
 
 # SHA-256 チェックサムの照合・検証 (P1)
@@ -41,19 +53,23 @@ else
   ACTUAL_SHA256="$(openssl dgst -sha256 "${SCORECARD_TAR}" | awk '{print $NF}')"
   if [ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]; then
     echo "Error: Checksum mismatch! Expected ${EXPECTED_SHA256}, got ${ACTUAL_SHA256}" >&2
-    rm -f "${SCORECARD_TAR}"
     exit 1
   fi
 fi
 
-# 解凍および各ディレクトリへの安全配置 (P2: 複製後に chmod 0755 を明示)
+# 解凍および安全配置
 tar -xzf "${SCORECARD_TAR}" scorecard
 chmod 0755 scorecard
 
-cp scorecard "${LOCAL_BIN}/scorecard"
+# アプリ専用キャッシュパスへの配置
 cp scorecard "${CACHE_BIN}/scorecard"
-chmod 0755 "${LOCAL_BIN}/scorecard" "${CACHE_BIN}/scorecard"
-rm -f scorecard "${SCORECARD_TAR}"
+chmod 0755 "${CACHE_BIN}/scorecard"
+
+# 既存のユーザーバイナリを不用意に上書きしない保護 (P2)
+if [ ! -f "${LOCAL_BIN}/scorecard" ]; then
+  cp scorecard "${LOCAL_BIN}/scorecard"
+  chmod 0755 "${LOCAL_BIN}/scorecard"
+fi
 
 # PATH の反映
 export PATH="${CACHE_BIN}:${LOCAL_BIN}:$PATH"
