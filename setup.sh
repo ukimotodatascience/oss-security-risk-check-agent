@@ -40,9 +40,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# OpenSSF Scorecard v4.13.1 の安全取得 (100MBサイズ制限)
+# OpenSSF Scorecard v4.13.1 の安全取得
+# 1回あたり 20s、全リトライ合計 50s 以内 (--retry-max-time 50)、100MB制限 (P2)
 echo "Installing OpenSSF Scorecard v4.13.1 (${ARCH_KEY}) for Streamlit environment..."
-curl -sSL --max-time 60 --retry 3 --max-filesize 104857600 "${SCORECARD_URL}" -o "${SCORECARD_TAR}"
+curl -sSL --max-time 20 --retry 3 --retry-max-time 50 --max-filesize 104857600 "${SCORECARD_URL}" -o "${SCORECARD_TAR}"
 
 # SHA-256 チェックサムの照合・検証 (P1)
 if command -v sha256sum >/dev/null 2>&1; then

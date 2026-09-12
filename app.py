@@ -336,7 +336,7 @@ def _install_scanner_binaries() -> dict[str, bool]:
                         ["bash", str(setup_script)],
                         capture_output=True,
                         text=True,
-                        timeout=65,
+                        timeout=60,
                     )
                     if res.returncode == 0:
                         logger.info("setup.sh completed successfully.")
