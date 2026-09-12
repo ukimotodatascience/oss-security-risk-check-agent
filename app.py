@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import platform
@@ -16,16 +17,40 @@ from src.orchestrator import MVPOrchestrator
 
 logger = logging.getLogger(__name__)
 
+# 固定された公式 SHA-256 チェックサムテーブル (P1 レビュー対応)
+CHECKSUMS = {
+    "trivy": {
+        "x86_64": (
+            "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a",
+            "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz",
+        ),
+        "arm64": (
+            "b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5",
+            "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-ARM64.tar.gz",
+        ),
+    },
+    "scorecard": {
+        "x86_64": (
+            "53aa07786f2d985d0755ff9caad4e38c0a22596708de0728c5274f84ae48f785",
+            "https://github.com/ossf/scorecard/releases/download/v4.13.1/scorecard_4.13.1_linux_amd64.tar.gz",
+        ),
+        "arm64": (
+            "d59d75eec0e91abbe65365b866fd0f298ddb9f4bcdda207a7f650720015d0f4f",
+            "https://github.com/ossf/scorecard/releases/download/v4.13.1/scorecard_4.13.1_linux_arm64.tar.gz",
+        ),
+    },
+}
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_scanner_binaries() -> dict[str, bool]:
-    """trivy および scorecard バイナリを自動セットアップ / 存在確認する。"""
+    """trivy および scorecard バイナリを安全取得 (アーキテクチャ判定・SHA-256検証・タイムアウト・キャッシュ) する。"""
     bin_dir = Path("/tmp/bin") if os.name != "nt" else project_root() / ".bin"
 
-    # PATH に追加
     path_env = os.environ.get("PATH", "")
     if str(bin_dir) not in path_env:
         os.environ["PATH"] = f"{bin_dir}{os.path.pathsep}" + path_env
@@ -33,40 +58,82 @@ def ensure_scanner_binaries() -> dict[str, bool]:
     trivy_path = shutil.which("trivy")
     scorecard_path = shutil.which("scorecard")
 
-    # Linux 環境 (Streamlit Cloud 等) かつ PATH にバイナリが無い場合、Releases から自動取得
-    if platform.system() == "Linux":
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        if not trivy_path:
-            try:
-                logger.info("Attempting auto-download of Trivy binary for Linux...")
-                trivy_url = "https://github.com/aquasecurity/trivy/releases/download/v0.50.1/trivy_0.50.1_Linux-64bit.tar.gz"
-                archive_file = bin_dir / "trivy.tar.gz"
-                urllib.request.urlretrieve(trivy_url, archive_file)
-                with tarfile.open(archive_file, "r:gz") as tar:
-                    tar.extract("trivy", path=bin_dir)
-                (bin_dir / "trivy").chmod(0o755)
-                archive_file.unlink(missing_ok=True)
-                trivy_path = str(bin_dir / "trivy")
-            except Exception as e:
-                logger.warning(f"Failed to auto-install trivy: {e}")
+    system_os = platform.system()
+    machine = platform.machine().lower()
 
-        if not scorecard_path:
+    if machine in ("x86_64", "amd64", "x64"):
+        arch_key = "x86_64"
+    elif machine in ("aarch64", "arm64"):
+        arch_key = "arm64"
+    else:
+        arch_key = None
+
+    if system_os == "Linux" and arch_key:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Trivy 安全取得
+        if not trivy_path and arch_key in CHECKSUMS["trivy"]:
+            expected_sha256, download_url = CHECKSUMS["trivy"][arch_key]
+            archive_file = bin_dir / "trivy.tar.gz"
             try:
-                logger.info("Attempting auto-download of Scorecard binary for Linux...")
-                scorecard_url = "https://github.com/ossf/scorecard/releases/download/v4.13.1/scorecard_4.13.1_linux_amd64.tar.gz"
-                archive_file = bin_dir / "scorecard.tar.gz"
-                urllib.request.urlretrieve(scorecard_url, archive_file)
-                with tarfile.open(archive_file, "r:gz") as tar:
-                    for member in tar.getmembers():
-                        if member.name.endswith("scorecard"):
-                            member.name = "scorecard"
-                            tar.extract(member, path=bin_dir)
-                            break
-                (bin_dir / "scorecard").chmod(0o755)
-                archive_file.unlink(missing_ok=True)
-                scorecard_path = str(bin_dir / "scorecard")
+                logger.info(
+                    f"Downloading Trivy binary ({arch_key}) with 10s timeout..."
+                )
+                req = urllib.request.Request(
+                    download_url, headers={"User-Agent": "OSS-Risk-Check-Agent"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read()
+
+                actual_sha256 = hashlib.sha256(data).hexdigest().lower()
+                if actual_sha256 != expected_sha256.lower():
+                    logger.error(
+                        f"Trivy checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}"
+                    )
+                else:
+                    archive_file.write_bytes(data)
+                    with tarfile.open(archive_file, "r:gz") as tar:
+                        tar.extract("trivy", path=bin_dir)
+                    (bin_dir / "trivy").chmod(0o755)
+                    trivy_path = str(bin_dir / "trivy")
             except Exception as e:
-                logger.warning(f"Failed to auto-install scorecard: {e}")
+                logger.warning(f"Failed safe download for Trivy: {e}")
+            finally:
+                archive_file.unlink(missing_ok=True)
+
+        # 2. Scorecard 安全取得
+        if not scorecard_path and arch_key in CHECKSUMS["scorecard"]:
+            expected_sha256, download_url = CHECKSUMS["scorecard"][arch_key]
+            archive_file = bin_dir / "scorecard.tar.gz"
+            try:
+                logger.info(
+                    f"Downloading Scorecard binary ({arch_key}) with 10s timeout..."
+                )
+                req = urllib.request.Request(
+                    download_url, headers={"User-Agent": "OSS-Risk-Check-Agent"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read()
+
+                actual_sha256 = hashlib.sha256(data).hexdigest().lower()
+                if actual_sha256 != expected_sha256.lower():
+                    logger.error(
+                        f"Scorecard checksum mismatch! Expected: {expected_sha256}, Got: {actual_sha256}"
+                    )
+                else:
+                    archive_file.write_bytes(data)
+                    with tarfile.open(archive_file, "r:gz") as tar:
+                        for member in tar.getmembers():
+                            if member.name.endswith("scorecard"):
+                                member.name = "scorecard"
+                                tar.extract(member, path=bin_dir)
+                                break
+                    (bin_dir / "scorecard").chmod(0o755)
+                    scorecard_path = str(bin_dir / "scorecard")
+            except Exception as e:
+                logger.warning(f"Failed safe download for Scorecard: {e}")
+            finally:
+                archive_file.unlink(missing_ok=True)
 
     return {
         "trivy": shutil.which("trivy") is not None,
@@ -75,13 +142,16 @@ def ensure_scanner_binaries() -> dict[str, bool]:
 
 
 def escape_markdown(text: str | None) -> str:
-    """Markdown 構文・記号・改行を無害化エスケープする (P2 レビュー対応)。"""
+    """Markdown 記号・生HTML (<, >)・改行文字を安全エスケープする (P2 レビュー対応)。"""
     if not text:
         return ""
     s = str(text)
+    # 生 HTML の無害化
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Markdown 記号のエスケープ
     replacements = [
         ("\\", "\\\\"),
-        ("`", "\\`"),
+        ("`", "'"),
         ("*", "\\*"),
         ("_", "\\_"),
         ("{", "\\{"),
@@ -104,7 +174,7 @@ def escape_markdown(text: str | None) -> str:
 
 
 def generate_markdown_report(result: OverallResult) -> str:
-    """OverallResult からダウンロード用 Markdown レポート文字列を安全生成する。"""
+    """OverallResult からスキップ情報を含む完全な Markdown レポートを生成する (P2 レビュー対応)。"""
     lines = [
         "# 🛡️ OSS セキュリティリスク診断レポート",
         "",
@@ -130,6 +200,33 @@ def generate_markdown_report(result: OverallResult) -> str:
             f"- **総合判定:** {escape_markdown(status_text)}",
             f"- **判定理由:** {escape_markdown(result.status_reason) or 'なし'}",
             "",
+        ]
+    )
+
+    # スキップされたファイルのセクションを追加 (P2 レビュー対応)
+    if result.skipped_files:
+        lines.extend(
+            [
+                "---",
+                "",
+                f"## スキップされたファイル ({len(result.skipped_files)} 件)",
+                "",
+                "安全上限（ファイルサイズ・ファイル数）を超えたため、以下のファイルがスキャン対象から除外されました。",
+                "",
+                "| ファイルパス | 除外理由 | ファイルサイズ | 上限値 |",
+                "| :--- | :--- | :---: | :---: |",
+            ]
+        )
+        for sk in result.skipped_files:
+            p_str = escape_markdown(sk.path)
+            r_str = escape_markdown(sk.reason)
+            sz_str = f"{sk.size_bytes:,} bytes" if sk.size_bytes is not None else "-"
+            lm_str = f"{sk.limit_bytes:,} bytes" if sk.limit_bytes is not None else "-"
+            lines.append(f"| {p_str} | {r_str} | {sz_str} | {lm_str} |")
+        lines.append("")
+
+    lines.extend(
+        [
             "---",
             "",
             "## 2. 評価カテゴリ別スコア (8観点)",
@@ -953,7 +1050,7 @@ def main() -> None:
         "GitHub リポジトリ URL を入力して診断を実行すると、裏側で Python スキャンが自動実行され、リアルタイムにスコアと詳細結果が表示されます。"
     )
 
-    # 外部スキャンツールの自動取得・確認と警告表示 (P1 レビュー対応)
+    # 外部スキャンツールの安全自動取得・検証 (P1 & P2 レビュー対応)
     binaries = ensure_scanner_binaries()
     missing_tools = [t for t, exists in binaries.items() if not exists]
     if missing_tools:
@@ -1044,7 +1141,7 @@ def main() -> None:
             orchestrator = MVPOrchestrator(project_root(), cli_options=options)
             result = orchestrator.run_full_scan(options.target_url, save_to_docs=False)
 
-        # 取得失敗・評価不能エラーの検知 (P2 レビュー対応)
+        # 1. 致命的な取得失敗や評価不能のチェック
         is_fetch_failed = (
             result.status == OverallStatus.UNKNOWN
             or "fetch failed" in (result.status_reason or "").lower()
@@ -1056,7 +1153,19 @@ def main() -> None:
             )
             return
 
-        st.toast("スキャンが完了しました！", icon="✅")
+        # 2. 一部スキャンや snapshot fetcher 制限・失敗の検出 (P2 レビュー対応)
+        has_partial_failure = result.skipped_files or any(
+            f.rule_id == "SKIPPED-FILES-LIMIT" or f.source == "snapshot_fetcher"
+            for f in result.all_findings
+        )
+
+        if has_partial_failure:
+            st.warning(
+                "⚠️ 一部のファイルまたはカテゴリ診断で安全制限・未評価項目があります。詳細は下記レポートをご確認ください。"
+            )
+        else:
+            st.toast("スキャンが完了しました！", icon="✅")
+
         st.session_state["mvp_result"] = result
 
         render_hero_score(result)
@@ -1095,7 +1204,6 @@ def main() -> None:
     except ValueError as val_err:
         st.error(f"入力エラー: {val_err}")
     except Exception:
-        # 内部例外スタックトレース等のブラウザ露出を防止 (P2 レビュー対応)
         logger.exception("スキャン処理中に予期しないエラーが発生しました。")
         st.error(
             "スキャン処理中に予期しないエラーが発生しました。詳細はサーバーログを確認してください。"
