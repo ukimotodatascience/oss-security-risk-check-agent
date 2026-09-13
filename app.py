@@ -33,13 +33,14 @@ def _sync_secrets_to_env() -> None:
 
     try:
         if hasattr(st, "secrets"):
-            token = (
-                st.secrets.get("GITHUB_TOKEN")
-                or st.secrets.get("GH_TOKEN")
-                or st.secrets.get("github_token")
-            )
-            if isinstance(token, str) and token.strip():
-                token_str = token.strip()
+            token_str = None
+            for key in ("GITHUB_TOKEN", "GH_TOKEN", "github_token"):
+                raw_val = st.secrets.get(key)
+                if isinstance(raw_val, str) and raw_val.strip():
+                    token_str = raw_val.strip()
+                    break
+
+            if token_str:
                 os.environ["GITHUB_TOKEN"] = token_str
                 os.environ["GITHUB_AUTH_TOKEN"] = token_str
                 os.environ["GH_TOKEN"] = token_str
@@ -1458,11 +1459,11 @@ def check_has_partial_failure(result: OverallResult) -> bool:
 
 
 def main() -> None:
-    _sync_secrets_to_env()
     from src.config import ScanConfig
     from src.logger import setup_logging
 
     config = ScanConfig(project_root())
+    _sync_secrets_to_env()
     setup_logging(level=config.resolve_log_level(), log_file=config.resolve_log_file())
 
     st.set_page_config(

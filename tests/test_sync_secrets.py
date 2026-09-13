@@ -41,6 +41,26 @@ def test_sync_secrets_to_env_populates_env_when_empty(monkeypatch):
     assert os.environ.get("GH_TOKEN") == "new_secret_token"
 
 
+def test_sync_secrets_to_env_skips_whitespace_secret_candidates(monkeypatch):
+    """st.secrets の先頭キーが空白のみの場合、後続の有効なキーから取得できることを確認。"""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    fake_st = MagicMock()
+    fake_st.secrets = {
+        "GITHUB_TOKEN": "   ",
+        "GH_TOKEN": "valid_gh_token",
+    }
+    monkeypatch.setattr("app.st", fake_st)
+
+    _sync_secrets_to_env()
+
+    assert os.environ.get("GITHUB_TOKEN") == "valid_gh_token"
+    assert os.environ.get("GITHUB_AUTH_TOKEN") == "valid_gh_token"
+    assert os.environ.get("GH_TOKEN") == "valid_gh_token"
+
+
 def test_resolve_github_token_reads_env_variables(monkeypatch, tmp_path):
     """ScanConfig.resolve_github_token が正しく環境変数を解決することを確認。"""
     monkeypatch.setenv("GITHUB_AUTH_TOKEN", "my_auth_token")
