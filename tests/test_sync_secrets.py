@@ -9,8 +9,8 @@ from src.config import ScanConfig
 
 def test_sync_secrets_to_env_preserves_existing_env(monkeypatch):
     """既存の GITHUB_AUTH_TOKEN が存在する場合、st.secrets で上書き・追加しないことを確認。"""
+    monkeypatch.setenv("GITHUB_TOKEN", "  ")
     monkeypatch.setenv("GITHUB_AUTH_TOKEN", "existing_auth_token")
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
 
     fake_st = MagicMock()
@@ -19,8 +19,8 @@ def test_sync_secrets_to_env_preserves_existing_env(monkeypatch):
 
     _sync_secrets_to_env()
 
-    # 既存の環境変数が優先され、GITHUB_TOKEN に秘密情報の secret_token_from_st がセットされないこと
-    assert os.environ.get("GITHUB_TOKEN") is None
+    # 空白のみの GITHUB_TOKEN は無視され、有効な GITHUB_AUTH_TOKEN が優先されて st.secrets で上書きされないこと
+    assert os.environ.get("GITHUB_TOKEN") == "  "
     assert os.environ.get("GITHUB_AUTH_TOKEN") == "existing_auth_token"
 
 

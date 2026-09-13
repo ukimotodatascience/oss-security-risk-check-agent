@@ -26,13 +26,10 @@ def _sync_secrets_to_env() -> None:
     環境変数 (GITHUB_TOKEN, GITHUB_AUTH_TOKEN, GH_TOKEN) が既に設定されている場合は、
     明示的な環境変数を優先し、Secrets での同期は行わない。
     """
-    existing_token = (
-        os.environ.get("GITHUB_TOKEN")
-        or os.environ.get("GITHUB_AUTH_TOKEN")
-        or os.environ.get("GH_TOKEN")
-    )
-    if existing_token and existing_token.strip():
-        return
+    for key in ("GITHUB_TOKEN", "GITHUB_AUTH_TOKEN", "GH_TOKEN"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            return
 
     try:
         if hasattr(st, "secrets"):
