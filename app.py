@@ -1244,23 +1244,19 @@ def render_category_cards(result: OverallResult) -> None:
             bg_score = "var(--color-safe-bg)"
 
         cards_html.append(
-            f"""
-            <div class="category-card-custom">
-                <div class="cat-header-custom">
-                    <div class="cat-title-custom">{cat_name}</div>
-                    <div class="cat-score-badge-custom" style="color: {color}; background: {bg_score};">
-                        {score_text}
-                    </div>
-                </div>
-                <div class="cat-progress-bg-custom">
-                    <div class="cat-progress-bar-custom" style="width: {bar_width}%; background: {color};"></div>
-                </div>
-                <div class="cat-footer-custom">
-                    <span>{summary}</span>
-                    <span class="findings-count-tag-custom">{count} 指摘</span>
-                </div>
-            </div>
-            """
+            f'<div class="category-card-custom">'
+            f'<div class="cat-header-custom">'
+            f'<div class="cat-title-custom">{cat_name}</div>'
+            f'<div class="cat-score-badge-custom" style="color: {color}; background: {bg_score};">{score_text}</div>'
+            f"</div>"
+            f'<div class="cat-progress-bg-custom">'
+            f'<div class="cat-progress-bar-custom" style="width: {bar_width}%; background: {color};"></div>'
+            f"</div>"
+            f'<div class="cat-footer-custom">'
+            f"<span>{summary}</span>"
+            f'<span class="findings-count-tag-custom">{count} 指摘</span>'
+            f"</div>"
+            f"</div>"
         )
 
     st.markdown("### 📊 評価カテゴリ別スコア (8観点)")
@@ -1367,20 +1363,18 @@ def render_findings_list(
             remed_html = f'<div class="finding-remediation-custom">💡 対策案内: {escape_html(f.remediation)}</div>'
 
         cards_html.append(
-            f"""
-            <div class="finding-card-custom {sev_class}">
-                <div class="finding-meta-custom">
-                    <span class="sev-tag-custom {sev_class}">{sev_class}</span>
-                    <span class="cat-pill-custom">{escape_html(cat_name)}</span>
-                    <span class="rule-id-custom">{rule_id}</span>
-                    <span class="label-muted" style="margin-left: auto;">[{source}]</span>
-                </div>
-                <div class="finding-title-custom">{title}</div>
-                <div class="finding-desc-custom">{desc}</div>
-                {target_html}
-                {remed_html}
-            </div>
-            """
+            f'<div class="finding-card-custom {sev_class}">'
+            f'<div class="finding-meta-custom">'
+            f'<span class="sev-tag-custom {sev_class}">{sev_class}</span>'
+            f'<span class="cat-pill-custom">{escape_html(cat_name)}</span>'
+            f'<span class="rule-id-custom">{rule_id}</span>'
+            f'<span class="label-muted" style="margin-left: auto;">[{source}]</span>'
+            f"</div>"
+            f'<div class="finding-title-custom">{title}</div>'
+            f'<div class="finding-desc-custom">{desc}</div>'
+            f"{target_html}"
+            f"{remed_html}"
+            f"</div>"
         )
 
     st.markdown("".join(cards_html), unsafe_allow_html=True)
