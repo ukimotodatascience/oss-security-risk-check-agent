@@ -25,12 +25,17 @@ case "${ARCH}" in
     ;;
 esac
 
-# 配置先ディレクトリの作成（アプリ専用キャッシュパスを最優先）
-LOCAL_BIN="$HOME/.local/bin"
+# 配置先ディレクトリの設定（アプリ専用キャッシュパスに限定）
 CACHE_DIR="$HOME/.cache/oss_security_agent"
 CACHE_BIN="${CACHE_DIR}/bin"
 
-mkdir -p "${LOCAL_BIN}"
+# シンボリックリンクのチェック（P2: リンク経由の設置を明示的に拒否）
+if [ -h "${CACHE_DIR}" ] || [ -h "${CACHE_BIN}" ] || [ -L "${CACHE_DIR}" ] || [ -L "${CACHE_BIN}" ]; then
+  echo "Error: Dedicated cache directory (${CACHE_DIR}) must not be a symbolic link." >&2
+  exit 1
+fi
+
+mkdir -p "${CACHE_DIR}"
 mkdir -p "${CACHE_BIN}"
 
 # 安全な権限設定 (chmod 700) - 不安全な場合は失敗終了 (P2)
@@ -74,13 +79,7 @@ chmod 0755 "${TMP_DIR}/scorecard"
 cp "${TMP_DIR}/scorecard" "${CACHE_BIN}/scorecard"
 chmod 0755 "${CACHE_BIN}/scorecard"
 
-# 既存のユーザーバイナリを不用意に上書きしない保護
-if [ ! -f "${LOCAL_BIN}/scorecard" ]; then
-  cp "${TMP_DIR}/scorecard" "${LOCAL_BIN}/scorecard"
-  chmod 0755 "${LOCAL_BIN}/scorecard"
-fi
-
 # PATH の反映
-export PATH="${CACHE_BIN}:${LOCAL_BIN}:$PATH"
+export PATH="${CACHE_BIN}:$PATH"
 
 echo "Scorecard v4.13.1 (${ARCH_KEY}) successfully installed and verified."

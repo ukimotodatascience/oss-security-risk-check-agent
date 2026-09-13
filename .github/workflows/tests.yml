@@ -36,7 +36,7 @@ jobs:
 
       - name: Pre-install Scorecard binary
         run: |
-          bash setup.sh || true
+          bash setup.sh
 
       - name: Run tests with coverage
         run: python -m pytest --cov=src --cov-report=term-missing

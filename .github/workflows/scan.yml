@@ -52,14 +52,7 @@ jobs:
 
       - name: Install Scorecard CLI
         run: |
-          SCORECARD_VERSION="v4.13.1"
-          EXPECTED_SHA256="53aa07786f2d985d0755ff9caad4e38c0a22596708de0728c5274f84ae48f785"
-          curl -sSL "https://github.com/ossf/scorecard/releases/download/${SCORECARD_VERSION}/scorecard_4.13.1_linux_amd64.tar.gz" -o scorecard.tar.gz
-          echo "${EXPECTED_SHA256}  scorecard.tar.gz" | sha256sum -c -
-          tar -xzf scorecard.tar.gz
-          sudo mv scorecard /usr/local/bin/scorecard
-          sudo chmod +x /usr/local/bin/scorecard
-          scorecard version || true
+          bash setup.sh
 
       - name: Install dependencies
         run: |
