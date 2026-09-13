@@ -21,7 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 def _sync_secrets_to_env() -> None:
-    """Streamlit Secrets に設定された GITHUB_TOKEN を os.environ に自動同期する。"""
+    """Streamlit Secrets に設定された GITHUB_TOKEN を os.environ に自動同期する。
+
+    環境変数 (GITHUB_TOKEN, GITHUB_AUTH_TOKEN, GH_TOKEN) が既に設定されている場合は、
+    明示的な環境変数を優先し、Secrets での同期は行わない。
+    """
+    existing_token = (
+        os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("GITHUB_AUTH_TOKEN")
+        or os.environ.get("GH_TOKEN")
+    )
+    if existing_token and existing_token.strip():
+        return
+
     try:
         if hasattr(st, "secrets"):
             token = (
@@ -31,12 +43,9 @@ def _sync_secrets_to_env() -> None:
             )
             if isinstance(token, str) and token.strip():
                 token_str = token.strip()
-                if "GITHUB_TOKEN" not in os.environ:
-                    os.environ["GITHUB_TOKEN"] = token_str
-                if "GITHUB_AUTH_TOKEN" not in os.environ:
-                    os.environ["GITHUB_AUTH_TOKEN"] = token_str
-                if "GH_TOKEN" not in os.environ:
-                    os.environ["GH_TOKEN"] = token_str
+                os.environ["GITHUB_TOKEN"] = token_str
+                os.environ["GITHUB_AUTH_TOKEN"] = token_str
+                os.environ["GH_TOKEN"] = token_str
     except Exception as e:
         logger.debug(f"Failed to sync secrets to environment: {e}")
 
