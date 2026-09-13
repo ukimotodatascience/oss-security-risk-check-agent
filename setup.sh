@@ -30,6 +30,17 @@ HOME_CACHE="$HOME/.cache"
 CACHE_DIR="${HOME_CACHE}/oss_security_agent"
 CACHE_BIN="${CACHE_DIR}/bin"
 
+# 孤立した作業用一時ディレクトリと配置一時ファイルの作成・クリーンアップ trap (P2)
+TMP_DIR="$(mktemp -d)"
+TMP_TARGET=""
+cleanup() {
+  if [ -n "${TMP_TARGET:-}" ] && [ -f "${TMP_TARGET}" ]; then
+    rm -f "${TMP_TARGET}" 2>/dev/null || true
+  fi
+  rm -rf "${TMP_DIR}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # シンボリックリンクのチェック（祖先ディレクトリ $HOME/.cache を含む: P2）
 if [ -h "${HOME_CACHE}" ] || [ -L "${HOME_CACHE}" ] || \
    [ -h "${CACHE_DIR}" ] || [ -L "${CACHE_DIR}" ] || \
@@ -48,12 +59,32 @@ chmod 700 "${CACHE_DIR}" "${CACHE_BIN}" 2>/dev/null || {
   exit 1
 }
 
-# 孤立した作業用一時ディレクトリの作成とクリーンアップ trap (P2)
-TMP_DIR="$(mktemp -d)"
-cleanup() {
-  rm -rf "${TMP_DIR}" 2>/dev/null || true
-}
-trap cleanup EXIT
+# 親ディレクトリおよび祖先パスのセキュリティ検証 (app.py の _is_secure_directory と同等基準: P2)
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 -c '
+import sys, os, pathlib
+p = pathlib.Path(sys.argv[1])
+uid = os.getuid()
+curr = p
+home = pathlib.Path.home()
+while True:
+    if curr.exists():
+        st = curr.stat()
+        if st.st_uid != uid:
+            sys.exit(1)
+        if curr != p and (st.st_mode & 0o022 != 0):
+            sys.exit(1)
+    if curr == home or curr == curr.parent:
+        break
+    curr = curr.parent
+' "${CACHE_BIN}"; then
+    echo "Error: Cache directory ${CACHE_BIN} or its parent failed security check (owner matching / non-group-writable)." >&2
+    exit 1
+  fi
+fi
+
+# 古い残存一時ファイルのクリーンアップ
+rm -f "${CACHE_BIN}"/.scorecard.tmp.* 2>/dev/null || true
 
 SCORECARD_TAR="scorecard_4.13.1_linux_${ARCH_KEY}.tar.gz"
 SCORECARD_URL="https://github.com/ossf/scorecard/releases/download/v4.13.1/${SCORECARD_TAR}"
@@ -92,12 +123,13 @@ if [ -h "${TARGET_BIN}" ] || [ -L "${TARGET_BIN}" ]; then
   exit 1
 fi
 
-# アプリ専用キャッシュパスへのアトミックな配置
+# アプリ専用キャッシュパスへのアトミックな配置と一時ファイル管理 (P2)
 TMP_TARGET="${CACHE_BIN}/.scorecard.tmp.$$"
 cp "${BIN_FILE}" "${TMP_TARGET}"
 chmod 0755 "${TMP_TARGET}"
 mv -f "${TMP_TARGET}" "${TARGET_BIN}"
 chmod 0755 "${TARGET_BIN}"
+TMP_TARGET=""
 
 # PATH の反映（現在のシェル環境および GitHub Actions 環境への引き継ぎ）
 export PATH="${CACHE_BIN}:$PATH"
