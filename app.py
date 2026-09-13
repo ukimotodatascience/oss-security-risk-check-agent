@@ -183,8 +183,8 @@ def _is_secure_directory(dir_path: Path) -> bool:
                 if parent.is_symlink() or os.path.islink(parent):
                     return False
                 p_st = parent.lstat()
-                # group/world writable (0o022) でないことを確認 (所有者不一致はコンテナ環境等を考慮し許容)
-                if p_st.st_mode & 0o022 != 0:
+                # 祖先の所有者が実行ユーザー自身 (uid) または root (0) であり、かつ group/world writable (0o022) でないことを確認
+                if p_st.st_uid not in (uid, 0) or (p_st.st_mode & 0o022 != 0):
                     return False
             if parent == home or parent == home_resolved:
                 break

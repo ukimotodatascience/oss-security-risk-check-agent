@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import tarfile
-from pathlib import Path
 
 import app
 from app import _install_scanner_binaries
@@ -13,6 +12,7 @@ def test_scorecard_extract_matches_scorecard_linux_amd64(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("app._get_user_bin_dir", lambda: bin_dir)
+    monkeypatch.setattr("app.project_root", lambda: tmp_path)
 
     # 模擬 tar.gz アーカイブ作成
     archive_bytes = io.BytesIO()
@@ -24,13 +24,16 @@ def test_scorecard_extract_matches_scorecard_linux_amd64(tmp_path, monkeypatch):
         tar.addfile(info, io.BytesIO(fake_binary))
 
     import hashlib
+
     fake_bin_sha = hashlib.sha256(fake_binary).hexdigest()
     monkeypatch.setitem(app.BINARY_CHECKSUMS["scorecard"], "x86_64", fake_bin_sha)
 
     mock_data = archive_bytes.getvalue()
     actual_sha = hashlib.sha256(mock_data).hexdigest()
     monkeypatch.setitem(
-        app.CHECKSUMS["scorecard"], "x86_64", (actual_sha, "http://example.com/scorecard.tar.gz")
+        app.CHECKSUMS["scorecard"],
+        "x86_64",
+        (actual_sha, "http://example.com/scorecard.tar.gz"),
     )
     monkeypatch.setattr("app._download_binary_safely", lambda url, **kw: mock_data)
     monkeypatch.setattr("platform.system", lambda: "Linux")
