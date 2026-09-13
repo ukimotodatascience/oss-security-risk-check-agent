@@ -90,7 +90,7 @@ def project_root() -> Path:
 
 
 def _download_binary_safely(
-    url: str, max_bytes: int = 100 * 1024 * 1024, timeout: float = 10.0
+    url: str, max_bytes: int = 100 * 1024 * 1024, timeout: float = 60.0
 ) -> bytes:
     """URL からバイナリを safe にストリーミングダウンロード (最大サイズ制限・全体絶対タイムアウト付)。"""
     start_time = time.monotonic()
@@ -334,7 +334,7 @@ def _install_scanner_binaries() -> dict[str, bool]:
             archive_file = bin_dir / "trivy.tar.gz"
             try:
                 logger.info(
-                    f"Downloading Trivy binary ({arch_key}) with 10s timeout..."
+                    f"Downloading Trivy binary ({arch_key}) with 60s timeout..."
                 )
                 data = _download_binary_safely(download_url)
 
@@ -384,7 +384,7 @@ def _install_scanner_binaries() -> dict[str, bool]:
             archive_file = bin_dir / "scorecard.tar.gz"
             try:
                 logger.info(
-                    f"Downloading Scorecard binary ({arch_key}) with 10s timeout..."
+                    f"Downloading Scorecard binary ({arch_key}) with 60s timeout..."
                 )
                 data = _download_binary_safely(download_url)
 
