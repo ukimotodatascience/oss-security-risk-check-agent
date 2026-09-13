@@ -19,6 +19,35 @@ from src.orchestrator import MVPOrchestrator
 
 logger = logging.getLogger(__name__)
 
+
+def _sync_secrets_to_env() -> None:
+    """Streamlit Secrets に設定された GITHUB_TOKEN を os.environ に自動同期する。
+
+    環境変数 (GITHUB_TOKEN, GITHUB_AUTH_TOKEN, GH_TOKEN) が既に設定されている場合は、
+    明示的な環境変数を優先し、Secrets での同期は行わない。
+    """
+    for key in ("GITHUB_TOKEN", "GITHUB_AUTH_TOKEN", "GH_TOKEN"):
+        val = os.environ.get(key, "").strip()
+        if val:
+            return
+
+    try:
+        if hasattr(st, "secrets"):
+            token_str = None
+            for key in ("GITHUB_TOKEN", "GH_TOKEN", "github_token"):
+                raw_val = st.secrets.get(key)
+                if isinstance(raw_val, str) and raw_val.strip():
+                    token_str = raw_val.strip()
+                    break
+
+            if token_str:
+                os.environ["GITHUB_TOKEN"] = token_str
+                os.environ["GITHUB_AUTH_TOKEN"] = token_str
+                os.environ["GH_TOKEN"] = token_str
+    except Exception as e:
+        logger.debug(f"Failed to sync secrets to environment: {e}")
+
+
 # 固定された公式 SHA-256 チェックサムテーブル (P1 レビュー対応)
 CHECKSUMS = {
     "trivy": {
@@ -268,6 +297,7 @@ def _check_binaries_present() -> dict[str, bool]:
 
 def _install_scanner_binaries() -> dict[str, bool]:
     """trivy および scorecard バイナリを安全取得 (ユーザー専用パス・SHA-256検証・タイムアウト) する。"""
+    _sync_secrets_to_env()
     bin_dir = _get_user_bin_dir()
 
     path_env = os.environ.get("PATH", "")
@@ -1433,6 +1463,7 @@ def main() -> None:
     from src.logger import setup_logging
 
     config = ScanConfig(project_root())
+    _sync_secrets_to_env()
     setup_logging(level=config.resolve_log_level(), log_file=config.resolve_log_file())
 
     st.set_page_config(

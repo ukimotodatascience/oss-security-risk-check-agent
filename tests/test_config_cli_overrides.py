@@ -63,6 +63,7 @@ def test_resolve_github_token_prioritizes_github_token_then_gh_token(
 ):
     monkeypatch.setenv("GITHUB_TOKEN", "gt_val")
     monkeypatch.setenv("GH_TOKEN", "gh_val")
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "auth_val")
     config = ScanConfig(tmp_path)
     assert config.resolve_github_token() == "gt_val"
 
@@ -70,4 +71,7 @@ def test_resolve_github_token_prioritizes_github_token_then_gh_token(
     assert config.resolve_github_token() == "gh_val"
 
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert config.resolve_github_token() == "auth_val"
+
+    monkeypatch.delenv("GITHUB_AUTH_TOKEN", raising=False)
     assert config.resolve_github_token() is None

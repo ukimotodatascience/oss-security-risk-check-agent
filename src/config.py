@@ -112,8 +112,12 @@ class ScanConfig:
         return out
 
     def resolve_github_token(self) -> str | None:
-        """環境変数 `GITHUB_TOKEN` または `GH_TOKEN` を読み込む。"""
-        token = self._env("GITHUB_TOKEN") or self._env("GH_TOKEN")
+        """環境変数 `GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_AUTH_TOKEN` を読み込む。"""
+        token = (
+            self._env("GITHUB_TOKEN")
+            or self._env("GH_TOKEN")
+            or self._env("GITHUB_AUTH_TOKEN")
+        )
         return token if token else None
 
     def resolve_log_level(self) -> str:
