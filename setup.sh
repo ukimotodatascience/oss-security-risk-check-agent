@@ -84,7 +84,10 @@ chmod 0755 "${BIN_FILE}"
 cp "${BIN_FILE}" "${CACHE_BIN}/scorecard"
 chmod 0755 "${CACHE_BIN}/scorecard"
 
-# PATH の反映
+# PATH の反映（現在のシェル環境および GitHub Actions 環境への引き継ぎ）
 export PATH="${CACHE_BIN}:$PATH"
+if [ -n "${GITHUB_PATH:-}" ]; then
+  echo "${CACHE_BIN}" >> "${GITHUB_PATH}"
+fi
 
 echo "Scorecard v4.13.1 (${ARCH_KEY}) successfully installed and verified."
