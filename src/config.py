@@ -112,8 +112,22 @@ class ScanConfig:
         return out
 
     def resolve_github_token(self) -> str | None:
-        """環境変数 `GITHUB_TOKEN` または `GH_TOKEN` を読み込む。"""
+        """環境変数 `GITHUB_TOKEN` または `GH_TOKEN` を読み込む。Streamlit secrets もフォールバックとして参照する。"""
         token = self._env("GITHUB_TOKEN") or self._env("GH_TOKEN")
+        if not token:
+            try:
+                import streamlit as st
+
+                if hasattr(st, "secrets"):
+                    secret_val = (
+                        st.secrets.get("GITHUB_TOKEN")
+                        or st.secrets.get("GH_TOKEN")
+                        or st.secrets.get("github_token")
+                    )
+                    if isinstance(secret_val, str) and secret_val.strip():
+                        token = secret_val.strip()
+            except Exception:
+                pass
         return token if token else None
 
     def resolve_log_level(self) -> str:

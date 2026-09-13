@@ -19,6 +19,28 @@ from src.orchestrator import MVPOrchestrator
 
 logger = logging.getLogger(__name__)
 
+
+def _sync_secrets_to_env() -> None:
+    """Streamlit Secrets に設定された GITHUB_TOKEN を os.environ に自動同期する。"""
+    try:
+        if hasattr(st, "secrets"):
+            token = (
+                st.secrets.get("GITHUB_TOKEN")
+                or st.secrets.get("GH_TOKEN")
+                or st.secrets.get("github_token")
+            )
+            if isinstance(token, str) and token.strip():
+                token_str = token.strip()
+                if "GITHUB_TOKEN" not in os.environ:
+                    os.environ["GITHUB_TOKEN"] = token_str
+                if "GITHUB_AUTH_TOKEN" not in os.environ:
+                    os.environ["GITHUB_AUTH_TOKEN"] = token_str
+                if "GH_TOKEN" not in os.environ:
+                    os.environ["GH_TOKEN"] = token_str
+    except Exception as e:
+        logger.debug(f"Failed to sync secrets to environment: {e}")
+
+
 # 固定された公式 SHA-256 チェックサムテーブル (P1 レビュー対応)
 CHECKSUMS = {
     "trivy": {
@@ -268,6 +290,7 @@ def _check_binaries_present() -> dict[str, bool]:
 
 def _install_scanner_binaries() -> dict[str, bool]:
     """trivy および scorecard バイナリを安全取得 (ユーザー専用パス・SHA-256検証・タイムアウト) する。"""
+    _sync_secrets_to_env()
     bin_dir = _get_user_bin_dir()
 
     path_env = os.environ.get("PATH", "")
@@ -1429,6 +1452,7 @@ def check_has_partial_failure(result: OverallResult) -> bool:
 
 
 def main() -> None:
+    _sync_secrets_to_env()
     from src.config import ScanConfig
     from src.logger import setup_logging
 
