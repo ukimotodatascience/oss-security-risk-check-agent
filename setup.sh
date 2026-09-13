@@ -26,15 +26,19 @@ case "${ARCH}" in
 esac
 
 # 配置先ディレクトリの設定（アプリ専用キャッシュパスに限定）
-CACHE_DIR="$HOME/.cache/oss_security_agent"
+HOME_CACHE="$HOME/.cache"
+CACHE_DIR="${HOME_CACHE}/oss_security_agent"
 CACHE_BIN="${CACHE_DIR}/bin"
 
-# シンボリックリンクのチェック（P2: リンク経由の設置を明示的に拒否）
-if [ -h "${CACHE_DIR}" ] || [ -h "${CACHE_BIN}" ] || [ -L "${CACHE_DIR}" ] || [ -L "${CACHE_BIN}" ]; then
-  echo "Error: Dedicated cache directory (${CACHE_DIR}) must not be a symbolic link." >&2
+# シンボリックリンクのチェック（祖先ディレクトリ $HOME/.cache を含む: P2）
+if [ -h "${HOME_CACHE}" ] || [ -L "${HOME_CACHE}" ] || \
+   [ -h "${CACHE_DIR}" ] || [ -L "${CACHE_DIR}" ] || \
+   [ -h "${CACHE_BIN}" ] || [ -L "${CACHE_BIN}" ]; then
+  echo "Error: Dedicated cache path or its parent directory (${HOME_CACHE}) must not be a symbolic link." >&2
   exit 1
 fi
 
+mkdir -p "${HOME_CACHE}"
 mkdir -p "${CACHE_DIR}"
 mkdir -p "${CACHE_BIN}"
 
@@ -80,9 +84,20 @@ if [ -z "${BIN_FILE}" ] || [ ! -f "${BIN_FILE}" ]; then
 fi
 chmod 0755 "${BIN_FILE}"
 
-# アプリ専用キャッシュパスへの配置
-cp "${BIN_FILE}" "${CACHE_BIN}/scorecard"
-chmod 0755 "${CACHE_BIN}/scorecard"
+TARGET_BIN="${CACHE_BIN}/scorecard"
+
+# 配置先の既存ファイルがシンボリックリンクであるかを検査して拒否 (P2)
+if [ -h "${TARGET_BIN}" ] || [ -L "${TARGET_BIN}" ]; then
+  echo "Error: Target binary destination (${TARGET_BIN}) must not be a symbolic link." >&2
+  exit 1
+fi
+
+# アプリ専用キャッシュパスへのアトミックな配置
+TMP_TARGET="${CACHE_BIN}/.scorecard.tmp.$$"
+cp "${BIN_FILE}" "${TMP_TARGET}"
+chmod 0755 "${TMP_TARGET}"
+mv -f "${TMP_TARGET}" "${TARGET_BIN}"
+chmod 0755 "${TARGET_BIN}"
 
 # PATH の反映（現在のシェル環境および GitHub Actions 環境への引き継ぎ）
 export PATH="${CACHE_BIN}:$PATH"
