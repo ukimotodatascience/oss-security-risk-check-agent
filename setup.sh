@@ -41,7 +41,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# シンボリックリンクのチェック（$HOME および全祖先ディレクトリを含む: P2）
+# シンボリックリンクのチェック（$HOME および祖先ディレクトリを含む: P2）
 if [ -h "$HOME" ] || [ -L "$HOME" ] || \
    [ -h "${HOME_CACHE}" ] || [ -L "${HOME_CACHE}" ] || \
    [ -h "${CACHE_DIR}" ] || [ -L "${CACHE_DIR}" ] || \
@@ -60,26 +60,37 @@ chmod 700 "${CACHE_DIR}" "${CACHE_BIN}" 2>/dev/null || {
   exit 1
 }
 
-# 親ディレクトリおよび祖先パスのセキュリティ検証 (app.py の _is_secure_directory と同等基準・lstat/is_symlink 検査: P2)
+# 親ディレクトリおよび祖先パスのセキュリティ検証 ($HOME で走査停止・app.py の _is_secure_directory と同等基準: P2)
 if command -v python3 >/dev/null 2>&1; then
   if ! python3 -c '
 import sys, os, pathlib
-p = pathlib.Path(sys.argv[1])
+dir_path = pathlib.Path(sys.argv[1])
 uid = os.getuid()
-curr = p
-home = pathlib.Path.home()
-while True:
-    if curr.is_symlink() or os.path.islink(curr):
+
+if dir_path.is_symlink() or os.path.islink(dir_path):
+    sys.exit(1)
+
+if dir_path.exists():
+    st = dir_path.lstat()
+    if st.st_uid != uid or (st.st_mode & 0o077 != 0):
         sys.exit(1)
-    if curr.exists():
-        st = curr.lstat()
-        if st.st_uid != uid:
-            sys.exit(1)
-        if curr != p and (st.st_mode & 0o022 != 0):
-            sys.exit(1)
-    if curr == curr.parent:
+
+home = pathlib.Path.home()
+home_resolved = home.resolve()
+curr = dir_path
+while True:
+    if curr == home or curr == home_resolved or curr == curr.parent:
         break
-    curr = curr.parent
+    parent = curr.parent
+    if parent.exists():
+        if parent.is_symlink() or os.path.islink(parent):
+            sys.exit(1)
+        p_st = parent.lstat()
+        if p_st.st_uid != uid or (p_st.st_mode & 0o022 != 0):
+            sys.exit(1)
+    if parent == home or parent == home_resolved:
+        break
+    curr = parent
 ' "${CACHE_BIN}"; then
     echo "Error: Cache directory ${CACHE_BIN} or its parent failed security check (owner matching / non-group-writable / no-symlink)." >&2
     exit 1
@@ -117,9 +128,9 @@ chmod 0755 "${BIN_FILE}"
 
 TARGET_BIN="${CACHE_BIN}/scorecard"
 
-# 配置先の既存ファイルがシンボリックリンクであるかを検査して拒否 (P2)
-if [ -h "${TARGET_BIN}" ] || [ -L "${TARGET_BIN}" ]; then
-  echo "Error: Target binary destination (${TARGET_BIN}) must not be a symbolic link." >&2
+# 配置先の既存パスがディレクトリまたはシンボリックリンクであるかを検査して拒否 (P2)
+if [ -d "${TARGET_BIN}" ] || [ -h "${TARGET_BIN}" ] || [ -L "${TARGET_BIN}" ]; then
+  echo "Error: Target binary destination (${TARGET_BIN}) must not be a directory or symbolic link." >&2
   exit 1
 fi
 
