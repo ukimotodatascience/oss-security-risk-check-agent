@@ -72,11 +72,16 @@ else
 fi
 
 # 解凍および安全配置
-tar -xzf "${TMP_DIR}/${SCORECARD_TAR}" -C "${TMP_DIR}" scorecard
-chmod 0755 "${TMP_DIR}/scorecard"
+tar -xzf "${TMP_DIR}/${SCORECARD_TAR}" -C "${TMP_DIR}"
+BIN_FILE="$(find "${TMP_DIR}" -maxdepth 1 -type f -name "scorecard*" ! -name "*.tar.gz" | head -n 1)"
+if [ -z "${BIN_FILE}" ] || [ ! -f "${BIN_FILE}" ]; then
+  echo "Error: Could not find extracted scorecard binary in archive" >&2
+  exit 1
+fi
+chmod 0755 "${BIN_FILE}"
 
 # アプリ専用キャッシュパスへの配置
-cp "${TMP_DIR}/scorecard" "${CACHE_BIN}/scorecard"
+cp "${BIN_FILE}" "${CACHE_BIN}/scorecard"
 chmod 0755 "${CACHE_BIN}/scorecard"
 
 # PATH の反映
