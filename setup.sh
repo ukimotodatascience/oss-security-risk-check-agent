@@ -86,7 +86,7 @@ while True:
         if parent.is_symlink() or os.path.islink(parent):
             sys.exit(1)
         p_st = parent.lstat()
-        if p_st.st_uid != uid or (p_st.st_mode & 0o022 != 0):
+        if p_st.st_uid not in (uid, 0) or (p_st.st_mode & 0o022 != 0):
             sys.exit(1)
     if parent == home or parent == home_resolved:
         break

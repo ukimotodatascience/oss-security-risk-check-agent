@@ -183,8 +183,8 @@ def _is_secure_directory(dir_path: Path) -> bool:
                 if parent.is_symlink() or os.path.islink(parent):
                     return False
                 p_st = parent.lstat()
-                # 所有者が一致し、かつ group/world writable (0o022) でないことを確認
-                if p_st.st_uid != uid or (p_st.st_mode & 0o022 != 0):
+                # 祖先の所有者が実行ユーザー自身 (uid) または root (0) であり、かつ group/world writable (0o022) でないことを確認
+                if p_st.st_uid not in (uid, 0) or (p_st.st_mode & 0o022 != 0):
                     return False
             if parent == home or parent == home_resolved:
                 break
@@ -397,12 +397,23 @@ def _install_scanner_binaries() -> dict[str, bool]:
                     archive_file.write_bytes(data)
                     with tarfile.open(archive_file, "r:gz") as tar:
                         for member in tar.getmembers():
-                            if member.name.endswith("scorecard"):
+                            base_name = Path(member.name).name
+                            if member.isfile() and (
+                                base_name == "scorecard"
+                                or base_name.startswith("scorecard-")
+                                or base_name.startswith("scorecard_")
+                            ):
                                 member.name = "scorecard"
                                 tar.extract(member, path=bin_dir)
                                 break
-                    (bin_dir / "scorecard").chmod(0o755)
-                    scorecard_path = str(bin_dir / "scorecard")
+                    scorecard_bin = bin_dir / "scorecard"
+                    if scorecard_bin.is_file():
+                        scorecard_bin.chmod(0o755)
+                        scorecard_path = str(scorecard_bin)
+                    else:
+                        logger.warning(
+                            "Scorecard binary was not found inside the downloaded archive."
+                        )
             except Exception as e:
                 logger.warning(f"Failed safe download for Scorecard: {e}")
             finally:
