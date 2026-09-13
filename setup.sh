@@ -134,8 +134,12 @@ if [ -d "${TARGET_BIN}" ] || [ -h "${TARGET_BIN}" ] || [ -L "${TARGET_BIN}" ]; t
   exit 1
 fi
 
-# アプリ専用キャッシュパスへのアトミックな配置と単一プロセスの PID 一時ファイル管理 (P2)
-TMP_TARGET="${CACHE_BIN}/.scorecard.tmp.$$"
+# アプリ専用キャッシュパスへのアトミックな配置と mktemp による排他的一時ファイル管理 (P2)
+TMP_TARGET="$(mktemp "${CACHE_BIN}/.scorecard.tmp.XXXXXX")"
+if [ ! -f "${TMP_TARGET}" ] || [ -h "${TMP_TARGET}" ] || [ -L "${TMP_TARGET}" ]; then
+  echo "Error: Failed to create exclusive temporary target file in ${CACHE_BIN}" >&2
+  exit 1
+fi
 cp "${BIN_FILE}" "${TMP_TARGET}"
 chmod 0755 "${TMP_TARGET}"
 mv -f "${TMP_TARGET}" "${TARGET_BIN}"
